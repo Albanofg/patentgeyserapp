@@ -1,0 +1,1181 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "patent-engine",
+        "options": {}
+      },
+      "id": "b2e63427-ba55-4dea-8f41-1374f2af36f4",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -112,
+        7584
+      ],
+      "webhookId": "7b4e3ff0-fb05-4549-9cb5-79ac5041482f"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare Concepts - Extract selectedIdeas into individual items\nconst input = $input.first().json;\nconst data = input.body || input;\n\nconst items = [];\nconst baseContext = {\n  sessionId: data.sessionId || '',\n  category: data.category || '',\n  mainIdea: data.mainIdea || '',\n  expandedConcept: data.expandedConcept || '',\n  whiteSpaceAnalysis: data.whiteSpaceAnalysis || null\n};\n\n// Build white space context\nlet whiteSpaceContext = '';\nlet nuggetsByIndex = {};\n\nif (baseContext.whiteSpaceAnalysis) {\n  const analysis = baseContext.whiteSpaceAnalysis;\n  whiteSpaceContext = `\\n\\n### PRIOR ART CONSTRAINTS:\\n${analysis.strategicDirective || ''}`;\n  \n  if (analysis.nuggetAnalyses && Array.isArray(analysis.nuggetAnalyses)) {\n    whiteSpaceContext += `\\n\\nKEY DIFFERENTIATION POINTS:\\n`;\n    analysis.nuggetAnalyses.forEach((nugget, idx) => {\n      nuggetsByIndex[idx] = nugget;\n      whiteSpaceContext += `\\n${idx + 1}. ${nugget.primaryPriorArt}\\n`;\n      whiteSpaceContext += `   Risk: ${nugget.riskLevel}\\n`;\n      whiteSpaceContext += `   Constraint: ${nugget.constraint}\\n`;\n      whiteSpaceContext += `   Strategy: ${nugget.whiteSpaceStrategy}\\n`;\n      whiteSpaceContext += `   Differentiation: ${nugget.differentiationLogic}\\n`;\n    });\n  }\n}\n\nif (data.selectedIdeas && Array.isArray(data.selectedIdeas)) {\n  data.selectedIdeas.forEach((concept, index) => {\n    const nugget = nuggetsByIndex[index] || null;\n    \n    // Build spec_text for this concept\n    const spec_text = `# ${baseContext.mainIdea || 'Invention'}\n\n## Field of Invention\n${baseContext.category || 'Technology'}\n\n## Technical Specification\n${baseContext.expandedConcept || ''}\n\n## Specific Inventive Concept\n${concept.text || ''}\n\n## Prior Art Landscape\n${whiteSpaceContext}\n\n## This Concept's Differentiation Strategy\n**Prior Art Constraint (AVOID):**\n${nugget?.constraint || 'N/A'}\n\n**White Space Strategy (CLAIM THIS):**\n${nugget?.whiteSpaceStrategy || 'N/A'}\n\n**Differentiation Logic:**\n${nugget?.differentiationLogic || 'N/A'}\n\n**Primary Prior Art Reference:**\n${nugget?.primaryPriorArt || 'N/A'}\n\n**Risk Level:** ${nugget?.riskLevel || 'Unknown'}`;\n\n    items.push({\n      json: {\n        // Identification\n        sessionId: baseContext.sessionId,\n        conceptId: concept.id || `concept-${index}`,\n        conceptText: concept.text || '',\n        category: baseContext.category,\n        index: index,\n        totalConcepts: data.selectedIdeas.length,\n        \n        // Specification\n        spec_text: spec_text,\n        expanded_spec_text: spec_text,\n        \n        // Iteration control\n        target_score: 90,\n        max_iterations: 5,\n        iteration: 0,\n        floors: { CAD: 16, DAR: 16, VAC: 11, AL: 11, CE: 11, INS: 11, PTA: 11 },\n        \n        // Claims (to be filled)\n        independent_claim: '',\n        dependent_claims: [],\n        \n        // Scoring (to be filled)\n        rubric_score: 0,\n        rubric_details: {},\n        \n        // Validation outputs (to be filled)\n        support_judge_output: null,\n        discovery_output: null,\n        red_team_output: null,\n        \n        // Addenda\n        addenda: []\n      }\n    });\n  });\n} else {\n  // Fallback for single idea\n  const singleIdea = data.invention_description || data.idea || data.mainIdea || '';\n  items.push({\n    json: {\n      sessionId: baseContext.sessionId,\n      conceptId: 'concept-0',\n      conceptText: singleIdea,\n      category: baseContext.category || '',\n      index: 0,\n      totalConcepts: 1,\n      spec_text: singleIdea,\n      expanded_spec_text: singleIdea,\n      target_score: 90,\n      max_iterations: 5,\n      iteration: 0,\n      floors: { CAD: 16, DAR: 16, VAC: 11, AL: 11, CE: 11, INS: 11, PTA: 11 },\n      independent_claim: '',\n      dependent_claims: [],\n      rubric_score: 0,\n      rubric_details: {},\n      support_judge_output: null,\n      discovery_output: null,\n      red_team_output: null,\n      addenda: []\n    }\n  });\n}\n\nreturn items;"
+      },
+      "id": "c3cb7979-da13-4b2c-9b15-c426e445715d",
+      "name": "Prepare Concepts1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        112,
+        7584
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "0092c69e-fe78-45d9-a87f-ea22f97545cd",
+      "name": "Loop Concepts1",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        336,
+        7584
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.spec_text }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are Agent 1: Patent Claims Drafter.\n\nYour task: Generate the BROADEST DEFENSIBLE patent claims from the specification.\n\n**Strategy:**\n1. Read the specification to understand the core invention\n2. Identify the key inventive elements that distinguish from prior art\n3. Draft claims at the highest level of abstraction that is still supported\n4. Use functional language where possible (\"configured to\", \"operable to\")\n5. Avoid unnecessary limitations that narrow scope\n\n**Requirements:**\n- Independent claim: Single sentence, broadest scope, proper format\n- Use: preamble + transition (\"comprising\") + body elements\n- Each element on new line (use \\n)\n- 3 dependent claims adding specific limitations\n- Avoid prior art elements mentioned in constraints\n- Every claim element must trace to the specification\n\n**Output JSON format:**\n{\n  \"independent_claim\": \"A [statutory class] comprising:\\na [first element];\\na [second element];\\nwherein [relationship].\",\n  \"dependent_claims\": [\n    \"The [statutory class] of claim 1, wherein [specific limitation].\",\n    \"The [statutory class] of claim 1, further comprising [additional element].\",\n    \"The [statutory class] of claim 2, wherein [narrower limitation].\"\n  ],\n  \"drafting_rationale\": \"Brief explanation of breadth strategy\"\n}"
+        }
+      },
+      "id": "b461b1c9-eb7e-40d0-a241-3f82fc43118c",
+      "name": "Agent 1 Draft Claims1",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        560,
+        7584
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "temperature": 0.4
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        560,
+        7760
+      ],
+      "id": "d9342f28-e9d2-47a4-a497-241fb057d723",
+      "name": "LLM Draft Claims1",
+      "credentials": {
+        "openAiApi": {
+          "id": "q52sTxukoShOCfNL",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Draft Claims output and merge with state\nconst state = $('Loop Concepts1').item.json;\nlet agentOutput = '';\n\ntry {\n  agentOutput = $input.item.json.output || '{}';\n} catch (e) {\n  agentOutput = '{}';\n}\n\nlet parsed;\ntry {\n  const cleaned = agentOutput.replace(/```json\\n?|```\\n?/g, '').trim();\n  parsed = JSON.parse(cleaned);\n} catch (e) {\n  parsed = { independent_claim: '', dependent_claims: [], drafting_rationale: 'Parse error' };\n}\n\nreturn {\n  json: {\n    ...state,\n    independent_claim: parsed.independent_claim || '',\n    dependent_claims: parsed.dependent_claims || [],\n    drafting_rationale: parsed.drafting_rationale || ''\n  }\n};"
+      },
+      "id": "9b63e7bf-f688-433f-83e3-a5b43ec40844",
+      "name": "Parse Draft1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        912,
+        7584
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=**SPECIFICATION:**\n{{ $json.spec_text }}\n\n**CURRENT CLAIMS:**\nIndependent Claim:\n{{ $json.independent_claim }}\n\nDependent Claims:\n{{ $json.dependent_claims.join('\\n') }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are Agent 2: Support Judge (§112(a) Validator).\n\nValidate that EVERY claim element has written description support in the specification.\n\n**Check for each claim element:**\n1. Written description: Is this element explicitly described in the spec?\n2. Enablement: Can a skilled artisan make/use this element based on the spec?\n3. Antecedent basis: Is terminology consistent with spec?\n\n**CRITICAL:** If a claim element is NOT supported, it must be flagged.\n\n**Output JSON:**\n{\n  \"compliant\": true/false,\n  \"issues\": [\n    {\n      \"claim_element\": \"exact text from claim\",\n      \"issue\": \"description of problem\",\n      \"severity\": \"critical/warning\",\n      \"spec_gap\": \"what's missing from spec\"\n    }\n  ],\n  \"supported_elements\": [\"list of elements with clear support\"],\n  \"recommendation\": \"summary of what needs fixing\"\n}"
+        }
+      },
+      "id": "8bb13244-8dc0-4a48-b9ae-0b3e424a6d18",
+      "name": "Agent 2 Support Judge1",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        1136,
+        7456
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "temperature": 0.15
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        1136,
+        7664
+      ],
+      "id": "4cea7007-d724-4053-af49-9069e3657a85",
+      "name": "LLM Support Judge1",
+      "credentials": {
+        "openAiApi": {
+          "id": "q52sTxukoShOCfNL",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=**SPECIFICATION:**\n{{ $json.spec_text }}\n\n**CURRENT CLAIMS:**\n{{ $json.independent_claim }}\n\n{{ $json.dependent_claims.join('\\n') }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are Agent 3: Discovery Agent.\n\nIdentify valuable technical details in the specification that are NOT YET CLAIMED.\n\n**Look for:**\n1. Unclaimed technical features mentioned in spec\n2. Implementation details that could be claimed\n3. Advantages/benefits not captured in claims\n4. Alternative embodiments described\n5. System components not claimed\n6. Data structures or algorithms mentioned\n7. Specific numerical ranges or thresholds\n\n**For each discovery, assess:**\n- Is it novel enough to claim?\n- Does it add defensive value?\n- Could a competitor use this if unclaimed?\n\n**Output JSON:**\n{\n  \"discoveries\": [\n    {\n      \"id\": \"disc_1\",\n      \"feature\": \"description of unclaimed feature\",\n      \"location\": \"where in spec this appears\",\n      \"value\": \"high/medium/low\",\n      \"status\": \"NOT_DISCLOSED\",\n      \"rationale\": \"why this is valuable to claim\",\n      \"suggested_claim_language\": \"draft claim element\"\n    }\n  ],\n  \"coverage_assessment\": \"how well do current claims cover the spec?\"\n}"
+        }
+      },
+      "id": "00ba8fd1-8a18-4460-90a8-c8189d1f1994",
+      "name": "Agent 3 Discovery1",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        3760,
+        7776
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "temperature": 0.7
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        3840,
+        8000
+      ],
+      "id": "3268ee13-9c68-4670-b60d-a9f9e1204011",
+      "name": "LLM Discovery1",
+      "credentials": {
+        "openAiApi": {
+          "id": "q52sTxukoShOCfNL",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "id": "d99e2ffb-4c5a-4ec7-ad81-4b33f7aeb55e",
+      "name": "Merge Validation1",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        1488,
+        7376
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse validation outputs (Support Judge + Discovery) and merge with state\nconst items = $input.all();\n\n// Get state from Parse Draft\nlet state = null;\ntry {\n  state = $('Parse Draft1').item.json;\n} catch (e) {\n  // Fallback\n  for (const item of items) {\n    if (item.json.spec_text && item.json.independent_claim !== undefined) {\n      state = { ...item.json };\n      break;\n    }\n  }\n}\n\nif (!state) {\n  state = items[0]?.json || {};\n}\n\n// Get Support Judge output\nlet supportOutput = { compliant: true, issues: [], recommendation: '' };\ntry {\n  const supportRaw = $('Agent 2 Support Judge1').item.json.output || '{}';\n  const cleaned = supportRaw.replace(/```json\\n?|```\\n?/g, '').trim();\n  supportOutput = JSON.parse(cleaned);\n} catch (e) {\n  // Use default\n}\n\n// Get Discovery output\nlet discoveryOutput = { discoveries: [], coverage_assessment: '' };\ntry {\n  const discRaw = $('Agent 3 Discovery1').item.json.output || '{}';\n  const cleaned = discRaw.replace(/```json\\n?|```\\n?/g, '').trim();\n  discoveryOutput = JSON.parse(cleaned);\n} catch (e) {\n  // Use default\n}\n\nreturn {\n  json: {\n    ...state,\n    support_judge_output: supportOutput,\n    discovery_output: discoveryOutput\n  }\n};"
+      },
+      "id": "5089a5b2-b209-4506-8211-d431dcf4e97c",
+      "name": "Parse Validation1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1712,
+        7264
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=**CLAIMS TO SCORE:**\nIndependent:\n{{ $json.independent_claim }}\n\nDependent:\n{{ $json.dependent_claims.join('\\n') }}\n\n**SPECIFICATION:**\n{{ $json.spec_text }}\n\n**§112 VALIDATION:**\nCompliant: {{ $json.support_judge_output.compliant }}\nIssues: {{ JSON.stringify($json.support_judge_output.issues || []) }}\n\n**DISCOVERY RESULTS:**\nUnclaimed features found: {{ ($json.discovery_output.discoveries || []).length }}\nCoverage: {{ $json.discovery_output.coverage_assessment || 'N/A' }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are Agent 4: Rubric Scorer.\n\nScore the claims on 7 metrics (0-20 points each, max 140 total):\n\n1. **CAD** (Claim-to-Art Distance): How far from prior art? Higher = more novel\n2. **DAR** (Design-Around Resistance): How hard to design around? Higher = stronger\n3. **VAC** (§112(a) Compliance): Is everything supported? Higher = better compliance\n4. **AL** (Antecedent Logic): Proper claim dependencies and terminology? Higher = cleaner\n5. **CE** (Claim Economy): Concise, not prolix? Higher = more efficient\n6. **INS** (Instruction Sufficiency): Can someone build it? Higher = more enabling\n7. **PTA** (Patent Term Risk): Lower prosecution risk? Higher = safer\n\n**Scoring guide:**\n- 18-20: Excellent\n- 14-17: Good\n- 10-13: Adequate\n- 6-9: Needs work\n- 0-5: Critical issues\n\n**Output JSON:**\n{\n  \"scores\": {\n    \"CAD\": 18,\n    \"DAR\": 16,\n    \"VAC\": 14,\n    \"AL\": 19,\n    \"CE\": 17,\n    \"INS\": 15,\n    \"PTA\": 18\n  },\n  \"total\": 117,\n  \"analysis\": {\n    \"strengths\": [\"list of strong points\"],\n    \"weaknesses\": [\"list of weak points\"],\n    \"priority_fixes\": [\"ordered list of what to fix first\"]\n  }\n}"
+        }
+      },
+      "id": "b3e2061d-844a-4eac-862f-2dd91239e5b1",
+      "name": "Agent 4 Rubric Scorer1",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        1936,
+        7056
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        1936,
+        7152
+      ],
+      "id": "6debd447-b90b-4c21-a381-7d0cc2505739",
+      "name": "LLM Rubric1",
+      "credentials": {
+        "openAiApi": {
+          "id": "q52sTxukoShOCfNL",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=**CLAIMS:**\n{{ $json.independent_claim }}\n\n{{ $json.dependent_claims.join('\\n') }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are Agent 5: Red Team (Design-Around Analyzer).\n\nFind vulnerabilities where competitors could design around these claims.\n\n**Attack vectors to check:**\n1. Element substitution: Can any element be replaced with an equivalent?\n2. Process reordering: Can steps be done in different order?\n3. Missing limitations: What's NOT claimed that should be?\n4. Overly narrow language: Where is scope unnecessarily limited?\n5. Functional equivalents: What alternatives achieve same result?\n\n**Output JSON:**\n{\n  \"vulnerabilities\": [\n    {\n      \"claim_section\": \"quote from claim\",\n      \"attack_type\": \"substitution/reordering/missing/narrow/equivalent\",\n      \"attack_description\": \"how competitor could design around\",\n      \"severity\": \"high/medium/low\",\n      \"mitigation\": \"suggested claim amendment\"\n    }\n  ],\n  \"overall_resistance\": \"strong/moderate/weak\",\n  \"breadth_assessment\": \"how broad are these claims?\"\n}"
+        }
+      },
+      "id": "be7854c0-c6a3-4515-8a53-b96a6ffe4792",
+      "name": "Agent 5 Red Team1",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        1936,
+        7392
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "temperature": 0.6
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        1936,
+        7488
+      ],
+      "id": "7b8c6337-a8ee-46b6-9c72-8a6a60ad426d",
+      "name": "LLM Red Team1",
+      "credentials": {
+        "openAiApi": {
+          "id": "q52sTxukoShOCfNL",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "id": "c3522944-04d4-44b2-82e0-ac6b2f4a37e9",
+      "name": "Merge Scoring1",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        2288,
+        7264
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse scoring outputs (Rubric + Red Team) and merge with state\nconst items = $input.all();\n\n// Get state from Parse Validation\nlet state = null;\ntry {\n  state = $('Parse Validation1').item.json;\n} catch (e) {\n  for (const item of items) {\n    if (item.json.spec_text && item.json.support_judge_output) {\n      state = { ...item.json };\n      break;\n    }\n  }\n}\n\nif (!state) {\n  state = items[0]?.json || {};\n}\n\n// Get Rubric output\nlet rubricOutput = { scores: {}, total: 0, analysis: {} };\ntry {\n  const rubricRaw = $('Agent 4 Rubric Scorer1').item.json.output || '{}';\n  const cleaned = rubricRaw.replace(/```json\\n?|```\\n?/g, '').trim();\n  rubricOutput = JSON.parse(cleaned);\n} catch (e) {\n  // Use default\n}\n\n// Get Red Team output\nlet redTeamOutput = { vulnerabilities: [], overall_resistance: 'unknown' };\ntry {\n  const redRaw = $('Agent 5 Red Team1').item.json.output || '{}';\n  const cleaned = redRaw.replace(/```json\\n?|```\\n?/g, '').trim();\n  redTeamOutput = JSON.parse(cleaned);\n} catch (e) {\n  // Use default\n}\n\nconst total = rubricOutput.total || Object.values(rubricOutput.scores || {}).reduce((a, b) => a + b, 0);\n\nreturn {\n  json: {\n    ...state,\n    rubric_score: total,\n    rubric_details: rubricOutput,\n    red_team_output: redTeamOutput\n  }\n};"
+      },
+      "id": "6c55176c-02c4-498f-a52b-258739083e7b",
+      "name": "Parse Scoring1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2512,
+        7264
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Compute Gates - decide whether to finalize or iterate\nconst state = $input.item.json;\n\nconst currentScore = state.rubric_score || 0;\nconst targetScore = state.target_score || 90;\nconst iteration = state.iteration || 0;\nconst maxIterations = state.max_iterations || 5;\nconst floors = state.floors || {};\nconst scores = state.rubric_details?.scores || {};\n\n// Check if target met\nconst meetsTarget = currentScore >= targetScore;\n\n// Check if all floors met\nconst allFloorsMet = Object.keys(floors).every(metric => {\n  return (scores[metric] || 0) >= floors[metric];\n});\n\n// Check iteration limit\nconst reachedMaxIterations = iteration >= maxIterations;\n\n// Finalize if (target + floors met) OR max iterations reached\nconst shouldFinalize = (meetsTarget && allFloorsMet) || reachedMaxIterations;\n\nreturn {\n  json: {\n    ...state,\n    should_finalize: shouldFinalize,\n    meets_target: meetsTarget,\n    all_floors_met: allFloorsMet,\n    reached_max_iterations: reachedMaxIterations\n  }\n};"
+      },
+      "id": "3f15947f-412a-4e62-bb6f-16c06a6d39cd",
+      "name": "Compute Gates1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2736,
+        7264
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "condition-finalize",
+              "leftValue": "={{ $json.should_finalize }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "55898dae-f276-4b37-8d76-942c05d48471",
+      "name": "IF Finalize?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2960,
+        7264
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter high-value discoveries for expansion\nconst state = $input.item.json;\nconst discoveries = state.discovery_output?.discoveries || [];\n\n// Filter for high-value, not-disclosed features\nconst highValue = discoveries.filter(d => \n  d.value === 'high' && d.status === 'NOT_DISCLOSED'\n);\n\nreturn {\n  json: {\n    ...state,\n    has_discoveries: highValue.length > 0,\n    pending_discoveries: highValue,\n    current_discovery_index: 0\n  }\n};"
+      },
+      "id": "c7f6a61e-261f-4961-88a3-81614cc66807",
+      "name": "Filter Discoveries1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3248,
+        7104
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "condition-has-discoveries",
+              "leftValue": "={{ $json.has_discoveries }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "condition-more-to-process",
+              "leftValue": "={{ $json.current_discovery_index < $json.pending_discoveries.length }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b8f40fe1-43ee-4cbc-88b2-55d1b23a7c84",
+      "name": "IF More Discoveries?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3536,
+        7104
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare current discovery for expansion\nconst state = $input.item.json;\nconst discoveries = state.pending_discoveries || [];\nconst idx = state.current_discovery_index || 0;\n\nconst currentDiscovery = discoveries[idx] || null;\n\nreturn {\n  json: {\n    ...state,\n    current_discovery: currentDiscovery\n  }\n};"
+      },
+      "id": "bef12514-728b-4e4f-b31b-962130ac5992",
+      "name": "Prepare Discovery1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3824,
+        6912
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=**DISCOVERY TO EXPAND:**\nFeature: {{ $json.current_discovery.feature }}\nRationale: {{ $json.current_discovery.rationale }}\nSuggested Claim Language: {{ $json.current_discovery.suggested_claim_language || 'N/A' }}\n\n**CURRENT SPECIFICATION:**\n{{ $json.spec_text }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are Agent 7: Specification Expansion Writer.\n\nWrite a detailed technical addendum for this unclaimed feature to provide §112 support for future claims.\n\n**Requirements:**\n1. 200-400 words of technical detail\n2. Sufficient written description for §112(a) support\n3. Describe: structure, function, operation, advantages\n4. Use proper patent specification style\n5. Include implementation details\n6. Enable a skilled artisan to make/use this feature\n\n**Style:**\n- Technical, precise language\n- Third person, present tense\n- \"In one embodiment...\", \"According to aspects...\"\n- Specific technical terms\n\n**Output JSON:**\n{\n  \"addendum_text\": \"Detailed specification addendum text...\",\n  \"feature_id\": \"the discovery id\",\n  \"claim_support_provided\": \"what claim elements this now supports\"\n}"
+        }
+      },
+      "id": "5c3191fc-28ac-4cc5-bdb4-db17cf5e27e4",
+      "name": "Agent 7 Expansion1",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        4112,
+        6912
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "temperature": 0.4
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        4192,
+        7136
+      ],
+      "id": "8d0e700d-cda4-41fb-9ab5-806b73a5d3a7",
+      "name": "LLM Expansion1",
+      "credentials": {
+        "openAiApi": {
+          "id": "q52sTxukoShOCfNL",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract addendum from expansion agent\nconst state = $('Prepare Discovery1').item.json;\nlet expansionRaw = '';\n\ntry {\n  expansionRaw = $input.item.json.output || '{}';\n} catch (e) {\n  expansionRaw = '{}';\n}\n\nlet expansion;\ntry {\n  const cleaned = expansionRaw.replace(/```json\\n?|```\\n?/g, '').trim();\n  expansion = JSON.parse(cleaned);\n} catch (e) {\n  expansion = { \n    addendum_text: '', \n    feature_id: state.current_discovery?.id || 'unknown',\n    claim_support_provided: ''\n  };\n}\n\nreturn {\n  json: {\n    ...state,\n    pending_addendum: {\n      feature_id: expansion.feature_id || state.current_discovery?.id,\n      feature: state.current_discovery?.feature || '',\n      addendum_text: expansion.addendum_text || '',\n      claim_support_provided: expansion.claim_support_provided || ''\n    }\n  }\n};"
+      },
+      "id": "c0fd2ac0-c855-4437-8c48-e386f7de2f1e",
+      "name": "Extract Addendum1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4464,
+        6912
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=**ADDENDUM TO VALIDATE:**\n{{ $json.pending_addendum.addendum_text }}\n\n**FEATURE IT SUPPORTS:**\n{{ $json.pending_addendum.feature }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are Agent 8: §112 Addendum Validator.\n\nValidate this specification addendum for §112 compliance BEFORE it gets added to the spec.\n\n**Check:**\n1. Written description: Does it describe the feature with enough detail?\n2. Enablement: Can a skilled artisan make/use this based on the description?\n3. Best mode: Is a preferred implementation disclosed?\n4. Clarity: Is the language precise and unambiguous?\n5. Consistency: Does it match the style of the rest of the spec?\n\n**Output JSON:**\n{\n  \"compliant\": true/false,\n  \"issues\": [\n    {\n      \"issue\": \"description of problem\",\n      \"severity\": \"critical/warning\",\n      \"fix\": \"suggested fix\"\n    }\n  ],\n  \"recommendation\": \"approve/revise/reject\",\n  \"quality_score\": 0-100\n}"
+        }
+      },
+      "id": "c3577066-fd70-47ef-9db2-35e746bfaa56",
+      "name": "Agent 8 112 Check1",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        4688,
+        6912
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        4768,
+        7136
+      ],
+      "id": "56397fe9-308d-4905-ad73-22ca1110c275",
+      "name": "LLM 112 Check1",
+      "credentials": {
+        "openAiApi": {
+          "id": "q52sTxukoShOCfNL",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Append validated addendum and advance to next discovery\nconst state = $('Extract Addendum1').item.json;\nlet checkRaw = '';\n\ntry {\n  checkRaw = $input.item.json.output || '{}';\n} catch (e) {\n  checkRaw = '{}';\n}\n\nlet validation;\ntry {\n  const cleaned = checkRaw.replace(/```json\\n?|```\\n?/g, '').trim();\n  validation = JSON.parse(cleaned);\n} catch (e) {\n  validation = { compliant: true, recommendation: 'approve', quality_score: 50 };\n}\n\n// Get current addenda array\nconst currentAddenda = [...(state.addenda || [])];\nconst pendingAddendum = state.pending_addendum || {};\n\n// Only add if compliant or approved\nif (validation.compliant || validation.recommendation === 'approve') {\n  currentAddenda.push({\n    feature_id: pendingAddendum.feature_id,\n    feature: pendingAddendum.feature,\n    text: pendingAddendum.addendum_text,\n    claim_support: pendingAddendum.claim_support_provided,\n    quality_score: validation.quality_score || 0,\n    validated: true\n  });\n}\n\n// Expand the spec text\nlet expandedSpec = state.expanded_spec_text || state.spec_text;\nif (pendingAddendum.addendum_text && (validation.compliant || validation.recommendation === 'approve')) {\n  expandedSpec += `\\n\\n## Additional Disclosure: ${pendingAddendum.feature}\\n${pendingAddendum.addendum_text}`;\n}\n\n// Advance to next discovery\nconst nextIndex = (state.current_discovery_index || 0) + 1;\n\nreturn {\n  json: {\n    ...state,\n    addenda: currentAddenda,\n    expanded_spec_text: expandedSpec,\n    current_discovery_index: nextIndex,\n    pending_addendum: null,\n    current_discovery: null\n  }\n};"
+      },
+      "id": "88c57b97-ad13-4263-a701-4f31ba78f619",
+      "name": "Append Addendum1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5088,
+        7216
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=**CURRENT CLAIMS:**\nIndependent:\n{{ $json.independent_claim }}\n\nDependent:\n{{ $json.dependent_claims.join('\\n') }}\n\n**SPECIFICATION:**\n{{ $json.spec_text }}\n\n**§112 ISSUES TO FIX:**\n{{ JSON.stringify($json.support_judge_output.issues || []) }}\n\n**VULNERABILITIES TO CLOSE:**\n{{ JSON.stringify($json.red_team_output.vulnerabilities || []) }}\n\n**CURRENT SCORES:**\n{{ JSON.stringify($json.rubric_details.scores || {}) }}\nTotal: {{ $json.rubric_score }} / Target: {{ $json.target_score }}\n\n**PRIORITY FIXES:**\n{{ JSON.stringify($json.rubric_details.analysis?.priority_fixes || []) }}\n\n**ITERATION:** {{ $json.iteration + 1 }} of {{ $json.max_iterations }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are Agent 6: Claim Optimizer.\n\nRefine the claims to address identified issues and improve scores.\n\n**Optimization strategies (in priority order):**\n1. FIX §112 issues - remove unsupported elements or abstract them\n2. CLOSE design-around vulnerabilities - broaden language\n3. INCREASE breadth through abstraction, not new invention\n4. IMPROVE antecedent basis consistency\n5. REDUCE verbosity while maintaining scope\n\n**CRITICAL RULES:**\n- Every element must trace to the specification\n- Broader is better IF supported\n- Remove limitations that don't add value\n- Use functional language (\"configured to\", \"operable to\")\n- Single sentence structure for each claim\n\n**Output JSON:**\n{\n  \"independent_claim\": \"refined claim 1 text...\",\n  \"dependent_claims\": [\n    \"refined claim 2...\",\n    \"refined claim 3...\",\n    \"refined claim 4...\"\n  ],\n  \"changes_made\": [\n    {\"type\": \"§112 fix\", \"description\": \"what was changed\"},\n    {\"type\": \"broadening\", \"description\": \"what was changed\"}\n  ],\n  \"optimization_rationale\": \"summary of strategy applied\"\n}"
+        }
+      },
+      "id": "12a02fb1-ae46-426a-bbcb-c590cbe532f6",
+      "name": "Agent 6 Optimizer1",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        3184,
+        7456
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "temperature": 0.35
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        3184,
+        7552
+      ],
+      "id": "9f307a3d-7a48-4183-a8e7-1dd15f86c208",
+      "name": "LLM Optimizer1",
+      "credentials": {
+        "openAiApi": {
+          "id": "q52sTxukoShOCfNL",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Apply optimization and increment iteration\nconst state = $('IF Finalize?1').item.json;\nlet optimizerRaw = '';\n\ntry {\n  optimizerRaw = $input.item.json.output || '{}';\n} catch (e) {\n  optimizerRaw = '{}';\n}\n\nlet optimized;\ntry {\n  const cleaned = optimizerRaw.replace(/```json\\n?|```\\n?/g, '').trim();\n  optimized = JSON.parse(cleaned);\n} catch (e) {\n  optimized = {\n    independent_claim: state.independent_claim,\n    dependent_claims: state.dependent_claims,\n    changes_made: [],\n    optimization_rationale: 'Parse error - kept original'\n  };\n}\n\nreturn {\n  json: {\n    ...state,\n    independent_claim: optimized.independent_claim || state.independent_claim,\n    dependent_claims: optimized.dependent_claims || state.dependent_claims,\n    last_changes: optimized.changes_made || [],\n    last_rationale: optimized.optimization_rationale || '',\n    iteration: (state.iteration || 0) + 1,\n    // Reset gate flags for next iteration\n    should_finalize: false,\n    meets_target: false,\n    all_floors_met: false\n  }\n};"
+      },
+      "id": "c3630466-3ef4-4bde-b334-e9ff6fb8a693",
+      "name": "Apply Optimization1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3520,
+        8016
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Finalize result for this concept\nconst state = $input.item.json;\n\n// Build claims array\nconst claims = [];\nif (state.independent_claim) {\n  claims.push({ number: 1, type: 'independent', text: state.independent_claim });\n}\nif (state.dependent_claims && Array.isArray(state.dependent_claims)) {\n  state.dependent_claims.forEach((claim, idx) => {\n    claims.push({ number: idx + 2, type: 'dependent', text: claim });\n  });\n}\n\nreturn {\n  json: {\n    // Identification\n    concept_id: state.conceptId,\n    concept_text: state.conceptText,\n    category: state.category,\n    session_id: state.sessionId,\n    index: state.index,\n    \n    // Final claims\n    claims: claims,\n    independent_claim: state.independent_claim,\n    dependent_claims: state.dependent_claims,\n    claims_count: claims.length,\n    \n    // Quality metrics\n    final_score: state.rubric_score,\n    rubric_breakdown: state.rubric_details?.scores || {},\n    rubric_analysis: state.rubric_details?.analysis || {},\n    iterations_performed: state.iteration,\n    \n    // Validation results\n    support_compliance: state.support_judge_output?.compliant || false,\n    support_issues: state.support_judge_output?.issues || [],\n    discoveries_found: state.discovery_output?.discoveries?.length || 0,\n    design_around_resistance: state.red_team_output?.overall_resistance || 'unknown',\n    vulnerabilities: state.red_team_output?.vulnerabilities || [],\n    \n    // Termination reason\n    termination_reason: state.meets_target && state.all_floors_met \n      ? 'target_met' \n      : 'max_iterations',\n    \n    // Expanded spec and addenda\n    expanded_spec: state.expanded_spec_text || state.spec_text,\n    addenda: state.addenda || [],\n    addenda_count: (state.addenda || []).length,\n    \n    // Metadata\n    finalized: true,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "8d0af399-b8c6-4102-a7ad-e098f518afb7",
+      "name": "Finalize Result1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4704,
+        8176
+      ]
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "options": {}
+      },
+      "id": "675e6b35-7f1c-47fd-a64c-f845c5daadf7",
+      "name": "Aggregate Results1",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        624,
+        7152
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format final response - FIXED for Aggregate node output structure\nconst items = $input.all();\n\n// Aggregate node wraps results in a \"data\" array\n// Input structure: [{ json: { data: [...results...] } }]\nlet results = [];\n\n// Extract results from the aggregate structure\nif (items[0]?.json?.data && Array.isArray(items[0].json.data)) {\n  // Aggregate node output: { data: [...] }\n  results = items[0].json.data;\n} else if (items.length > 0 && items[0]?.json?.concept_id) {\n  // Direct items (fallback)\n  results = items.map(item => item.json);\n} else {\n  // Last resort: flatten any structure\n  for (const item of items) {\n    if (item.json?.data) {\n      results = results.concat(item.json.data);\n    } else if (item.json?.concept_id) {\n      results.push(item.json);\n    }\n  }\n}\n\n// Calculate summary stats\nconst avgScore = results.length > 0 \n  ? results.reduce((sum, r) => sum + (r.final_score || 0), 0) / results.length \n  : 0;\nconst totalIterations = results.reduce((sum, r) => sum + (r.iterations_performed || 0), 0);\nconst totalAddenda = results.reduce((sum, r) => sum + (r.addenda_count || 0), 0);\nconst conceptsWithIssues = results.filter(r => (r.support_issues?.length || 0) > 0).length;\nconst conceptsAtTarget = results.filter(r => r.termination_reason === 'target_met').length;\n\nreturn {\n  json: {\n    session_id: results[0]?.session_id || '',\n    total_concepts: results.length,\n    timestamp: new Date().toISOString(),\n    \n    // Per-concept results\n    concepts: results.map(r => ({\n      concept_id: r.concept_id,\n      concept_text: r.concept_text,\n      index: r.index,\n      \n      claims: {\n        independent: r.independent_claim,\n        dependent: r.dependent_claims,\n        count: r.claims_count,\n        all: r.claims\n      },\n      \n      quality: {\n        final_score: r.final_score,\n        rubric: r.rubric_breakdown,\n        analysis: r.rubric_analysis,\n        iterations: r.iterations_performed,\n        termination_reason: r.termination_reason\n      },\n      \n      validation: {\n        support_compliant: r.support_compliance,\n        support_issues: r.support_issues,\n        discoveries_found: r.discoveries_found,\n        design_around_resistance: r.design_around_resistance,\n        vulnerabilities: r.vulnerabilities\n      },\n      \n      specification: {\n        expanded_spec: r.expanded_spec,\n        addenda: r.addenda,\n        addenda_count: r.addenda_count\n      }\n    })),\n    \n    // Summary\n    summary: {\n      average_score: Math.round(avgScore * 10) / 10,\n      concepts_at_target: conceptsAtTarget,\n      concepts_with_issues: conceptsWithIssues,\n      total_iterations: totalIterations,\n      total_addenda: totalAddenda,\n      processing_complete: true\n    }\n  }\n};"
+      },
+      "id": "53699cff-5001-4231-9c5c-ad7ec79bb5d2",
+      "name": "Format Response1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        912,
+        7152
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "d9061f94-b884-4d41-8b8c-fec0706e6be9",
+      "name": "Webhook Response1",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1200,
+        7152
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Prepare Concepts1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Concepts1": {
+      "main": [
+        [
+          {
+            "node": "Loop Concepts1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Concepts1": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Results1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Agent 1 Draft Claims1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent 1 Draft Claims1": {
+      "main": [
+        [
+          {
+            "node": "Parse Draft1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Draft Claims1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agent 1 Draft Claims1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Draft1": {
+      "main": [
+        [
+          {
+            "node": "Agent 2 Support Judge1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Agent 3 Discovery1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent 2 Support Judge1": {
+      "main": [
+        [
+          {
+            "node": "Merge Validation1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Support Judge1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agent 2 Support Judge1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent 3 Discovery1": {
+      "main": [
+        [
+          {
+            "node": "Merge Validation1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "LLM Discovery1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agent 3 Discovery1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Validation1": {
+      "main": [
+        [
+          {
+            "node": "Parse Validation1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Validation1": {
+      "main": [
+        [
+          {
+            "node": "Agent 4 Rubric Scorer1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Agent 5 Red Team1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent 4 Rubric Scorer1": {
+      "main": [
+        [
+          {
+            "node": "Merge Scoring1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Rubric1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agent 4 Rubric Scorer1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent 5 Red Team1": {
+      "main": [
+        [
+          {
+            "node": "Merge Scoring1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "LLM Red Team1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agent 5 Red Team1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Scoring1": {
+      "main": [
+        [
+          {
+            "node": "Parse Scoring1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Scoring1": {
+      "main": [
+        [
+          {
+            "node": "Compute Gates1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Gates1": {
+      "main": [
+        [
+          {
+            "node": "IF Finalize?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Finalize?1": {
+      "main": [
+        [
+          {
+            "node": "Filter Discoveries1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Agent 6 Optimizer1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Discoveries1": {
+      "main": [
+        [
+          {
+            "node": "IF More Discoveries?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF More Discoveries?1": {
+      "main": [
+        [
+          {
+            "node": "Prepare Discovery1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Finalize Result1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Discovery1": {
+      "main": [
+        [
+          {
+            "node": "Agent 7 Expansion1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent 7 Expansion1": {
+      "main": [
+        [
+          {
+            "node": "Extract Addendum1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Expansion1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agent 7 Expansion1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Addendum1": {
+      "main": [
+        [
+          {
+            "node": "Agent 8 112 Check1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent 8 112 Check1": {
+      "main": [
+        [
+          {
+            "node": "Append Addendum1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM 112 Check1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agent 8 112 Check1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Addendum1": {
+      "main": [
+        [
+          {
+            "node": "IF More Discoveries?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent 6 Optimizer1": {
+      "main": [
+        [
+          {
+            "node": "Apply Optimization1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Optimizer1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agent 6 Optimizer1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Optimization1": {
+      "main": [
+        [
+          {
+            "node": "Agent 2 Support Judge1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Agent 3 Discovery1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Result1": {
+      "main": [
+        [
+          {
+            "node": "Loop Concepts1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Results1": {
+      "main": [
+        [
+          {
+            "node": "Format Response1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Response1": {
+      "main": [
+        [
+          {
+            "node": "Webhook Response1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {
+    "Webhook Trigger": [
+      {
+        "headers": {
+          "connection": "upgrade",
+          "host": "n8nplus.com",
+          "x-real-ip": "35.233.129.189",
+          "x-forwarded-for": "35.233.129.189",
+          "x-forwarded-proto": "https",
+          "content-length": "52951",
+          "content-type": "application/json"
+        },
+        "params": {},
+        "query": {},
+        "body": {
+          "sessionId": "session-1766498644597-ar3e7w6kkes",
+          "category": "Software",
+          "mainIdea": "1. Single Conversational Turn Execution\n\n2. Dynamic Loading of Contextual Services\n\n3. Problem Solved: Manual Search Friction\n\n4. Problem Solved: Existing Chatbot Limitations\n\n5. Tier 1 - Exact Match Search\n\n6. Weighted Composite Ranking Algorithm\n\n7. Tier 3 - Asymmetric Expansion\n\n8. Problem Solved: Generic Chatbots and Hardcoding\n\n9. Coordinate-to-Service-Template Dynamic Mapping Mechanism\n\n10. Property Classification Examples\n\n11. Problem Solved: Natural Language Date Input Difficulties\n\n12. Natural Language Date Parser with Hierarchical Intent Classification\n\n13. NLP Stage 1: Intent Classification Details\n\n14. NLP Stage 2: Specialized Parsing Based on Intent\n\n15. System Architecture Overview\n\n16. Technical Implementation Stack - NLP Engine\n\n17. Technical Implementation Stack - PMS Integration\n\n18. Technical Implementation Stack - Vector Storage\n\n19. Technical Implementation Stack - Memory\n\n20. Technical Implementation Stack - Fallback AI\n\n21. BBChat is a conversational AI booking system for vacation rental properties. A conversational AI system for vacation rentals, characterized by a unified processing pipeline that integrates: a natural language date parser with hierarchical intent classification; a three-tier hierarchical availability search algorithm with autonomous escalation, economic parity filtering, and weighted composite ranking; and a coordinate-to-service-template dynamic mapping module.\n\n22. The three-tier search algorithm is part of BBChat's patentable aspects. The multi-tier search process includes a first tier for exact date range matching; a second tier for symmetric date range expansion and filtering based on economic parity and minimum stay requirements; and a third tier for asymmetric date range expansion and filtering based on economic parity and minimum stay requirements. The three-tier search provides a seamless, intelligent, and highly efficient alternative discovery mechanism, surpassing conventional systems. A conversational AI system for vacation rentals, characterized by a unified processing pipeline that integrates a three-tier hierarchical availability search algorithm.\n\n23. The three-tier search algorithm uses autonomous escalation. The system autonomously escalates through progressively wider date ranges upon detecting unavailability. Autonomous tier progression as a state machine means each tier's failure automatically triggers the next, a programmatic decision-making process adapting search strategy without external prompts, significant departure from sequential, user-driven search refinements. Progression between tiers is automatic upon unavailability detection. The method comprises initiating exact match, if unavailable automatically expanding symmetrically, if still unavailable automatically expanding asymmetrically. The three-tier search algorithm, coordinate-based geographic intelligence, and autonomous tier escalation are patentable aspects. A conversational AI system for vacation rentals, characterized by a unified processing pipeline that integrates a three-tier hierarchical availability search algorithm with autonomous escalation.\n\n24. The system automatically adapts its response strategy based on property-specific attributes.\n\n25. BBChat introduces a coordinate-based geographic intelligence system. The invention's non-obviousness lies in using geographic coordinates as the foundational, dynamic key for an intelligent, automated classification system. The patentable aspects reside in the coordinate-based geographic intelligence. The three-tier search algorithm, coordinate-based geographic intelligence, and autonomous tier escalation are patentable aspects. A conversational AI system for vacation rentals, characterized by a unified processing pipeline that integrates a coordinate-to-service-template dynamic mapping module.\n\n26. Tier 2 is triggered automatically by Tier 1 unavailability. Tier 2 queries an extended date range (requested_start_date - 7 days) to (requested_end_date + 7 days). If Tier 2 finds no suitable options, it autonomously escalates to Tier 3. The multi-tier search process includes a second tier for symmetric date range expansion. If unavailable, the method comprises automatically expanding the search symmetrically by a first predefined duration. If still unavailable, automatically expanding the search asymmetrically by a second predefined duration.\n\n27. The multi-tier search process includes filtering based on economic parity. An economic parity filter module configured to select available periods whose average nightly rate is within a predefined percentage of an original requested period's rate. The economic parity filter is a sophisticated mechanism to ensure alternatives remain within a user's implicit budget expectations. A conversational AI system for vacation rentals, characterized by a unified processing pipeline that integrates a three-tier hierarchical availability search algorithm with economic parity filtering.\n\n28. The classification algorithm takes property coordinates {lat, lon} as input. Geographic analysis includes elevation. Geographic analysis includes proximity to natural features (coast, mountains), urban centers. Geographic analysis includes climate zone determination. Geographic coordinates are processed through classification algorithms that analyze elevation, proximity to natural features, and climate data to assign property type (coastal/mountain/desert/urban), independent of PMS property type fields. The geographic classifier performs real-time geographic analysis. The geographic classifier dynamically assigns a property type classification. The geographic classifier acts as a dynamic feature engineering engine. The geographic classifier allows the system to infer property characteristics and dynamically configure the conversational AI's knowledge base and service integrations in real-time. A method for dynamically configuring a conversational AI system for vacation rental properties, comprising: receiving geographic coordinates associated with a property; performing a geographic analysis on said coordinates to determine a property classification (e.g., coastal, mountain, desert, urban). A method for generating contextually relevant conversational responses ... comprising: receiving geographic coordinates of a property; classifying the property into a geographic category (e.g., coastal, mountain, desert, urban) based on said coordinates.\n\n29. The third stage of the NLP pipeline is Minimum Stay Logic. The user is explicitly informed about minimum stay extensions. The natural language date parser enables proactive, transparent handling of booking constraints like minimum stays. The extraction includes automatically extending single-day requests to meet a minimum stay requirement and transparently informing the user of said extension.\n\n30. The Logic Engine is n8n workflow automation. The Logic Engine ensures seamless execution of multi-tier search and dynamic service mapping. The Logic Engine manages the flow between different modules and external services.\n\n31. Geographic Services: Dynamic API selection based on property coordinates.\n\n32. The three-tier search algorithm, coordinate-based geographic intelligence, and autonomous tier escalation could be implemented using any combination of technologies. It is critical to emphasize that the patentable aspects of BBChat reside in the algorithmic methods and system design, particularly the three-tier hierarchical availability search with autonomous escalation, the coordinate-based geographic intelligence, and the hierarchical natural language date parsing. These innovations are independent of any specific software platforms or vendor implementations and can be realized using various technological combinations.\n\n33. The core innovation transforms the user experience by integrating advanced search algorithms with dynamic, context-aware intelligence.\n\n34. The core innovation is achieved through a synergistic combination of the three-tier search, geographic intelligence, and natural language date parser.\n\n35. Claim 6: A non-transitory computer-readable medium storing instructions that, when executed by a processor, cause the processor to perform a method for autonomous, single-turn hierarchical availability searching.",
+          "expandedConcept": "**SECTION 1: INVENTORY & EXPANSION**\n\n**Extraction List:**\n\n1.  Single Conversational Turn Execution\n2.  Dynamic Loading of Contextual Services\n3.  Problem Solved: Manual Search Friction\n4.  Problem Solved: Existing Chatbot Limitations\n5.  Tier 1 - Exact Match Search\n6.  Weighted Composite Ranking Algorithm\n7.  Tier 3 - Asymmetric Expansion\n8.  Problem Solved: Generic Chatbots and Hardcoding\n9.  Coordinate-to-Service-Template Dynamic Mapping Mechanism\n10. Property Classification Examples (coastal, mountain, desert, urban)\n11. Problem Solved: Natural Language Date Input Difficulties\n12. Natural Language Date Parser with Hierarchical Intent Classification\n13. NLP Stage 1: Intent Classification\n14. NLP Stage 2: Specialized Parsing Based on Intent\n15. System Architecture Overview\n16. Technical Implementation Stack - NLP Engine (OpenAI GPT-4)\n17. Technical Implementation Stack - PMS Integration (Hostaway API)\n18. Technical Implementation Stack - Vector Storage (Supabase)\n19. Technical Implementation Stack - Memory (PostgreSQL)\n20. Technical Implementation Stack - Fallback AI (Google Gemini)\n21. Conversational AI booking system for vacation rental properties\n22. Unified processing pipeline\n23. Three-tier hierarchical availability search algorithm\n24. Autonomous escalation\n25. Economic parity filtering\n26. Tier 2 - Symmetric Expansion\n27. Minimum stay requirements\n28. Autonomous tier progression as a state machine\n29. Coordinate-based geographic intelligence system\n30. Geographic coordinates {lat, lon} as input\n31. Geographic analysis: elevation\n32. Geographic analysis: proximity to natural features (coast, mountains), urban centers\n33. Geographic analysis: climate zone determination\n34. Dynamic property type classification\n35. Dynamic feature engineering engine\n36. NLP Stage 3: Minimum Stay Logic\n37. Transparently informing the user of said extension\n38. Logic Engine (n8n workflow automation)\n39. Dynamic API selection based on property coordinates\n40. Algorithmic methods and system design are platform-independent\n41. Synergistic combination of components\n42. Non-transitory computer-readable medium\n43. First predefined duration (for symmetric expansion)\n44. Second predefined duration (for asymmetric expansion)\n45. Average nightly rate within a predefined percentage (20%)\n46. Weighted composite ranking factors: temporal overlap (40%), date proximity (35%), duration match (25%)\n47. Intent types: `holiday_search`, `soonest_search`, `month_search`, `specific_range`\n48. Intent-specific date formula (holiday: center_date ±7 days)\n49. Intent-specific date formula (soonest: today +90 days)\n50. Intent-specific date formula (month: month_start/end ±5 days)\n51. Waitlist option\n52. Tier 2 processing: parses all consecutive available periods ≥ minimum stay\n53. Tier 2 presents top 3 ranked options\n54. Ranking formula: Score = 0.4×(overlapping_days/requested_days) + 0.35×(1/(1+days_offset)) + 0.25×(min(available_nights,requested_nights)/max(available_nights,requested_nights))\n55. Geographic classification threshold (coastal: <500m elev. within 50km of coast)\n56. Geographic classification threshold (mountain: >1500m elev.)\n57. Geographic classification threshold (desert: Köppen climate BWh/BWk)\n58. Geographic classification threshold (urban: population density >1000/km²)\n59. Configurable parameters (expansion windows, parity thresholds, ranking weights)\n60. Single conversational response presenting results or unavailability status\n\n**Expansion List:**\n\n*   **Inferred Subsystems:**\n    1.  **Geographic Data Source Interface:** A dedicated software interface responsible for abstracting and dispatching queries to various external geographic information systems (GIS) to retrieve raw data required by the classifier, such as elevation from a Digital Elevation Model (DEM), climate zone data (e.g., Köppen-Geiger classifications), and proximity calculations based on geospatial databases.\n    2.  **Service Template Registry:** A persistent, queryable data structure (e.g., a lookup table or document database) that maps the output of the `Geographic Classifier` (e.g., \"coastal\") to a specific service template. Each template contains a schema defining the required external API endpoints, data transformation logic, and response formatting rules for that property type.\n    3.  **Response Synthesis Engine:** A final-stage processing module, orchestrated by the `Logic Engine`, responsible for ingesting the structured outputs from both the `Weighted Composite Ranking Module` (i.e., ranked booking alternatives) and the `Coordinate-to-Service-Template Dynamic Mapping Mechanism` (i.e., contextual data) and synthesizing them into a single, coherent, natural-language conversational response for the user.\n\n*   **Implied Novelty:**\n    *   The primary novelty is the synergistic, real-time integration of three distinct computational domains (probabilistic search, geospatial analysis, and hierarchical NLP) into a single, atomic transaction, defined as the `Single Conversational Turn Execution`. This transforms a series of discrete, user-driven actions (search, fail, modify search, get local info) into a fully autonomous, system-driven process that anticipates user needs and pre-computes solutions and context within one response cycle. The system's operation as an `autonomous tier progression as a state machine` is a non-obvious application of state machine principles to conversational booking, where unavailability is the state transition trigger.\n\n*   **Physical/Logical Component Relationships:**\n    *   The `Logic Engine (n8n)` acts as the central orchestrator, initiating and managing data flow between all other modules.\n    *   The `NLP Engine (OpenAI GPT-4)` receives the initial user utterance and passes a structured object containing the classified intent type and extracted date parameters to the `Logic Engine`.\n    *   The `Logic Engine` passes the property's `geographic coordinates {lat, lon}` to the `Geographic Classifier`, which uses the `Geographic Data Source Interface` to query external GIS data. The resulting classification key is used by the `Logic Engine` to query the `Service Template Registry`.\n    *   The `Logic Engine` initiates the `Three-tier hierarchical availability search algorithm` by first calling the `PMS Integration (Hostaway API)` for the `Tier 1 - Exact Match Search`.\n    *   Upon receiving an unavailability status from the PMS, the `Logic Engine` triggers `Tier 2` and subsequently `Tier 3`, passing the results of each to the `Economic Parity Filter Module` and then the `Weighted Composite Ranking Algorithm`.\n    *   The final ranked list of alternatives from the ranking module and the contextual data retrieved based on the selected service template are passed to the `Response Synthesis Engine`, which generates the final `single conversational response`.\n    *   `Memory (PostgreSQL)` is accessed by the `Logic Engine` to maintain conversation state, while `Vector Storage (Supabase)` is queried for property-specific knowledge base information during response synthesis. The `Fallback AI (Google Gemini)` is invoked by the `Logic Engine` if the initial intent classification fails or is out-of-scope.\n\n**SECTION 2: FINAL SPECIFICATION**\n\n**CORE CONCEPT DEFINITION:** Autonomous, Single-Turn, Context-Aware Conversational Booking System\n\n**FIELD OF INVENTION:** Automated Conversational Interfaces for Real Estate and Hospitality Management Systems\n\n**TECHNICAL PROBLEM ADDRESSED:** The system addresses the `Manual Search Friction`, `Existing Chatbot Limitations`, `Natural Language Date Input Difficulties`, and inefficiencies of `Generic Chatbots and Hardcoding` inherent in conventional booking platforms, which require users to perform repetitive, multi-turn interactions to find available dates and contextually relevant property information.\n\n**CORE SOLUTION MECHANISM:**\nA `conversational AI booking system for vacation rental properties` is defined by a `unified processing pipeline` that executes a complex, multi-faceted booking inquiry within a `Single Conversational Turn Execution`. The system's physical architecture comprises a central `Logic Engine (n8n workflow automation)` that orchestrates a set of specialized modules: a `Natural Language Date Parser with Hierarchical Intent Classification` executed by an `NLP Engine (OpenAI GPT-4)`; a `Three-tier hierarchical availability search algorithm` with an integrated `Economic Parity Filter Module` and a `Weighted Composite Ranking Algorithm`; and a `Coordinate-to-Service-Template Dynamic Mapping Mechanism` which contains a `Geographic Classifier` that acts as a `dynamic feature engineering engine`. This core system is supported by a `PMS Integration (Hostaway API)` for live calendar data, `Vector Storage (Supabase)` for property knowledge, `Memory (PostgreSQL)` for conversation state, a `Fallback AI (Google Gemini)` for out-of-scope queries, and several inferred subsystems including a `Geographic Data Source Interface` for GIS data retrieval, a `Service Template Registry` for mapping classifications to API schemas, and a `Response Synthesis Engine` for final output generation. The entire system and its `algorithmic methods and system design are platform-independent`, capable of being stored on a `non-transitory computer-readable medium`.\n\nThe operational workflow initiates upon ingestion of a user's natural language request, which is first processed by the `NLP Stage 1: Intent Classification` to categorize the query into types such as `holiday_search`, `soonest_search`, `month_search`, or `specific_range`. This classification dictates the `NLP Stage 2: Specialized Parsing Based on Intent`, which applies `configurable parameters` and intent-specific date formulas (e.g., `holiday: center_date ±7 days`, `soonest: today +90 days`, `month: month_start/end ±5 days`) to derive a precise search window. The `NLP Stage 3: Minimum Stay Logic` then automatically adjusts the request to meet `minimum stay requirements` retrieved from the PMS, `transparently informing the user of said extension`. Concurrently, the `coordinate-based geographic intelligence system` processes the property's `geographic coordinates {lat, lon}` through the `Geographic Classifier`, which performs a `geographic analysis` of `elevation`, `proximity to natural features`, and `climate zone determination` against defined thresholds (e.g., `coastal: <500m elev. within 50km of coast`, `mountain: >1500m elev.`, `desert: Köppen climate BWh/BWk`, `urban: population density >1000/km²`) for `dynamic property type classification`. This classification triggers a `Dynamic API selection based on property coordinates` via the `Service Template Registry`, enabling the `Dynamic Loading of Contextual Services`. Simultaneously, the `Three-tier hierarchical availability search algorithm` executes as an `autonomous tier progression as a state machine`: `Tier 1 - Exact Match Search` queries the PMS; upon unavailability, it triggers `autonomous escalation` to `Tier 2 - Symmetric Expansion`, which queries an expanded range using a `first predefined duration` (e.g., ±7 days), parses all consecutive available periods, and applies `economic parity filtering` (e.g., average nightly rate within a `predefined percentage` of 20% of the original). Should Tier 2 fail, the system again escalates to `Tier 3 - Asymmetric Expansion`, using a `second predefined duration` that is unequal (e.g., -15/+31 days).\n\nResults from Tiers 2 and 3 are processed by the `Weighted Composite Ranking Algorithm`, which scores alternatives based on a formula incorporating `weighted composite ranking factors` of `temporal overlap (40%)`, `date proximity (35%)`, and `duration match (25%)`, mathematically defined as: `Score = 0.4×(overlapping_days/requested_days) + 0.35×(1/(1+days_offset)) + 0.25×(min(available_nights,requested_nights)/max(available_nights,requested_nights))`. This `synergistic combination of components` allows for variant configurations based on the aforementioned `configurable parameters` for expansion windows, parity thresholds, and ranking weights. The system handles edge cases such as complete unavailability in Tier 3 by presenting a `waitlist option`. The `Property Classification Examples` (coastal, mountain, desert, urban) demonstrate the system's adaptability, where each classification results in a different set of dynamically loaded services and conversational responses tailored to the geographic context.\n\nThe system's integration is managed by the `Logic Engine`, which funnels the ranked availability results and the contextual geographic data into the `Response Synthesis Engine`. This engine generates a `single conversational response presenting results or unavailability status`, which may include the `top 3 ranked options` from the search, effectively consolidating what would be a multi-step, user-driven process into a single, autonomous system action. The `PMS Integration` is critical for providing the real-time availability and rate data that serves as the trigger for state transitions in the search algorithm and as the basis for the economic parity filter. The `Dynamic API selection` ensures that external data services are connected on-demand based on the property's real-world location, fulfilling the promise of a system that requires zero hardcoding for contextual relevance.",
+          "selectedIdeas": [
+            {
+              "id": "concept-1-1766511016541",
+              "text": "Single conversational turn execution pipeline that integrates probabilistic availability search, geospatial analysis, and hierarchical natural language processing into an atomic transaction."
+            },
+            {
+              "id": "concept-2-1766511016541",
+              "text": "Three-tier hierarchical availability search algorithm functioning as a state machine that autonomously escalates from exact match to symmetric and asymmetric temporal expansions based on real-time unavailability status."
+            },
+            {
+              "id": "concept-3-1766511016541",
+              "text": "Weighted composite ranking algorithm for booking alternatives that calculates a match score using a weighted sum of temporal overlap, date proximity offset, and duration match ratios."
+            },
+            {
+              "id": "concept-4-1766511016541",
+              "text": "Coordinate-based geographic intelligence system that classifies property types by analyzing elevation, climate zone data, and proximity to natural features to trigger dynamic service loading."
+            },
+            {
+              "id": "concept-5-1766511016541",
+              "text": "Service template registry that maps geographic classification keys to specific API schemas, data transformation logic, and response formatting rules for on-demand contextual data retrieval."
+            },
+            {
+              "id": "concept-6-1766511016541",
+              "text": "Intent-specific date formula generator that applies unique temporal offsets and center-date calculations based on classified user intent types."
+            },
+            {
+              "id": "concept-7-1766511016541",
+              "text": "Economic parity filter module that prunes booking alternatives based on a predefined percentage threshold of the average nightly rate relative to the original request."
+            },
+            {
+              "id": "concept-8-1766511016541",
+              "text": "Asymmetric search window expansion logic that applies unequal temporal buffers to the start and end of a requested date range to maximize availability discovery."
+            }
+          ],
+          "whiteSpaceAnalysis": {
+            "strategicDirective": "# Strategic Directive for Claims Drafting\n\n## Nugget 1: undefined\n* **Risk Level:** Yellow\n* **Primary Prior Art:** US-11393475-B1 - Conversational system for recognizing, understanding, and acting on multiple intents and hypotheses\n* **The Constraint:** \"The prior art claims a system where 'one or more utterances are received and processed through a plurality of machine learning algorithms to establish precise meanings, additional intentions, and alternative hypothesis' to deliver 'human-like dialogue.'\"\n* **The White Space Strategy:** \"Draft claims that restrict the invention to a geographic-to-service mapping mechanism that executes a three-tier autonomous search state machine (Exact, Symmetric, Asymmetric) where tier transitions are triggered by unavailability and results are ranked via a weighted composite formula: Score = 0.4×(temporal_overlap) + 0.35×(date_proximity) + 0.25×(duration_match), while concurrently loading contextual API templates based on environmental feature engineering (elevation, Köppen climate zones, and coastal proximity thresholds).\"\n* **Differentiation Logic:** \"The prior art focuses on the probabilistic resolution of multiple intents and hypotheses to improve natural language understanding; our invention functions via a deterministic state machine that manages availability search failure through specific temporal expansion tiers and a geographic feature engineering engine that reconfigures the system's API service stack based on geospatial coordinates. This technical distinction must be the focal point of Independent Claim 1 because it moves beyond general intent recognition into a specific architectural implementation of autonomous resource discovery and environment-aware service loading, which is a functional improvement in booking system efficiency rather than just a dialogue improvement.\"\n\n## Nugget 2: undefined\n* **Risk Level:** Yellow\n* **Primary Prior Art:** US-11507428-B2 - System and method for resource allocation\n* **The Constraint:** \"The prior art claims 'one or more adjustment criteria for defining, for one or more of the events, one or more permissibly adjusted time periods from the desired time period' and 'determining, based on the resource availability data, a viable time period'.\"\n* **The White Space Strategy:** \"Draft claims that restrict the search to an autonomous three-tier state machine progression comprising: (1) an exact match search, (2) a symmetric expansion search triggered by exact match failure using a first predefined duration, and (3) an asymmetric expansion search triggered by symmetric failure using a second unequal duration, where results are filtered by an economic parity module enforcing a maximum nightly rate variance (e.g., 20%) and ranked via a weighted composite score of temporal overlap, date proximity, and duration match.\"\n* **Differentiation Logic:** \"The prior art requires general 'adjustment criteria' to find 'permissibly adjusted time periods' for recurring events; our invention functions via a specific hierarchical state machine that escalates from symmetric to asymmetric temporal expansions only upon sequential unavailability. This distinction is critical because it defines a specific algorithmic path for the 'autonomous tier progression' that is not present in the prior art's general adjustment logic. Furthermore, the inclusion of an economic parity filter as a hard constraint for 'viability' creates a distinct legal separation from the prior art's purely temporal adjustments, ensuring that suggested alternatives are not only available but also financially equivalent to the user's original intent.\"\n\n## Nugget 3: undefined\n* **Risk Level:** Yellow\n* **Primary Prior Art:** US-12182211-B2 - Matching online accounts with overlapping characteristics based on non-homogenous data types\n* **The Constraint:** \"The prior art claims a matching algorithm that 'modifies weights for matches detected between the first plurality of values and the second plurality of values based on the event date window' to generate a match recommendation.\"\n* **The White Space Strategy:** \"Draft claims that explicitly restrict the invention to an autonomous tier-progression state machine for inventory search, where state transitions are triggered by null availability results, specifically executing a sequence of: (1) exact match search, (2) symmetric temporal expansion with economic parity filtering, and (3) asymmetric temporal expansion, combined with a geographic classifier that dynamically selects API service templates based on elevation and climate zone thresholds.\"\n* **Differentiation Logic:** \"The prior art requires modifying weights within a static event date window to find similarities between accounts; our invention functions via a dynamic state machine that iteratively expands search parameters only when previous tiers return zero results. This technical distinction must be the focal point of Independent Claim 1 because it moves beyond simple 'weighting' of existing matches and instead defines a specific algorithmic recovery logic for hospitality inventory. Furthermore, the integration of geographic feature engineering (e.g., elevation and Köppen climate classifications) to drive the 'Single Conversational Turn' context is entirely absent from the prior art's account-matching focus, providing a secondary layer of legal separation based on the 'Coordinate-to-Service-Template' mapping mechanism.\"\n\n## Nugget 4: undefined\n* **Risk Level:** Yellow\n* **Primary Prior Art:** US-11983203-B1 - Systems and methods of establishing correlative relationships between geospatial data features in feature vectors representing property locations\n* **The Constraint:** \"The prior art claims an automated system that engineers 'customized feature vectors from geospatial information system (GIS) metadata' by 'extracting metadata for GIS features located within a predetermined distance of a property' to identify 'correlation between each of the extracted GIS features... and a market assessment of the property location.'\"\n* **The White Space Strategy:** \"Draft claims that explicitly restrict the invention to an autonomous state-machine-driven booking engine that executes a three-tier hierarchical search (symmetric and asymmetric temporal expansion) triggered by unavailability, combined with a coordinate-to-service-template mapping mechanism that dynamically selects and loads external API schemas based on geographic classification thresholds (e.g., elevation, climate zone, and population density) to synthesize a single-turn conversational response.\"\n* **Differentiation Logic:** \"The prior art requires the use of GIS metadata to generate feature vectors for the purpose of property market assessment and valuation; our invention functions via a search-and-rescue state machine that uses geographic coordinates to dynamically select service templates for API orchestration. This technical distinction must be the focal point of Independent Claim 1 because it moves the use of geospatial data from 'valuation/correlation' to 'dynamic service discovery and contextual response synthesis.' Furthermore, the prior art does not disclose the hierarchical temporal expansion logic (Tiers 1-3) or the economic parity filtering (20% nightly rate threshold) used to autonomously navigate booking unavailability, which provides a distinct functional utility in the domain of conversational hospitality interfaces.\"\n\n## Nugget 5: undefined\n* **Risk Level:** Yellow\n* **Primary Prior Art:** US-11874859-B2 - Method of and system for defining a service for serving map images\n* **The Constraint:** \"The prior art claims 'generating an API or an API template for use with a map service' where the API generates 'metadata for a set of one or more areas of interest (AOIs) and one or more date ranges' to provide 'access to a dataset of surveys via getmap or gettile requests.'\"\n* **The White Space Strategy:** \"Draft claims that explicitly restrict the invention to a geographic classifier acting as a dynamic feature engineering engine that transforms raw coordinates into environmental classifications (coastal, mountain, desert, urban) based on specific physical thresholds—such as elevation above 1500m for mountain status or Köppen climate BWh/BWk for desert status—and then maps these classifications to non-map service templates for conversational response synthesis.\"\n* **Differentiation Logic:** \"The prior art requires the generation of API templates specifically for map services and survey datasets based on geographic areas of interest; our invention functions via a geographic intelligence system that performs multi-factor environmental analysis (elevation, climate, and population density) to classify a property type and dynamically load contextual service APIs (e.g., tide data for coastal, ski conditions for mountain) within a single-turn conversational booking transaction. This technical distinction must be the focal point of Independent Claim 1 because it moves beyond mere coordinate-based data retrieval to an autonomous classification and service-mapping logic that adapts the entire system's functional capabilities based on the physical environment of the property, which is not taught by map-metadata generation.\"\n\n## Nugget 6: undefined\n* **Risk Level:** Yellow\n* **Primary Prior Art:** US-12079779-B2 - Multiple data source date-based user interface system and method\n* **The Constraint:** \"The prior art claims a system to 'integrate date-related data from a variety of disparately defined data sources into a single user interface' using 'tactics that are associated with types' and 'cues used to automate the generation of date-related tactics' based on trigger events in a subscribed database.\"\n* **The White Space Strategy:** \"Draft claims that explicitly restrict the invention to an autonomous state-machine driven search comprising a three-tier hierarchical progression (exact match, symmetric expansion, and asymmetric expansion) triggered by inventory unavailability, where results are filtered by an economic parity threshold and ranked using a weighted composite algorithm (temporal overlap, date proximity, and duration match). Further restrict the claims to include a geographic intelligence engine that maps latitude/longitude coordinates to specific service templates based on elevation, climate zone, and proximity to natural features to dynamically load external APIs.\"\n* **Differentiation Logic:** \"The prior art focuses on the aggregation and UI-integration of disparate date-based data ('tactics') into a static or cue-triggered display; our invention functions via an active, autonomous search state machine that dynamically modifies search parameters (expanding date windows asymmetrically) and applies a specific mathematical ranking formula (Score = 0.4×overlap + 0.35×proximity + 0.25×duration) to non-exact matches. This technical distinction is the focal point because it moves beyond mere data integration into autonomous problem-solving (finding alternatives when the primary request fails) and utilizes geospatial feature engineering (elevation/climate thresholds) to determine which contextual services to load, a mechanism entirely absent from the prior art's UI-centric approach.\"\n\n## Nugget 7: undefined\n* **Risk Level:** Yellow\n* **Primary Prior Art:** US-11709903-B2 - Accommodation search\n* **The Constraint:** \"The prior art claims 'determining a basic list of accommodations that correspond with the trip parameters' and 'aggregating the weight values of the one or more factors that apply to each individual accommodation to determine an aggregate weighted score'.\"\n* **The White Space Strategy:** \"Draft claims that explicitly restrict the invention to an autonomous state machine that triggers a multi-tier search expansion sequence (Exact Match, Symmetric Expansion, and Asymmetric Expansion) only upon a null result from a primary search, where each expansion tier is validated by an economic parity filter ensuring the average nightly rate remains within a predefined percentage of the original request.\"\n* **Differentiation Logic:** \"The prior art requires a 'basic list' of results that already correspond to trip parameters before ranking occurs; our invention functions via an autonomous tier progression as a state machine that dynamically generates alternatives when the 'basic list' is empty. This technical distinction must be the focal point of Independent Claim 1 because it moves beyond static parameter matching into a recursive, conditional search logic that uses economic parity filtering and asymmetric temporal expansion to synthesize a response in a single conversational turn, a mechanism entirely absent from the prior art's linear search-and-sort methodology.\"\n\n## Nugget 8: undefined\n* **Risk Level:** Yellow\n* **Primary Prior Art:** US-11074110-B1 - System and method for resource allocation\n* **The Constraint:** \"The prior art claims a method for 'defining, for one or more of the events, one or more permissibly adjusted time periods from the desired time period' and 'determining, based on the resource availability data, a viable time period' that 'satisfies the one or more adjustment criteria.'\"\n* **The White Space Strategy:** \"Draft claims that restrict the search mechanism to an autonomous state machine executing a three-tier hierarchical progression (Exact Match, Symmetric Expansion, and Asymmetric Expansion) where escalation is triggered specifically by a null availability return from a Property Management System (PMS). Claims must incorporate the economic parity filter (restricting results to a predefined percentage of the original average nightly rate) and the weighted composite ranking formula: Score = 0.4×(temporal overlap) + 0.35×(date proximity) + 0.25×(duration match).\"\n* **Differentiation Logic:** \"The prior art utilizes general 'adjustment criteria' to find 'viable time periods' for recurring events; our invention functions via an autonomous state machine that executes specific hierarchical tiers of expansion (symmetric ±7 days followed by asymmetric -15/+31 days) only when the preceding tier fails. This technical distinction must be the focal point of Independent Claim 1 because it replaces generic 'adjustment' with a specific, multi-stage algorithmic escalation logic that integrates real-time economic parity constraints and a multi-factor weighted ranking (40/35/25 ratio) to determine the 'best' alternative, rather than just any 'viable' period. This creates legal separation by defining a specific computational path for handling unavailability in a single conversational turn that is not present in the prior art's resource allocation model.\"\n\n",
+            "nuggetAnalyses": [
+              {
+                "riskLevel": "Yellow",
+                "constraint": "The prior art claims a system where 'one or more utterances are received and processed through a plurality of machine learning algorithms to establish precise meanings, additional intentions, and alternative hypothesis' to deliver 'human-like dialogue.'",
+                "primaryPriorArt": "US-11393475-B1 - Conversational system for recognizing, understanding, and acting on multiple intents and hypotheses",
+                "whiteSpaceStrategy": "Draft claims that restrict the invention to a geographic-to-service mapping mechanism that executes a three-tier autonomous search state machine (Exact, Symmetric, Asymmetric) where tier transitions are triggered by unavailability and results are ranked via a weighted composite formula: Score = 0.4×(temporal_overlap) + 0.35×(date_proximity) + 0.25×(duration_match), while concurrently loading contextual API templates based on environmental feature engineering (elevation, Köppen climate zones, and coastal proximity thresholds).",
+                "differentiationLogic": "The prior art focuses on the probabilistic resolution of multiple intents and hypotheses to improve natural language understanding; our invention functions via a deterministic state machine that manages availability search failure through specific temporal expansion tiers and a geographic feature engineering engine that reconfigures the system's API service stack based on geospatial coordinates. This technical distinction must be the focal point of Independent Claim 1 because it moves beyond general intent recognition into a specific architectural implementation of autonomous resource discovery and environment-aware service loading, which is a functional improvement in booking system efficiency rather than just a dialogue improvement."
+              },
+              {
+                "riskLevel": "Yellow",
+                "constraint": "The prior art claims 'one or more adjustment criteria for defining, for one or more of the events, one or more permissibly adjusted time periods from the desired time period' and 'determining, based on the resource availability data, a viable time period'.",
+                "primaryPriorArt": "US-11507428-B2 - System and method for resource allocation",
+                "whiteSpaceStrategy": "Draft claims that restrict the search to an autonomous three-tier state machine progression comprising: (1) an exact match search, (2) a symmetric expansion search triggered by exact match failure using a first predefined duration, and (3) an asymmetric expansion search triggered by symmetric failure using a second unequal duration, where results are filtered by an economic parity module enforcing a maximum nightly rate variance (e.g., 20%) and ranked via a weighted composite score of temporal overlap, date proximity, and duration match.",
+                "differentiationLogic": "The prior art requires general 'adjustment criteria' to find 'permissibly adjusted time periods' for recurring events; our invention functions via a specific hierarchical state machine that escalates from symmetric to asymmetric temporal expansions only upon sequential unavailability. This distinction is critical because it defines a specific algorithmic path for the 'autonomous tier progression' that is not present in the prior art's general adjustment logic. Furthermore, the inclusion of an economic parity filter as a hard constraint for 'viability' creates a distinct legal separation from the prior art's purely temporal adjustments, ensuring that suggested alternatives are not only available but also financially equivalent to the user's original intent."
+              },
+              {
+                "riskLevel": "Yellow",
+                "constraint": "The prior art claims a matching algorithm that 'modifies weights for matches detected between the first plurality of values and the second plurality of values based on the event date window' to generate a match recommendation.",
+                "primaryPriorArt": "US-12182211-B2 - Matching online accounts with overlapping characteristics based on non-homogenous data types",
+                "whiteSpaceStrategy": "Draft claims that explicitly restrict the invention to an autonomous tier-progression state machine for inventory search, where state transitions are triggered by null availability results, specifically executing a sequence of: (1) exact match search, (2) symmetric temporal expansion with economic parity filtering, and (3) asymmetric temporal expansion, combined with a geographic classifier that dynamically selects API service templates based on elevation and climate zone thresholds.",
+                "differentiationLogic": "The prior art requires modifying weights within a static event date window to find similarities between accounts; our invention functions via a dynamic state machine that iteratively expands search parameters only when previous tiers return zero results. This technical distinction must be the focal point of Independent Claim 1 because it moves beyond simple 'weighting' of existing matches and instead defines a specific algorithmic recovery logic for hospitality inventory. Furthermore, the integration of geographic feature engineering (e.g., elevation and Köppen climate classifications) to drive the 'Single Conversational Turn' context is entirely absent from the prior art's account-matching focus, providing a secondary layer of legal separation based on the 'Coordinate-to-Service-Template' mapping mechanism."
+              },
+              {
+                "riskLevel": "Yellow",
+                "constraint": "The prior art claims an automated system that engineers 'customized feature vectors from geospatial information system (GIS) metadata' by 'extracting metadata for GIS features located within a predetermined distance of a property' to identify 'correlation between each of the extracted GIS features... and a market assessment of the property location.'",
+                "primaryPriorArt": "US-11983203-B1 - Systems and methods of establishing correlative relationships between geospatial data features in feature vectors representing property locations",
+                "whiteSpaceStrategy": "Draft claims that explicitly restrict the invention to an autonomous state-machine-driven booking engine that executes a three-tier hierarchical search (symmetric and asymmetric temporal expansion) triggered by unavailability, combined with a coordinate-to-service-template mapping mechanism that dynamically selects and loads external API schemas based on geographic classification thresholds (e.g., elevation, climate zone, and population density) to synthesize a single-turn conversational response.",
+                "differentiationLogic": "The prior art requires the use of GIS metadata to generate feature vectors for the purpose of property market assessment and valuation; our invention functions via a search-and-rescue state machine that uses geographic coordinates to dynamically select service templates for API orchestration. This technical distinction must be the focal point of Independent Claim 1 because it moves the use of geospatial data from 'valuation/correlation' to 'dynamic service discovery and contextual response synthesis.' Furthermore, the prior art does not disclose the hierarchical temporal expansion logic (Tiers 1-3) or the economic parity filtering (20% nightly rate threshold) used to autonomously navigate booking unavailability, which provides a distinct functional utility in the domain of conversational hospitality interfaces."
+              },
+              {
+                "riskLevel": "Yellow",
+                "constraint": "The prior art claims 'generating an API or an API template for use with a map service' where the API generates 'metadata for a set of one or more areas of interest (AOIs) and one or more date ranges' to provide 'access to a dataset of surveys via getmap or gettile requests.'",
+                "primaryPriorArt": "US-11874859-B2 - Method of and system for defining a service for serving map images",
+                "whiteSpaceStrategy": "Draft claims that explicitly restrict the invention to a geographic classifier acting as a dynamic feature engineering engine that transforms raw coordinates into environmental classifications (coastal, mountain, desert, urban) based on specific physical thresholds—such as elevation above 1500m for mountain status or Köppen climate BWh/BWk for desert status—and then maps these classifications to non-map service templates for conversational response synthesis.",
+                "differentiationLogic": "The prior art requires the generation of API templates specifically for map services and survey datasets based on geographic areas of interest; our invention functions via a geographic intelligence system that performs multi-factor environmental analysis (elevation, climate, and population density) to classify a property type and dynamically load contextual service APIs (e.g., tide data for coastal, ski conditions for mountain) within a single-turn conversational booking transaction. This technical distinction must be the focal point of Independent Claim 1 because it moves beyond mere coordinate-based data retrieval to an autonomous classification and service-mapping logic that adapts the entire system's functional capabilities based on the physical environment of the property, which is not taught by map-metadata generation."
+              },
+              {
+                "riskLevel": "Yellow",
+                "constraint": "The prior art claims a system to 'integrate date-related data from a variety of disparately defined data sources into a single user interface' using 'tactics that are associated with types' and 'cues used to automate the generation of date-related tactics' based on trigger events in a subscribed database.",
+                "primaryPriorArt": "US-12079779-B2 - Multiple data source date-based user interface system and method",
+                "whiteSpaceStrategy": "Draft claims that explicitly restrict the invention to an autonomous state-machine driven search comprising a three-tier hierarchical progression (exact match, symmetric expansion, and asymmetric expansion) triggered by inventory unavailability, where results are filtered by an economic parity threshold and ranked using a weighted composite algorithm (temporal overlap, date proximity, and duration match). Further restrict the claims to include a geographic intelligence engine that maps latitude/longitude coordinates to specific service templates based on elevation, climate zone, and proximity to natural features to dynamically load external APIs.",
+                "differentiationLogic": "The prior art focuses on the aggregation and UI-integration of disparate date-based data ('tactics') into a static or cue-triggered display; our invention functions via an active, autonomous search state machine that dynamically modifies search parameters (expanding date windows asymmetrically) and applies a specific mathematical ranking formula (Score = 0.4×overlap + 0.35×proximity + 0.25×duration) to non-exact matches. This technical distinction is the focal point because it moves beyond mere data integration into autonomous problem-solving (finding alternatives when the primary request fails) and utilizes geospatial feature engineering (elevation/climate thresholds) to determine which contextual services to load, a mechanism entirely absent from the prior art's UI-centric approach."
+              },
+              {
+                "riskLevel": "Yellow",
+                "constraint": "The prior art claims 'determining a basic list of accommodations that correspond with the trip parameters' and 'aggregating the weight values of the one or more factors that apply to each individual accommodation to determine an aggregate weighted score'.",
+                "primaryPriorArt": "US-11709903-B2 - Accommodation search",
+                "whiteSpaceStrategy": "Draft claims that explicitly restrict the invention to an autonomous state machine that triggers a multi-tier search expansion sequence (Exact Match, Symmetric Expansion, and Asymmetric Expansion) only upon a null result from a primary search, where each expansion tier is validated by an economic parity filter ensuring the average nightly rate remains within a predefined percentage of the original request.",
+                "differentiationLogic": "The prior art requires a 'basic list' of results that already correspond to trip parameters before ranking occurs; our invention functions via an autonomous tier progression as a state machine that dynamically generates alternatives when the 'basic list' is empty. This technical distinction must be the focal point of Independent Claim 1 because it moves beyond static parameter matching into a recursive, conditional search logic that uses economic parity filtering and asymmetric temporal expansion to synthesize a response in a single conversational turn, a mechanism entirely absent from the prior art's linear search-and-sort methodology."
+              },
+              {
+                "riskLevel": "Yellow",
+                "constraint": "The prior art claims a method for 'defining, for one or more of the events, one or more permissibly adjusted time periods from the desired time period' and 'determining, based on the resource availability data, a viable time period' that 'satisfies the one or more adjustment criteria.'",
+                "primaryPriorArt": "US-11074110-B1 - System and method for resource allocation",
+                "whiteSpaceStrategy": "Draft claims that restrict the search mechanism to an autonomous state machine executing a three-tier hierarchical progression (Exact Match, Symmetric Expansion, and Asymmetric Expansion) where escalation is triggered specifically by a null availability return from a Property Management System (PMS). Claims must incorporate the economic parity filter (restricting results to a predefined percentage of the original average nightly rate) and the weighted composite ranking formula: Score = 0.4×(temporal overlap) + 0.35×(date proximity) + 0.25×(duration match).",
+                "differentiationLogic": "The prior art utilizes general 'adjustment criteria' to find 'viable time periods' for recurring events; our invention functions via an autonomous state machine that executes specific hierarchical tiers of expansion (symmetric ±7 days followed by asymmetric -15/+31 days) only when the preceding tier fails. This technical distinction must be the focal point of Independent Claim 1 because it replaces generic 'adjustment' with a specific, multi-stage algorithmic escalation logic that integrates real-time economic parity constraints and a multi-factor weighted ranking (40/35/25 ratio) to determine the 'best' alternative, rather than just any 'viable' period. This creates legal separation by defining a specific computational path for handling unavailability in a single conversational turn that is not present in the prior art's resource allocation model."
+              }
+            ]
+          }
+        },
+        "webhookUrl": "https://n8nplus.com/webhook/patent-claims",
+        "executionMode": "production"
+      }
+    ]
+  },
+  "meta": {
+    "instanceId": "176edf3e1044b225c67079c34f0bc844e51eb4b1b9d49705d2bb9da23e164773"
+  }
+}

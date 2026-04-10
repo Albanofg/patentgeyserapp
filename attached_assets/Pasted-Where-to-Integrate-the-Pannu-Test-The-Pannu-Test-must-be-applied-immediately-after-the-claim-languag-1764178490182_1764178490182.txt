@@ -1,0 +1,53 @@
+Where to Integrate the Pannu Test
+The Pannu Test must be applied immediately after the claim language is finalized and before the final Provisional Document is compiled.
+
+Stage of Insertion: Stage 4b (Claims Drafting).
+
+Exact Location: Insert the new sequence of nodes after the LLM Agent generates a single claim set (following the current AI Agent and Parse nodes) and before that claim set is merged and sent to the Aggregate All Claims node.
+
+Rationale: This ensures that every individual claim set (Independent Claim + dependents) is legally validated as having a certified human inventor before it becomes part of the final patent application.
+
+⚙️ How the Pannu Test Must Work (Two Asynchronous Sequences)
+The Pannu Test requires a mandatory pause for human interaction, necessitating two asynchronous sequences managed by two new, dedicated webhook endpoints.
+
+Sequence 1: Ask the Questions (Initial Trigger)
+This sequence runs automatically within your existing claims drafting loop.
+
+New Webhook 1 (e.g., /pannu-prompt-claims):
+
+This webhook is triggered by your existing claims flow, receiving the draft claim text, concept ID, and the crucial White Space Strategy.
+
+Pannu Prompt Engine (New LLM Agent):
+
+Input: Drafted Independent Claim and its White Space Strategy.
+
+Role: Pannu Test Question Generator.
+
+Action: Generates exactly 3-5 structured questions specifically targeted at proving the human contribution meets the Conception, Quality, and Exceeding Known Concepts criteria.
+
+Response to UI (Response Node):
+
+The workflow uses a Response Node to send the structured questions back to your running UI/API. The workflow instance then terminates/pauses, waiting for the human inventor to respond.
+
+Sequence 2: Validate the Answers (Continuation Trigger)
+This sequence is initiated by your UI/API layer once the human inventor submits their answers.
+
+New Webhook 2 (e.g., /pannu-validate-answers):
+
+This is the second, dedicated webhook that receives the human inventor's structured answers (the legal testimony) and the context (Claim ID, Claim Text).
+
+Inventorship Validator (New LLM Agent):
+
+Input: The original claim text and the structured human answers.
+
+Role: Inventorship Compliance Scorer.
+
+Action: Compares the human testimony against the technical language of the claim, generating a Pannu Confidence Score (0.0 to 1.0) and a final Certification Status (Certified or Rejected).
+
+Audit and Gate (Conditional Logic):
+
+A Conditional Logic Node checks the Pannu Confidence Score.
+
+TRUE Path: A Database/Log Node creates the Pannu Compliance Record (the audit trail) by logging the claim, answers, and score permanently. The certified claim is then passed to a Merge Node to continue to the Aggregate All Claims node.
+
+FALSE Path: The claim is routed out of the primary flow to be flagged for human attorney review or sent to a claims refinement loop.

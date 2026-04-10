@@ -1,0 +1,121 @@
+[
+  {
+    "data": [
+      {
+        "concept_id": "unknown",
+        "concept_text": "",
+        "category": "",
+        "index": 0,
+        "statutory_class": "System",
+        "strategy_summary": "The claims overcome the prior art by explicitly defining an autonomous sensor self-calibration loop using statistical process control and Kalman filtering without stored references, combined with an evolving multidimensional nutrient-uptake matrix and cross-crop transfer learning with reinforcement learning for predictive harvest optimization.",
+        "claims": [
+          {
+            "number": 1,
+            "text": "1. A hydroponic nutrient management system, comprising:\n    a plurality of hydroponic sensors configured to generate sensor data indicative of a hydroponic environment; and\n    a processing unit communicatively coupled to the plurality of hydroponic sensors and configured to:\n        perform autonomous sensor self-calibration by applying statistical process control to said sensor data to identify sensor drift patterns and employing Kalman filtering for real-time data correction, without requiring stored reference values for calibration;\n        generate and continuously refine an evolving multidimensional nutrient-uptake matrix for a specific crop, said matrix modeling specific nutritional needs of the crop by correlating calibrated sensor data, environmental factor data, historical nutrient dosing data, and observed growth rates, wherein said matrix dynamically adapts throughout a lifecycle of the specific crop to refine nutritional requirements for distinct growth stages; and\n        utilize a cross-crop transfer learning model with reinforcement learning, wherein said transfer learning model is configured to use a nutrient-uptake matrix from a first crop type to seed learning for a second crop type, and further configured to predictively optimize harvest objectives by autonomously controlling nutrient delivery based on said evolving multidimensional nutrient-uptake matrix; and\n    an automated nutrient dosing system communicatively coupled to the processing unit and configured to adjust nutrient delivery to a hydroponic crop based on commands from the processing unit."
+          },
+          {
+            "number": 2,
+            "text": "2. The hydroponic nutrient management system of claim 1, wherein the plurality of hydroponic sensors comprises a network of redundant sensors, and wherein the autonomous sensor self-calibration further employs algorithmic micro-calibration to ensure sustained data integrity."
+          },
+          {
+            "number": 3,
+            "text": "3. The hydroponic nutrient management system of claim 1, wherein the calibrated sensor data correlated by the evolving multidimensional nutrient-uptake matrix includes pH, electrical conductivity (EC), and specific ion concentrations."
+          },
+          {
+            "number": 4,
+            "text": "4. The hydroponic nutrient management system of claim 1, wherein the reinforcement learning for predictive optimization is configured to adjust nutrient delivery strategies in real-time to forecast yield and achieve predefined objectives, including accelerating growth cycles of the specific crop."
+          }
+        ],
+        "claims_count": 4,
+        "independent_claim": "1. A hydroponic nutrient management system, comprising:\n    a plurality of hydroponic sensors configured to generate sensor data indicative of a hydroponic environment; and\n    a processing unit communicatively coupled to the plurality of hydroponic sensors and configured to:\n        perform autonomous sensor self-calibration by applying statistical process control to said sensor data to identify sensor drift patterns and employing Kalman filtering for real-time data correction, without requiring stored reference values for calibration;\n        generate and continuously refine an evolving multidimensional nutrient-uptake matrix for a specific crop, said matrix modeling specific nutritional needs of the crop by correlating calibrated sensor data, environmental factor data, historical nutrient dosing data, and observed growth rates, wherein said matrix dynamically adapts throughout a lifecycle of the specific crop to refine nutritional requirements for distinct growth stages; and\n        utilize a cross-crop transfer learning model with reinforcement learning, wherein said transfer learning model is configured to use a nutrient-uptake matrix from a first crop type to seed learning for a second crop type, and further configured to predictively optimize harvest objectives by autonomously controlling nutrient delivery based on said evolving multidimensional nutrient-uptake matrix; and\n    an automated nutrient dosing system communicatively coupled to the processing unit and configured to adjust nutrient delivery to a hydroponic crop based on commands from the processing unit.",
+        "dependent_claims": [
+          "2. The hydroponic nutrient management system of claim 1, wherein the plurality of hydroponic sensors comprises a network of redundant sensors, and wherein the autonomous sensor self-calibration further employs algorithmic micro-calibration to ensure sustained data integrity.",
+          "3. The hydroponic nutrient management system of claim 1, wherein the calibrated sensor data correlated by the evolving multidimensional nutrient-uptake matrix includes pH, electrical conductivity (EC), and specific ion concentrations.",
+          "4. The hydroponic nutrient management system of claim 1, wherein the reinforcement learning for predictive optimization is configured to adjust nutrient delivery strategies in real-time to forecast yield and achieve predefined objectives, including accelerating growth cycles of the specific crop."
+        ],
+        "timestamp": "2025-11-20T17:04:03.547Z"
+      },
+      {
+        "concept_id": "unknown",
+        "concept_text": "",
+        "category": "",
+        "index": 0,
+        "raw_output": "```json\n{\n  \"strategy_summary\": \"The claims differentiate from prior art by focusing on autonomous sensor self-calibration using statistical process control and Kalman filtering without stored reference values, an evolving multidimensional nutrient-uptake matrix that dynamically adapts throughout a crop's lifecycle, and cross-crop transfer learning with reinforcement learning for predictive harvest optimization.\",\n  \"statutory_class\": \"System\",\n  \"independent_claim\": \"1. A hydroponic nutrient management system comprising:\\n    a sensor network configured to monitor a plurality of hydroponic parameters;\\n    a processing unit coupled to the sensor network and configured to:\\n        autonomously detect and correct sensor drift using statistical process control and Kalman filtering without requiring stored reference values;\\n        generate and continuously refine an evolving multidimensional nutrient-uptake matrix for a crop, said matrix correlating said monitored hydroponic parameters, environmental data, historical nutrient dosing data, and observed growth rates, wherein said matrix dynamically models nutrient requirements throughout a lifecycle of said crop;\\n        implement a cross-crop transfer learning model configured to seed learning for a new crop using a completed nutrient-uptake matrix from a different crop; and\\n        execute a predictive harvest optimization model using reinforcement learning to autonomously control one or more automated dosing pumps based on said refined nutrient-uptake matrix, thereby adjusting nutrient delivery strategies in real-time to achieve predefined growth objectives.\",\n  \"dependent_claims\": [\n    \"2. The system of claim 1, wherein the sensor network is configured to monitor pH, electrical conductivity (EC), and specific ion concentrations of a nutrient solution.\",\n    \"3. The system of claim 1, wherein autonomously detecting and correcting sensor drift using statistical process control comprises identifying drift patterns based on real-time statistical deviations from expected sensor behavior without manual intervention.\",\n    \"4. The system of claim 1, wherein the predictive harvest optimization model uses reinforcement learning to achieve predefined growth objectives including accelerating growth cycles, optimizing yield, or improving crop quality.\"\n  ]\n}\n```",
+        "timestamp": "2025-11-20T17:04:11.647Z"
+      },
+      {
+        "concept_id": "unknown",
+        "concept_text": "",
+        "category": "",
+        "index": 0,
+        "statutory_class": "System",
+        "strategy_summary": "The claims differentiate from prior art by defining an autonomous nutrient management system that employs self-calibration of sensors using statistical process control and Kalman filtering without stored reference values, coupled with a dynamically evolving multidimensional nutrient-uptake matrix, and a cross-crop transfer learning module utilizing reinforcement learning for predictive harvest optimization.",
+        "claims": [
+          {
+            "number": 1,
+            "text": "1. A system for autonomous nutrient management in hydroponic agriculture, the system comprising:\n  a sensor network configured to acquire hydroponic cultivation data from a plurality of redundant hydroponic sensors;\n  a processing unit coupled to the sensor network;\n  an autonomous sensor self-calibration module executable by the processing unit, configured to continuously monitor data streams from the sensor network, identify sensor drift patterns using statistical process control, and employ Kalman filtering for real-time data correction and algorithmic micro-calibration without requiring stored reference values for sensitivity drift determination;\n  a nutrient-uptake matrix generation module executable by the processing unit, configured to generate and continuously refine an evolving multidimensional nutrient-uptake matrix for a specific crop, said matrix modeling specific nutritional needs by correlating inputs from said calibrated sensor network, environmental factor data, historical nutrient dosing data, and observed growth rates, wherein said matrix dynamically adapts throughout a plant's lifecycle to refine nutritional requirements for distinct growth stages; and\n  a cross-crop transfer learning and predictive optimization module executable by the processing unit, configured to utilize a completed nutrient-uptake matrix from a first crop to seed and accelerate a learning curve for a second crop, and to employ reinforcement learning based on said evolving multidimensional nutrient-uptake matrix to autonomously control automated dosing pumps to adjust nutrient delivery strategies in real-time for predictive harvest optimization."
+          },
+          {
+            "number": 2,
+            "text": "2. The system of claim 1, wherein said evolving multidimensional nutrient-uptake matrix correlates inputs including pH levels, electrical conductivity (EC), specific ion concentrations, ambient temperature, humidity, light intensity, and historical nutrient solution volumes."
+          },
+          {
+            "number": 3,
+            "text": "3. The system of claim 1, wherein said predictive harvest optimization model is further configured to proactively achieve predefined objectives, including accelerating growth cycles or maximizing yield."
+          },
+          {
+            "number": 4,
+            "text": "4. The system of claim 1, further comprising an alert module configured to generate alerts for human intervention only when detected conditions exceed a predefined autonomous correction capability of the system."
+          }
+        ],
+        "claims_count": 4,
+        "independent_claim": "1. A system for autonomous nutrient management in hydroponic agriculture, the system comprising:\n  a sensor network configured to acquire hydroponic cultivation data from a plurality of redundant hydroponic sensors;\n  a processing unit coupled to the sensor network;\n  an autonomous sensor self-calibration module executable by the processing unit, configured to continuously monitor data streams from the sensor network, identify sensor drift patterns using statistical process control, and employ Kalman filtering for real-time data correction and algorithmic micro-calibration without requiring stored reference values for sensitivity drift determination;\n  a nutrient-uptake matrix generation module executable by the processing unit, configured to generate and continuously refine an evolving multidimensional nutrient-uptake matrix for a specific crop, said matrix modeling specific nutritional needs by correlating inputs from said calibrated sensor network, environmental factor data, historical nutrient dosing data, and observed growth rates, wherein said matrix dynamically adapts throughout a plant's lifecycle to refine nutritional requirements for distinct growth stages; and\n  a cross-crop transfer learning and predictive optimization module executable by the processing unit, configured to utilize a completed nutrient-uptake matrix from a first crop to seed and accelerate a learning curve for a second crop, and to employ reinforcement learning based on said evolving multidimensional nutrient-uptake matrix to autonomously control automated dosing pumps to adjust nutrient delivery strategies in real-time for predictive harvest optimization.",
+        "dependent_claims": [
+          "2. The system of claim 1, wherein said evolving multidimensional nutrient-uptake matrix correlates inputs including pH levels, electrical conductivity (EC), specific ion concentrations, ambient temperature, humidity, light intensity, and historical nutrient solution volumes.",
+          "3. The system of claim 1, wherein said predictive harvest optimization model is further configured to proactively achieve predefined objectives, including accelerating growth cycles or maximizing yield.",
+          "4. The system of claim 1, further comprising an alert module configured to generate alerts for human intervention only when detected conditions exceed a predefined autonomous correction capability of the system."
+        ],
+        "timestamp": "2025-11-20T17:04:22.573Z"
+      },
+      {
+        "concept_id": "unknown",
+        "concept_text": "",
+        "category": "",
+        "index": 0,
+        "statutory_class": "System",
+        "strategy_summary": "The claims differentiate from prior art by focusing on autonomous sensor self-calibration using statistical process control and Kalman filtering without stored reference values, an evolving multidimensional nutrient-uptake matrix that dynamically adapts throughout a crop's lifecycle via machine learning, and cross-crop transfer learning combined with reinforcement learning for predictive harvest optimization.",
+        "claims": [
+          {
+            "number": 1,
+            "text": "1. A system for automated nutrient management in hydroponic agriculture, the system comprising:\n    a plurality of hydroponic sensors;\n    a processing unit in communication with said plurality of hydroponic sensors;\n    a plurality of automated nutrient dosing pumps in communication with said processing unit;\n    an autonomous sensor self-calibration module, executable by said processing unit, configured to:\n        monitor data streams from said plurality of hydroponic sensors;\n        identify sensor drift patterns using statistical process control; and\n        employ Kalman filtering for real-time data correction and algorithmic micro-calibration without requiring stored reference values;\n    an evolving multidimensional nutrient-uptake matrix module, executable by said processing unit, configured to:\n        generate and continuously refine a unique, multidimensional nutrient-uptake matrix for a specific crop;\n        model said crop's specific nutritional needs by correlating inputs from said calibrated sensors, environmental factor data, historical nutrient dosing data, and observed growth rates; and\n        dynamically adapt said matrix throughout said crop's lifecycle via machine learning;\n    a cross-crop transfer learning and predictive optimization module, executable by said processing unit, configured to:\n        utilize a completed nutrient-uptake matrix from a first crop to seed and accelerate a learning curve for a second crop; and\n        employ reinforcement learning to autonomously control said plurality of automated nutrient dosing pumps based on said evolving multidimensional nutrient-uptake matrix to proactively achieve predefined yield optimization objectives."
+          },
+          {
+            "number": 2,
+            "text": "2. The system of claim 1, wherein said plurality of hydroponic sensors comprises sensors for detecting pH, electrical conductivity (EC), and specific ion concentrations."
+          },
+          {
+            "number": 3,
+            "text": "3. The system of claim 1, wherein said predefined yield optimization objectives comprise accelerating a growth cycle of said specific crop."
+          },
+          {
+            "number": 4,
+            "text": "4. The system of claim 1, wherein said autonomous sensor self-calibration module is further configured to monitor data streams from a network of redundant hydroponic sensors."
+          },
+          {
+            "number": 5,
+            "text": "5. The system of claim 1, wherein said environmental factor data correlated by the evolving multidimensional nutrient-uptake matrix module includes temperature, humidity, and light intensity."
+          }
+        ],
+        "claims_count": 5,
+        "independent_claim": "1. A system for automated nutrient management in hydroponic agriculture, the system comprising:\n    a plurality of hydroponic sensors;\n    a processing unit in communication with said plurality of hydroponic sensors;\n    a plurality of automated nutrient dosing pumps in communication with said processing unit;\n    an autonomous sensor self-calibration module, executable by said processing unit, configured to:\n        monitor data streams from said plurality of hydroponic sensors;\n        identify sensor drift patterns using statistical process control; and\n        employ Kalman filtering for real-time data correction and algorithmic micro-calibration without requiring stored reference values;\n    an evolving multidimensional nutrient-uptake matrix module, executable by said processing unit, configured to:\n        generate and continuously refine a unique, multidimensional nutrient-uptake matrix for a specific crop;\n        model said crop's specific nutritional needs by correlating inputs from said calibrated sensors, environmental factor data, historical nutrient dosing data, and observed growth rates; and\n        dynamically adapt said matrix throughout said crop's lifecycle via machine learning;\n    a cross-crop transfer learning and predictive optimization module, executable by said processing unit, configured to:\n        utilize a completed nutrient-uptake matrix from a first crop to seed and accelerate a learning curve for a second crop; and\n        employ reinforcement learning to autonomously control said plurality of automated nutrient dosing pumps based on said evolving multidimensional nutrient-uptake matrix to proactively achieve predefined yield optimization objectives.",
+        "dependent_claims": [
+          "2. The system of claim 1, wherein said plurality of hydroponic sensors comprises sensors for detecting pH, electrical conductivity (EC), and specific ion concentrations.",
+          "3. The system of claim 1, wherein said predefined yield optimization objectives comprise accelerating a growth cycle of said specific crop.",
+          "4. The system of claim 1, wherein said autonomous sensor self-calibration module is further configured to monitor data streams from a network of redundant hydroponic sensors.",
+          "5. The system of claim 1, wherein said environmental factor data correlated by the evolving multidimensional nutrient-uptake matrix module includes temperature, humidity, and light intensity."
+        ],
+        "timestamp": "2025-11-20T17:04:33.946Z"
+      }
+    ]
+  }
+]

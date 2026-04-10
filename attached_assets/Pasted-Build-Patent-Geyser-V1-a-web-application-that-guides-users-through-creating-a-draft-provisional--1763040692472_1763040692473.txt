@@ -1,0 +1,106 @@
+Build "Patent Geyser V1" - a web application that guides users through creating a draft provisional patent application for software, SaaS, or blockchain inventions.
+
+END GOAL
+The application produces a complete provisional patent draft that includes:
+
+Detailed specification document
+Prior art analysis
+Technical diagrams (system architecture, flowcharts, cloud diagrams)
+Ready to file with USPTO or review with a patent attorney
+
+
+CORE USER EXPERIENCE
+The Flow:
+Each agent produces output → User reviews and approves → Next agent starts with that approved output
+Example Flow:
+
+Agent 1 analyzes intake → User reviews screening results → User clicks "Looks good, refine this"
+Agent 2 creates draft spec → User reviews, adds missing details → User clicks "Run prior art search"
+Agent 3 finds prior art → User reviews patents, flags relevant ones → User clicks "Find white space"
+Agent 4 suggests improvements → User reviews changes → User clicks "Generate visuals"
+Agent 5 shows diagrams → User downloads complete provisional patent draft
+
+The key: Each transition is intentional and requires user approval, but each agent should feel like a completely different specialized application working toward the final patent draft.
+
+WHAT THE APP NEEDS TO DO
+1. User Authentication & Projects
+
+Users can log in
+Each user can have multiple patent projects
+Dashboard showing all their projects
+Click a project → Resume where they left off
+Each project tracks which agent stage it's on and stores all outputs
+
+2. 5 Distinct Agent Experiences
+Agent 1 - "The Interview"
+
+Feels conversational and welcoming
+Collects: patent idea, category (Software/SaaS/Blockchain), features, inventor info
+Sends to n8n webhook
+Displays initial screening results from n8n
+User button: "Start Refinement" (moves to Agent 2)
+
+Agent 2 - "The Workshop"
+
+Feels like a document editor
+Shows first draft specification from Agent 1's n8n results
+Shows first-pass prior art
+User can add missing information (editable fields)
+Sends refinements to n8n webhook
+User button: "Deep Prior Art Search" (moves to Agent 3)
+
+Agent 3 - "The Research Library"
+
+Feels like a patent database/search tool
+Displays detailed prior art results from n8n
+User can interact with results (flag, filter, review)
+User button: "Analyze White Space" (moves to Agent 4)
+
+Agent 4 - "The Strategy Room"
+
+Feels executive/professional
+Shows specification improvements from n8n
+Comparison view (before/after)
+User can approve or request changes
+User button: "Generate Diagrams" (moves to Agent 5)
+
+Agent 5 - "The Showcase"
+
+Feels polished and deliverable
+Displays final specification document
+Shows system diagrams (from Eraser via n8n)
+Shows flowcharts and cloud architecture
+Export complete provisional patent draft as PDF
+Download individual diagrams
+User button: "Complete Project" (back to dashboard)
+
+3. Architecture Requirements
+
+User authentication system
+Project storage (user ID, project data, current agent stage, all agent results)
+Sends webhooks to n8n workflows (all AI processing happens in n8n)
+Receives responses from n8n and displays results
+Auto-save user's work
+Database for users and projects
+PDF generation for final patent draft
+
+4. Critical Features
+
+Each agent has distinctly different UI/styling (not just different text on same template)
+Smooth visual transitions when moving between agents
+User never loses work (auto-save)
+Can revisit earlier agents if needed
+Loading states while n8n processes
+Final export combines all outputs into a complete provisional patent document
+
+
+WHAT YOU DON'T NEED TO BUILD
+
+The AI agent logic (n8n handles all processing)
+Patent analysis algorithms
+Eraser API calls (n8n does this)
+Patent legal review (this is a draft for attorney review)
+
+
+THE GOAL
+User feels like they're using 5 different specialized tools that expertly guide them from initial idea to a complete provisional patent draft, with clear approval/review points between each stage. The final deliverable is a professional document ready for USPTO filing or attorney review.

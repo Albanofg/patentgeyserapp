@@ -1,0 +1,75 @@
+[
+  {
+    "summary": {
+      "totalClaims": 8,
+      "independentClaims": 3,
+      "dependentClaims": 5,
+      "statutoryClasses": [
+        "system",
+        "method",
+        "medium"
+      ],
+      "dependentsByParent": {
+        "1": 5
+      }
+    },
+    "claims": [
+      {
+        "number": 1,
+        "type": "independent",
+        "statutoryClass": "system",
+        "parentClaim": null,
+        "text": "A system comprising:\na processor configured to:\nreceive a specification and original claims;\nperform an innovations inventory based on the specification;\nperform a coverage audit of the original claims; and\ngenerate a claim broadening blueprint comprising independent claim skeletons using functional, industry-agnostic language."
+      },
+      {
+        "number": 2,
+        "type": "independent",
+        "statutoryClass": "method",
+        "parentClaim": null,
+        "text": "A computer-implemented method comprising:\nreceiving a specification and original claims;\nperforming an innovations inventory based on the specification;\nperforming a coverage audit of the original claims; and\ngenerating a claim broadening blueprint comprising independent claim skeletons using functional, industry-agnostic language."
+      },
+      {
+        "number": 3,
+        "type": "independent",
+        "statutoryClass": "medium",
+        "parentClaim": null,
+        "text": "A non-transitory computer-readable medium storing instructions that, when executed by a processor, cause the processor to perform operations comprising:\nreceiving a specification and original claims;\nperforming an innovations inventory based on the specification;\nperforming a coverage audit of the original claims; and\ngenerating a claim broadening blueprint comprising independent claim skeletons using functional, industry-agnostic language."
+      },
+      {
+        "number": 4,
+        "type": "dependent",
+        "statutoryClass": "system",
+        "parentClaim": 1,
+        "text": "The system of claim 1, wherein the coverage audit of the original claims is a line-by-line coverage audit."
+      },
+      {
+        "number": 5,
+        "type": "dependent",
+        "statutoryClass": "system",
+        "parentClaim": 1,
+        "text": "The system of claim 1, wherein the claim broadening blueprint further comprises new dependent claims targeting unclaimed innovations."
+      },
+      {
+        "number": 6,
+        "type": "dependent",
+        "statutoryClass": "system",
+        "parentClaim": 1,
+        "text": "The system of claim 1, wherein the claim broadening blueprint further comprises a complete, drafter-ready dependent claim ladder."
+      },
+      {
+        "number": 7,
+        "type": "dependent",
+        "statutoryClass": "system",
+        "parentClaim": 1,
+        "text": "The system of claim 1, wherein the claim broadening blueprint further comprises necessary specification enhancements."
+      },
+      {
+        "number": 8,
+        "type": "dependent",
+        "statutoryClass": "system",
+        "parentClaim": 1,
+        "text": "The system of claim 1, wherein the claim broadening blueprint further comprises a §101 and Alice survival strategy."
+      }
+    ]
+  }
+]
