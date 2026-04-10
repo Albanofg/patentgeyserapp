@@ -28,7 +28,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { FileText, Plus, Loader2, Trash2, Edit } from "lucide-react";
 import type { Project, User } from "@shared/schema";
-import logoUrl from "@assets/geyser logo_1763486061835.png";
+import logoUrl from "@/assets/geyser-logo.png";
 
 export default function Dashboard() {
   const [, setLocation] = useLocation();

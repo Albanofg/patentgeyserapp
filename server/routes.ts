@@ -15,19 +15,26 @@ const SALT_ROUNDS = 10;
 // Agent processing timeout - 15 minutes for complex AI operations
 const AGENT_TIMEOUT = 900000; // 15 minutes in milliseconds
 
-// Webhook URLs for n8n agents
-const N8N_AGENT1_WEBHOOK = "https://n8nplus.com/webhook/patent-geyser-debate";
-const N8N_REANALYZE_WEBHOOK = "https://n8nplus.com/webhook/good-cop-bad-cop-2"; // Re-analysis with Advocate/Examiner
-const N8N_MECHANIC_WEBHOOK = "https://n8nplus.com/webhook/idea-modifier"; // Agent 1B - The Specialized Mechanic
-const N8N_LIST_CREATOR_WEBHOOK = "https://n8nplus.com/webhook/list-creator"; // Extract unified ideas list
-const N8N_AI_IDEA_MODIFIER_WEBHOOK = "https://n8nplus.com/webhook/ai-idea-modifier"; // Get AI suggestion for idea
-const N8N_WHITESPACE_WEBHOOK = "https://n8nplus.com/webhook/white-space-analysis";
-const N8N_PROVISIONAL_WEBHOOK = "https://n8nplus.com/webhook/provisional";
-const N8N_DIAGRAMS_WEBHOOK = "https://n8nplus.com/webhook/eraser-flowchart-creator";
-const N8N_PANNU_QUESTIONS_WEBHOOK = "https://n8nplus.com/webhook/pannu-test-generator";
-const N8N_PANNU_VALIDATE_WEBHOOK = "https://n8nplus.com/webhook/inventorship-compliance-scorer";
-const N8N_PANNU_AI_SUGGESTION_WEBHOOK = "https://n8nplus.com/webhook/pannu-helper";
-const N8N_PRACTITIONER_MATCH_WEBHOOK = "https://n8nplus.com/webhook/practitioner-match";
+// Webhook URLs for n8n agents — loaded from environment variables
+const N8N_AGENT1_WEBHOOK = process.env.N8N_AGENT1_WEBHOOK!;
+const N8N_REANALYZE_WEBHOOK = process.env.N8N_REANALYZE_WEBHOOK!;
+const N8N_MECHANIC_WEBHOOK = process.env.N8N_MECHANIC_WEBHOOK!;
+const N8N_LIST_CREATOR_WEBHOOK = process.env.N8N_LIST_CREATOR_WEBHOOK!;
+const N8N_AI_IDEA_MODIFIER_WEBHOOK = process.env.N8N_AI_IDEA_MODIFIER_WEBHOOK!;
+const N8N_WHITESPACE_WEBHOOK = process.env.N8N_WHITESPACE_WEBHOOK!;
+const N8N_PROVISIONAL_WEBHOOK = process.env.N8N_PROVISIONAL_WEBHOOK!;
+const N8N_DIAGRAMS_WEBHOOK = process.env.N8N_DIAGRAMS_WEBHOOK!;
+const N8N_PANNU_QUESTIONS_WEBHOOK = process.env.N8N_PANNU_QUESTIONS_WEBHOOK!;
+const N8N_PANNU_VALIDATE_WEBHOOK = process.env.N8N_PANNU_VALIDATE_WEBHOOK!;
+const N8N_PANNU_AI_SUGGESTION_WEBHOOK = process.env.N8N_PANNU_AI_SUGGESTION_WEBHOOK!;
+const N8N_PRACTITIONER_MATCH_WEBHOOK = process.env.N8N_PRACTITIONER_MATCH_WEBHOOK!;
+const N8N_QUICK_PRIOR_ART_WEBHOOK = process.env.N8N_QUICK_PRIOR_ART_WEBHOOK!;
+const N8N_R3_WEBHOOK = process.env.N8N_R3_WEBHOOK!;
+const N8N_MULTI_CONCEPT_SEARCH_WEBHOOK = process.env.N8N_MULTI_CONCEPT_SEARCH_WEBHOOK!;
+const N8N_DRAFT_PROVISIONAL_WEBHOOK = process.env.N8N_DRAFT_PROVISIONAL_WEBHOOK!;
+const N8N_CLAIMS_WEBHOOK = process.env.N8N_CLAIMS_WEBHOOK!;
+const N8N_BROADER_CLAIMS_WEBHOOK = process.env.N8N_BROADER_CLAIMS_WEBHOOK!;
+const N8N_QA_ASSISTANT_WEBHOOK = process.env.N8N_QA_ASSISTANT_WEBHOOK!;
 
 // Intent detection patterns for routing messages to Mechanic (1B) vs Brainstorm (1A)
 const MECHANIC_INTENT_PATTERNS = [
@@ -130,7 +137,7 @@ function getSession() {
   });
   
   return session({
-    secret: process.env.SESSION_SECRET || "patent-geyser-secret-key-change-in-production",
+    secret: process.env.SESSION_SECRET!,
     store: sessionStore,
     resave: true, // Resave session on each request to keep it alive
     rolling: true, // Reset maxAge on every request - keeps active users logged in
@@ -1273,7 +1280,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Quick Prior Art Check Routes (Standalone, not tied to a project)
   // ============================================
 
-  const N8N_QUICK_PRIOR_ART_WEBHOOK = "https://n8nplus.com/webhook/single-concept-search";
+  // Uses env var declared at top of file
 
   // Get user's prior art search history
   app.get("/api/prior-art-searches", isAuthenticated, async (req, res) => {
@@ -2629,7 +2636,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         let aiFixes: any[] = [];
         if (needsWorkDetailed.length > 0 && coreIdea) {
           console.log("=== ROUND 3: CALLING AI FIX WEBHOOK ===");
-          const r3WebhookUrl = "https://n8nplus.com/webhook/advocate-examiner-r3";
+          const r3WebhookUrl = N8N_R3_WEBHOOK;
           
           const r3Payload = {
             coreIdea,
@@ -3524,7 +3531,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Immediately trigger prior art search
       console.log("Starting prior art search...");
-      const webhookUrl = "https://n8nplus.com/webhook/multi-concept-search";
+      const webhookUrl = N8N_MULTI_CONCEPT_SEARCH_WEBHOOK;
       
       const webhookPayload = {
         sessionId: comprehensiveSummary?.sessionId,
@@ -3690,7 +3697,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log("Calling Agent 2 webhook with payload:", webhookPayload);
 
       // Call n8n webhook using production URL
-      const webhookData = await sendWebhook("https://n8nplus.com/webhook/draft-provisional", webhookPayload);
+      const webhookData = await sendWebhook(N8N_DRAFT_PROVISIONAL_WEBHOOK, webhookPayload);
       console.log("Agent 2 webhook response:", webhookData);
 
       // Store webhook response in Agent 2 data
@@ -3738,7 +3745,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const comprehensiveSummary = agent2DataObj.comprehensiveSummary;
 
       // Call webhook for prior art search
-      const webhookUrl = "https://n8nplus.com/webhook/multi-concept-search";
+      const webhookUrl = N8N_MULTI_CONCEPT_SEARCH_WEBHOOK;
       
       const webhookPayload = {
         sessionId: comprehensiveSummary?.sessionId,
@@ -4039,7 +4046,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
 
       console.log("Calling claims writer webhook...");
-      const N8N_CLAIMS_WEBHOOK = "https://n8nplus.com/webhook/patent-claims";
+      // Uses env var declared at top of file
       const webhookResponse = await sendWebhook(N8N_CLAIMS_WEBHOOK, webhookPayload);
       console.log("Claims writer response:", webhookResponse);
 
@@ -4617,7 +4624,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log("Has nuggetAnalyses:", !!agent4DataObj?.nuggetAnalyses);
       
       // Call n8n webhook for broader claims generation
-      const N8N_BROADER_CLAIMS_WEBHOOK = "https://n8nplus.com/webhook/claim-broader-agent";
+      // Uses env var declared at top of file
       const webhookResponse = await sendWebhook(N8N_BROADER_CLAIMS_WEBHOOK, webhookPayload);
       
       console.log("Broader claims webhook response received");
@@ -5564,7 +5571,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Q&A Assistant - chat with n8n agent
-  const N8N_QA_ASSISTANT_WEBHOOK = "https://n8nplus.com/webhook/qa-assistant";
+  // Uses env var declared at top of file
   
   // Comprehensive Patent Geyser process knowledge for the Q&A assistant
   const PATENT_GEYSER_PROCESS_KNOWLEDGE = `

@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Loader2, Shield, Mail, Smartphone } from "lucide-react";
-import geyserLogo from "@assets/geyser logo_1763486061835.png";
+import geyserLogo from "@/assets/geyser-logo.png";
 
 interface TwoFactorVerifyProps {
   method: 'email' | 'totp';

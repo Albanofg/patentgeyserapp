@@ -25,7 +25,7 @@ import { Home, LogOut, Sparkles, Wrench, Search, TrendingUp, Image, Lightbulb, C
 import { CodeModal } from "@/components/code-modal";
 import { QAAssistantModal } from "@/components/qa-assistant-modal";
 import type { Project, User } from "@shared/schema";
-import geyserLogo from "@assets/geyser logo_1763486061835.png";
+import geyserLogo from "@/assets/geyser-logo.png";
 
 const agentStages = [
   { number: 1, name: "Brainstorm", icon: Sparkles, description: "Advocate/Examiner", substages: [

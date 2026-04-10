@@ -11,6 +11,15 @@ vite.config.ts.*
 # Database dumps
 *.sql
 
+# Replit
+.replit
+replit.md
+
+# Dev docs & assets
+attached_assets
+design_guidelines.md
+docs
+
 # Claude
 .claude
 .local

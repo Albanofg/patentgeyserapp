@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useToast } from "@/hooks/use-toast";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { ArrowLeft, Check, X, Eye, EyeOff, Mail, Smartphone, Loader2 } from "lucide-react";
-import logoUrl from "@assets/geyser logo_1763486061835.png";
+import logoUrl from "@/assets/geyser-logo.png";
 import {
   InputOTP,
   InputOTPGroup,

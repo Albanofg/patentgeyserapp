@@ -6,7 +6,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { Loader2, Menu, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
-import geyserLogo from "@assets/geyser logo_1763486061835.png";
+import geyserLogo from "@/assets/geyser-logo.png";
 import Dashboard from "@/pages/dashboard";
 import Agent1 from "@/pages/agent1";
 import Agent1a from "@/pages/agent1a";
