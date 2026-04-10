@@ -9,6 +9,7 @@ import session from "express-session";
 import connectPg from "connect-pg-simple";
 import { generateSecret, generateURI, verify as verifyTOTP } from "otplib";
 import QRCode from "qrcode";
+import { runQAAssistant } from "./modules/module0/qa-assistant";
 
 const SALT_ROUNDS = 10;
 
@@ -34,7 +35,7 @@ const N8N_MULTI_CONCEPT_SEARCH_WEBHOOK = process.env.N8N_MULTI_CONCEPT_SEARCH_WE
 const N8N_DRAFT_PROVISIONAL_WEBHOOK = process.env.N8N_DRAFT_PROVISIONAL_WEBHOOK!;
 const N8N_CLAIMS_WEBHOOK = process.env.N8N_CLAIMS_WEBHOOK!;
 const N8N_BROADER_CLAIMS_WEBHOOK = process.env.N8N_BROADER_CLAIMS_WEBHOOK!;
-const N8N_QA_ASSISTANT_WEBHOOK = process.env.N8N_QA_ASSISTANT_WEBHOOK!;
+// N8N_QA_ASSISTANT_WEBHOOK — migrated to direct AI call (server/modules/qa/qa-assistant.ts)
 
 // Intent detection patterns for routing messages to Mechanic (1B) vs Brainstorm (1A)
 const MECHANIC_INTENT_PATTERNS = [
@@ -5570,82 +5571,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Q&A Assistant - chat with n8n agent
-  // Uses env var declared at top of file
-  
-  // Comprehensive Patent Geyser process knowledge for the Q&A assistant
-  const PATENT_GEYSER_PROCESS_KNOWLEDGE = `
-Patent Geyser is a 5-module workflow system designed to help inventors draft provisional patent applications for software, SaaS, and blockchain inventions (utility patents).
-
-## MODULE 1: INTAKE & SCREENING (The Debate)
-- **Purpose**: Initial idea submission and AI-powered analysis
-- **Process**: 
-  1. User uploads source code or describes their invention idea
-  2. Two AI agents debate the idea: The Advocate (highlights strengths) and The Examiner (identifies weaknesses)
-  3. The debate helps identify the core patentable aspects
-  4. "Inspect & Refine" step: AI extracts individual ideas/concepts from the submission
-  5. User can approve, modify, or reject each extracted idea
-  6. User can add custom ideas manually
-  7. User selects which ideas to carry forward to the next module
-- **Key Terms**: Advocate, Examiner, idea extraction, brainstorming
-
-## MODULE 2: CONCEPT REFINEMENT (Expand & Select)
-- **Purpose**: AI expands and refines the approved concepts
-- **Process**:
-  1. AI takes selected ideas and expands them into full patentable concepts
-  2. Each concept is analyzed for novelty and patentability
-  3. User reviews expanded concepts and selects which ones to pursue
-  4. Selected concepts become the foundation for prior art research
-- **Key Terms**: Concept expansion, patentability analysis, concept selection
-
-## MODULE 3: PRIOR ART RESEARCH (Patent Landscape)
-- **Purpose**: Analyze existing patents to identify white space opportunities
-- **Process**:
-  1. AI conducts semantic patent matching based on selected concepts
-  2. Results are grouped by relevance and similarity
-  3. User reviews prior art findings
-  4. System identifies gaps and opportunities for differentiation
-- **Key Terms**: Prior art, semantic matching, patent landscape, white space
-
-## MODULE 4: WHITE SPACE & CLAIMS GENERATION
-- **Purpose**: Identify differentiation strategies and generate patent claims
-- **Process**:
-  1. AI analyzes prior art constraints and identifies "white space" opportunities
-  2. White space analysis suggests how to differentiate the invention
-  3. AI generates multiple claim variations (specific claims)
-  4. User selects claims for diagram generation
-  5. AI compiles the full provisional specification including:
-     - Title, Background, Summary, Detailed Description
-     - Ramifications and Scope, Abstract, Claims
-- **Key Terms**: White space analysis, claim generation, provisional specification, nugget analysis
-
-## MODULE 5: THE SHOWCASE (Final Review & Export)
-- **Purpose**: Review, finalize, and export the provisional patent application
-- **Features**:
-  1. **Summary Tab**: View the complete provisional specification
-  2. **Specific Claims Tab**: Review the generated specific claims
-  3. **Broad Claims Tab**: Option to generate broader claims for comparison
-  4. **Technical Diagrams**: AI generates flowcharts and system diagrams via Eraser.io
-  5. **Re-Generate Options**: Can regenerate diagrams or broader claims independently
-  6. **Export**: Download as PDF or DOCX for USPTO filing or attorney review
-- **Optional Proof of Human Conception**: Validates inventorship criteria using the three-factor framework:
-  1. Contribution to conception
-  2. Contribution to at least one claim
-  3. More than explanation of known concepts
-- **Key Terms**: Showcase, broader claims, specific claims, diagrams, export, Proof of Human Conception
-
-## ADDITIONAL FEATURES
-- **Quick Prior Art Check**: Standalone tool accessible from sidebar to search prior art for any concept
-- **Q&A Assistant**: AI-powered assistant (this chat) to help with questions about the process
-- **Project Management**: Create and manage multiple patent projects
-
-## KEY PATENT CONCEPTS
-- **Provisional Patent Application**: A preliminary patent filing that establishes an early filing date. Valid for 12 months, after which a full non-provisional application must be filed.
-- **Claims**: Legal statements defining the scope of patent protection. Independent claims stand alone; dependent claims add specificity.
-- **Prior Art**: Existing patents, publications, or public knowledge that may affect patentability.
-- **White Space**: Gaps in existing patents where your invention can be positioned as novel.
-- **PHOSITA**: "Person Having Ordinary Skill In The Art" - the standard for evaluating obviousness.
-`;
+  // Q&A Assistant — migrated to direct AI call (server/modules/qa/qa-assistant.ts)
 
   app.post("/api/projects/:id/qa-assistant", isAuthenticated, async (req, res) => {
     try {
@@ -5712,21 +5638,10 @@ Patent Geyser is a 5-module workflow system designed to help inventors draft pro
         sessionId: req.session?.id || '',
       };
       
-      console.log("Calling Q&A Assistant webhook with currentLocation:", currentLocation);
-      const webhookResponse = await sendWebhook(N8N_QA_ASSISTANT_WEBHOOK, webhookPayload);
-      console.log("Q&A Assistant raw response:", JSON.stringify(webhookResponse, null, 2));
-      
-      // Extract response from webhook - check common field names
-      const response = webhookResponse?.response || 
-                       webhookResponse?.answer || 
-                       webhookResponse?.message ||
-                       webhookResponse?.output ||
-                       webhookResponse?.text ||
-                       webhookResponse?.content ||
-                       (typeof webhookResponse === 'string' ? webhookResponse : null) ||
-                       "I apologize, but I'm not available at the moment. Please try again later.";
-      
-      console.log("Extracted response:", response);
+      console.log("Calling Q&A Assistant AI with currentLocation:", currentLocation);
+      const response = await runQAAssistant(webhookPayload);
+      console.log("✅ YES IS THIS ONE — QA Assistant responded via direct AI call");
+      console.log("Q&A Assistant response:", response?.substring(0, 100));
       
       res.json({
         success: true,
