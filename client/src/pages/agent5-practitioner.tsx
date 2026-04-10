@@ -270,7 +270,7 @@ export default function Agent5Practitioner() {
   return (
     <div className="min-h-screen bg-background">
       <AgentHeader
-        project={project}
+        project={project!}
         agentNumber={5}
         agentName="Find a Practitioner"
         agentDescription="Match your invention with registered patent practitioners"

@@ -150,7 +150,15 @@ export const insertUserSchema = createInsertSchema(users).omit({
   updatedAt: true,
 });
 
-export const insertProjectSchema = createInsertSchema(projects).omit({
+export const insertProjectSchema = createInsertSchema(projects, {
+  sourceCodeFiles: z.array(z.object({
+    id: z.string(),
+    fileName: z.string(),
+    description: z.string(),
+    code: z.string(),
+    addedAt: z.string(),
+  })).nullable().optional(),
+}).omit({
   id: true,
   createdAt: true,
   updatedAt: true,

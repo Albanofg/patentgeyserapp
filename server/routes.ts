@@ -995,7 +995,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Verify current password
-      const bcrypt = await import('bcrypt');
+      const bcrypt = await import('bcryptjs');
       const isValid = await bcrypt.compare(currentPassword, user.password);
       if (!isValid) {
         return res.status(401).json({ message: "Current password is incorrect" });
@@ -1087,7 +1087,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Hash and save new password
-      const bcrypt = await import('bcrypt');
+      const bcrypt = await import('bcryptjs');
       const hashedPassword = await bcrypt.hash(newPassword, 10);
       await storage.updateUserPassword(userId, hashedPassword);
 
