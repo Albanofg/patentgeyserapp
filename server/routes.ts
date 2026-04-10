@@ -4,7 +4,7 @@ import https from "https";
 import { storage } from "./storage";
 import { insertUserSchema, insertProjectSchema } from "@shared/schema";
 import { z } from "zod";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
 import { generateSecret, generateURI, verify as verifyTOTP } from "otplib";
@@ -6953,3 +6953,4 @@ Patent Geyser is a 5-module workflow system designed to help inventors draft pro
   const httpServer = createServer(app);
   return httpServer;
 }
+
