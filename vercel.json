@@ -1,5 +1,5 @@
 {
-  "buildCommand": "npm run build:client && esbuild server-entry/vercel.ts --platform=node --target=node20 --packages=external --bundle --format=esm --outfile=api/index.js --alias:@shared=./shared --banner:js=\"import{createRequire as __cr}from'module';const require=__cr(import.meta.url);\"",
+  "buildCommand": "npm run build:vercel",
   "outputDirectory": "dist/public",
   "installCommand": "npm install",
   "framework": null,
