@@ -176,18 +176,18 @@ export default function Agent1aAudit() {
 
           {hasAuditResults && latestBrainstormRound.agentsDebate ? (
             latestBrainstormRound.agentsDebate.map((agent: any, idx: number) => {
-              const isGoodCop = agent.speaker === "Advocate" || idx === 0;
-              const isBadCop = agent.speaker === "Examiner" || idx === 1;
-              
+              const isAdvocate = agent.speaker === "Advocate" || idx === 0;
+              const isExaminer = agent.speaker === "Examiner" || idx === 1;
+
               let borderColor = "border-l-4 border-l-muted";
               let bgColor = "";
               let labelColor = "";
-              
-              if (isGoodCop) {
+
+              if (isAdvocate) {
                 borderColor = "border-l-4 border-l-green-500";
                 bgColor = "bg-green-50 dark:bg-green-950/20";
                 labelColor = "text-green-700 dark:text-green-400";
-              } else if (isBadCop) {
+              } else if (isExaminer) {
                 borderColor = "border-l-4 border-l-red-500";
                 bgColor = "bg-red-50 dark:bg-red-950/20";
                 labelColor = "text-red-700 dark:text-red-400";
@@ -196,19 +196,19 @@ export default function Agent1aAudit() {
               // Parse audit JSON using helper
               const auditData = parseAuditData(agent.message);
               const isAuditRound = auditData !== null;
-              
+
               return (
-                <Card key={idx} className={`${borderColor} ${bgColor}`} data-testid={`card-audit-${isGoodCop ? 'goodcop' : 'badcop'}`}>
+                <Card key={idx} className={`${borderColor} ${bgColor}`} data-testid={`card-audit-${isAdvocate ? 'advocate' : 'examiner'}`}>
                   <CardHeader>
                     <CardTitle className={`text-lg font-bold ${labelColor}`}>
-                      {isGoodCop ? "Advocate" : isBadCop ? "Examiner" : agent.speaker || `Agent ${idx + 1}`}
+                      {isAdvocate ? "Advocate" : isExaminer ? "Examiner" : agent.speaker || `Agent ${idx + 1}`}
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
                     {isAuditRound && auditData ? (
                       <div className="space-y-3">
                         <p className="text-sm font-medium mb-3">
-                          {isGoodCop ? "Review of your improved idea - which strengths were maintained:" : "Review of your improved idea - which issues were addressed:"}
+                          {isAdvocate ? "Review of your improved idea - which strengths were maintained:" : "Review of your improved idea - which issues were addressed:"}
                         </p>
                         {auditData.audit_log.map((item: any, auditIdx: number) => {
                           const status = item.status;

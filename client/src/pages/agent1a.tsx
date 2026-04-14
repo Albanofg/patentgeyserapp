@@ -148,7 +148,7 @@ export default function Agent1a() {
   const hasStarted = rounds.length > 0;
   const brainstormRounds = rounds.filter((r: ConversationRound) => r.roundType !== "mechanic");
   const latestBrainstormRound = brainstormRounds[brainstormRounds.length - 1];
-  const hasGoodCopBadCop = latestBrainstormRound?.agentsDebate && Array.isArray(latestBrainstormRound.agentsDebate);
+  const hasDebateResults = latestBrainstormRound?.agentsDebate && Array.isArray(latestBrainstormRound.agentsDebate);
   const originalIdea = brainstormRounds[0]?.userMessage || "";
   
   // Check if there's actual Round 2 audit data using shared helper
@@ -281,20 +281,20 @@ export default function Agent1a() {
             </Card>
           )}
 
-          {hasGoodCopBadCop && latestBrainstormRound?.agentsDebate ? (
+          {hasDebateResults && latestBrainstormRound?.agentsDebate ? (
             Array.isArray(latestBrainstormRound.agentsDebate) && latestBrainstormRound.agentsDebate.map((agent: any, idx: number) => {
-              const isGoodCop = agent.speaker === "Advocate" || idx === 0;
-              const isBadCop = agent.speaker === "Examiner" || idx === 1;
+              const isAdvocate = agent.speaker === "Advocate" || idx === 0;
+              const isExaminer = agent.speaker === "Examiner" || idx === 1;
               
               let borderColor = "border-l-4 border-l-muted";
               let bgColor = "";
               let labelColor = "";
               
-              if (isGoodCop) {
+              if (isAdvocate) {
                 borderColor = "border-l-4 border-l-green-500";
                 bgColor = "bg-green-50 dark:bg-green-950/20";
                 labelColor = "text-green-700 dark:text-green-400";
-              } else if (isBadCop) {
+              } else if (isExaminer) {
                 borderColor = "border-l-4 border-l-red-500";
                 bgColor = "bg-red-50 dark:bg-red-950/20";
                 labelColor = "text-red-700 dark:text-red-400";
@@ -308,14 +308,14 @@ export default function Agent1a() {
                 <Card key={idx} className={`${borderColor} ${bgColor}`}>
                   <CardHeader>
                     <CardTitle className={`text-lg font-bold ${labelColor}`}>
-                      {isGoodCop ? "Advocate" : isBadCop ? "Examiner" : agent.speaker || `Agent ${idx + 1}`}
+                      {isAdvocate ? "Advocate" : isExaminer ? "Examiner" : agent.speaker || `Agent ${idx + 1}`}
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
                     {isAuditRound && auditData ? (
                       <div className="space-y-3">
                         <p className="text-sm font-medium mb-3">
-                          {isGoodCop ? "Review of your improved idea - which strengths were maintained:" : "Review of your improved idea - which issues were addressed:"}
+                          {isAdvocate ? "Review of your improved idea - which strengths were maintained:" : "Review of your improved idea - which issues were addressed:"}
                         </p>
                         {auditData.audit_log.map((item: any, auditIdx: number) => {
                           const status = item.status;
@@ -379,7 +379,7 @@ export default function Agent1a() {
             <Button
               type="button"
               onClick={() => continueToAgent2Mutation.mutate()}
-              disabled={continueToAgent2Mutation.isPending || inspectAndRefineMutation.isPending || !hasGoodCopBadCop}
+              disabled={continueToAgent2Mutation.isPending || inspectAndRefineMutation.isPending || !hasDebateResults}
               data-testid="button-continue"
               className="w-full"
             >
@@ -399,7 +399,7 @@ export default function Agent1a() {
               type="button"
               variant="outline"
               onClick={() => inspectAndRefineMutation.mutate()}
-              disabled={inspectAndRefineMutation.isPending || continueToAgent2Mutation.isPending || !hasGoodCopBadCop}
+              disabled={inspectAndRefineMutation.isPending || continueToAgent2Mutation.isPending || !hasDebateResults}
               data-testid="button-inspect-refine"
               className="w-full"
             >
@@ -422,7 +422,7 @@ export default function Agent1a() {
               type="button"
               variant="outline"
               onClick={() => inspectAndRefineMutation.mutate()}
-              disabled={inspectAndRefineMutation.isPending || continueToAgent2Mutation.isPending || !hasGoodCopBadCop}
+              disabled={inspectAndRefineMutation.isPending || continueToAgent2Mutation.isPending || !hasDebateResults}
               data-testid="button-inspect-refine-desktop"
             >
               {inspectAndRefineMutation.isPending ? (
@@ -440,7 +440,7 @@ export default function Agent1a() {
             <Button
               type="button"
               onClick={() => continueToAgent2Mutation.mutate()}
-              disabled={continueToAgent2Mutation.isPending || inspectAndRefineMutation.isPending || !hasGoodCopBadCop}
+              disabled={continueToAgent2Mutation.isPending || inspectAndRefineMutation.isPending || !hasDebateResults}
               data-testid="button-continue-desktop"
             >
               {continueToAgent2Mutation.isPending ? (

@@ -135,24 +135,32 @@ server/modules/
     qa-assistant.ts
 
   module1/   → Brainstorm (Agent 1, 1a, 1b, Inspect & Refine)
-    debate.md                  → Advocate vs Examiner debate
-    debate.config.json
-    debate.ts
-    reanalyze.md               → Re-run debate (Round 2+)
-    reanalyze.config.json
-    reanalyze.ts
-    mechanic.md                → Modify ideas (add/fix/delete/change)
-    mechanic.config.json
-    mechanic.ts
-    list-creator.md            → Extract ideas from debate
-    list-creator.config.json
-    list-creator.ts
-    ai-modifier.md             → AI suggestions for individual ideas
-    ai-modifier.config.json
-    ai-modifier.ts
-    r3-fixes.md                → Round 3 AI fixes for weak items
-    r3-fixes.config.json
-    r3-fixes.ts
+    debate/                    → Advocate vs Examiner debate
+      advocate.md
+      advocate.config.json
+      examiner.md
+      examiner.config.json
+      debate.ts
+    reanalyze/                 → Re-run debate (Round 2+)
+      reanalyze.md
+      reanalyze.config.json
+      reanalyze.ts
+    mechanic/                  → Modify ideas (add/fix/delete/change)
+      mechanic.md
+      mechanic.config.json
+      mechanic.ts
+    list-creator/              → Extract ideas from debate
+      list-creator.md
+      list-creator.config.json
+      list-creator.ts
+    ai-modifier/               → AI suggestions for individual ideas
+      ai-modifier.md
+      ai-modifier.config.json
+      ai-modifier.ts
+    r3-fixes/                  → Round 3 AI fixes for weak items
+      r3-fixes.md
+      r3-fixes.config.json
+      r3-fixes.ts
 
   module2/   → Concept Expansion (Agent 2, 2a, 2b, 2c)
     draft.md                   → Draft provisional specification

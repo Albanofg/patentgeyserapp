@@ -83,6 +83,7 @@ function buildContext(payload: QAPayload): string {
 }
 
 export async function runQAAssistant(payload: QAPayload): Promise<string> {
+  console.log("[Module0/QA-Assistant] Running...");
   const config = loadAgentConfig("module0/qa-assistant.config.json");
   const systemPrompt = loadPrompt("module0/qa-assistant.md");
 
@@ -91,10 +92,12 @@ export async function runQAAssistant(payload: QAPayload): Promise<string> {
   // Match exactly what n8n sends to the agent
   const userMessage = `This is the User Input:\n${payload.message}\n\nThis is the Project Context:\n${context}`;
 
-  return await callAgent({
+  const result = await callAgent({
     systemPrompt,
     userMessage,
     config,
     jsonMode: false,
   });
+  console.log("[Module0/QA-Assistant] Done");
+  return result;
 }

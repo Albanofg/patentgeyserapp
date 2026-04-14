@@ -10,6 +10,8 @@ import connectPg from "connect-pg-simple";
 import { generateSecret, generateURI, verify as verifyTOTP } from "otplib";
 import QRCode from "qrcode";
 import { runQAAssistant } from "./modules/module0/qa-assistant";
+import { runDebate } from "./modules/module1/1a/debate";
+import { runReanalyze } from "./modules/module1/1b/reanalyze";
 
 const SALT_ROUNDS = 10;
 
@@ -17,8 +19,6 @@ const SALT_ROUNDS = 10;
 const AGENT_TIMEOUT = 900000; // 15 minutes in milliseconds
 
 // Webhook URLs for n8n agents — loaded from environment variables
-const N8N_AGENT1_WEBHOOK = process.env.N8N_AGENT1_WEBHOOK!;
-const N8N_REANALYZE_WEBHOOK = process.env.N8N_REANALYZE_WEBHOOK!;
 const N8N_MECHANIC_WEBHOOK = process.env.N8N_MECHANIC_WEBHOOK!;
 const N8N_LIST_CREATOR_WEBHOOK = process.env.N8N_LIST_CREATOR_WEBHOOK!;
 const N8N_AI_IDEA_MODIFIER_WEBHOOK = process.env.N8N_AI_IDEA_MODIFIER_WEBHOOK!;
@@ -2089,16 +2089,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Route to Brainstorm (1A) - Advocate/Examiner debate
         // Use currentIdea (which includes mechanic refinements) when forceReview is true
         const brainstormIdea = forceReview ? currentIdea : ideaSummary;
-        n8nResponse = await callN8nWebhook(N8N_AGENT1_WEBHOOK, {
-          projectId: req.params.id,
+        n8nResponse = await runDebate({
           idea: brainstormIdea,
-          ideaSummary: brainstormIdea,
-          userMessage: forceReview ? brainstormIdea : message,
-          rounds: rounds.map((r: any) => ({
-            userMessage: r.userMessage,
-            agentsDebate: r.agentsDebate,
-          })),
-          sessionId,
+          category: (await storage.getProject(req.params.id))?.category,
         });
       }
 
@@ -2180,21 +2173,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         transcript = data.transcript;
 
         // Convert fullDebate to agentsDebate format
-        // Support both new format (fullDebate array) and legacy format (goodCop/badCop fields)
         if (fullDebate.length > 0) {
           agentsDebate = fullDebate.map((entry: any) => ({
             speaker: entry.speaker || entry.role || 'Unknown',
             message: entry.message || entry.content || '',
           }));
-        } else if (data.goodCop || data.badCop) {
-          // Legacy format: map goodCop/badCop to Advocate/Examiner
-          agentsDebate = [];
-          if (data.goodCop) {
-            agentsDebate.push({ speaker: 'Advocate', message: data.goodCop });
-          }
-          if (data.badCop) {
-            agentsDebate.push({ speaker: 'Examiner', message: data.badCop });
-          }
         } else {
           agentsDebate = [];
         }
@@ -2403,18 +2386,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const existingRounds = existingData?.rounds || [];
       
       // Get the most recent Advocate and Examiner analyses from the last round
-      let previousGoodCop = "";
-      let previousBadCop = "";
-      
+      let previousAdvocate = "";
+      let previousExaminer = "";
+
       if (existingRounds.length > 0) {
         const lastRound = existingRounds[existingRounds.length - 1];
         const agentsDebate = lastRound.agentsDebate || [];
-        
+
         for (const entry of agentsDebate) {
           if (entry.speaker === "Advocate") {
-            previousGoodCop = entry.message || "";
+            previousAdvocate = entry.message || "";
           } else if (entry.speaker === "Examiner") {
-            previousBadCop = entry.message || "";
+            previousExaminer = entry.message || "";
           }
         }
       }
@@ -2422,54 +2405,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Generate session ID for this reanalysis
       const sessionId = existingData?.sessionId || `session-${Date.now()}`;
 
-      // Call re-analyze webhook with full context
+      // Call re-analyze with full context
       console.log("Re-analyzing idea through Advocate/Examiner (v2)...");
-      const webhookResponse = await callN8nWebhook(N8N_REANALYZE_WEBHOOK, {
-        projectId: req.params.id,
-        sessionId,
-        mainIdea: mainIdea,
-        previousGoodCop: previousGoodCop,
-        previousBadCop: previousBadCop,
+      const webhookResponse = await runReanalyze({
+        mainIdea,
+        previousAdvocate,
+        previousExaminer,
         newIdea: idea.trim(),
         category: project.category || 'software',
+        projectId: req.params.id,
+        sessionId,
       });
 
       if (!webhookResponse.success) {
         return res.status(500).json({
           message: "Failed to re-analyze idea.",
-          error: webhookResponse.error,
         });
       }
 
-      const data = webhookResponse.data;
-      
-      // Parse Advocate and Examiner responses
-      // Support both formats: Round 1 (advocate/examiner fields) and Round 2+ (auditResults array)
-      let agentsDebate = [];
-      
-      if (data.auditResults && Array.isArray(data.auditResults)) {
-        // Round 2+ audit format
-        agentsDebate = data.auditResults.map((result: any) => ({
-          speaker: result.speaker,
-          message: result.message
-        }));
-      } else {
-        // Round 1 format (original debate)
-        // Note: Webhook returns original field names (goodCop, badCop)
-        if (data.goodCop) {
-          agentsDebate.push({ speaker: "Advocate", message: data.goodCop });
-        }
-        if (data.badCop) {
-          agentsDebate.push({ speaker: "Examiner", message: data.badCop });
-        }
-      }
+      // Parse Advocate and Examiner audit results
+      const agentsDebate = webhookResponse.auditResults.map((result: any) => ({
+        speaker: result.speaker,
+        message: result.message,
+      }));
+
+      const advocateMsg = agentsDebate.find((a: any) => a.speaker === "Advocate")?.message || "No response";
+      const examinerMsg = agentsDebate.find((a: any) => a.speaker === "Examiner")?.message || "No response";
 
       // Create new round data
       const newRound = {
         roundNumber: existingRounds.length + 1,
         roundType: "brainstorm",
         agentsDebate,
-        transcript: `Re-analysis of improved idea:\n\n${idea}\n\nAdvocate: ${data.goodCop || 'No response'}\n\nExaminer: ${data.badCop || 'No response'}`,
+        transcript: `Re-analysis of improved idea:\n\n${idea}\n\nAdvocate: ${advocateMsg}\n\nExaminer: ${examinerMsg}`,
         timestamp: new Date().toISOString(),
       };
 
@@ -2604,7 +2572,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         
         // First pass: collect all "YET TO FIX" items from both agents with their context
         for (const agent of latestRound.agentsDebate) {
-          const isAdvocate = agent.speaker === "Advocate" || agent.speaker === "Good Cop";
+          const isAdvocate = agent.speaker === "Advocate";
           const auditData = parseAuditDataServer(agent.message);
           if (auditData?.audit_log) {
             for (const item of auditData.audit_log) {
@@ -2760,17 +2728,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const originalText = rootSnapshot?.content || ideaSummary;
       
       const advocateText = latestRound.agentsDebate
-        .filter((a: any) => a.speaker === "Advocate" || a.speaker === "Good Cop")
+        .filter((a: any) => a.speaker === "Advocate")
         .map((a: any) => a.message)
         .join("\n\n");
       
       const examinerText = latestRound.agentsDebate
-        .filter((a: any) => a.speaker === "Examiner" || a.speaker === "Bad Cop")
+        .filter((a: any) => a.speaker === "Examiner")
         .map((a: any) => a.message)
         .join("\n\n");
 
       // Call list-creator webhook with project identifiers
-      // Note: Webhook expects original field names (goodCop, badCop)
+      // Note: n8n webhooks still expect goodCop/badCop field names — do not rename until those agents are migrated
       const sessionId = (agent1Data?.data as any)?.sessionId || `session-${Date.now()}`;
       
       // Debug: Log what we're sending
@@ -3214,7 +3182,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ?.flatMap((round: any) => round.examinerChallenges || []) || [];
 
       // Send comprehensive data for provisional draft generation
-      // Note: Webhook expects original field names (goodCopInsights, badCopChallenges)
+      // Note: n8n webhooks still expect goodCop field names — do not rename until those agents are migrated
       const webhookPayload = {
         sessionId: comprehensiveSummary.sessionId,
         ideaSummary: comprehensiveSummary.ideaSummary,
@@ -3688,7 +3656,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const examinerAnalysis = examinerMessages.join("\n\n");
 
       // Prepare webhook payload
-      // Note: Webhook expects original field names (goodCopAnalysis, badCopAnalysis)
+      // Note: n8n webhooks still expect goodCop field names — do not rename until those agents are migrated
       const webhookPayload = {
         idea: ideaSummary,
         goodCopAnalysis: advocateAnalysis, // Internal: advocateAnalysis

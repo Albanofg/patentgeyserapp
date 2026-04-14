@@ -23,3 +23,6 @@ docs
 # Claude
 .claude
 .local
+
+# Documentation images
+image/
