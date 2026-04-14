@@ -2,7 +2,6 @@ node_modules
 dist
 .DS_Store
 server/public
-api/index.js
 api/index.js.map
 vite.config.ts.*
 *.tar.gz
