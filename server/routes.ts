@@ -13,6 +13,9 @@ import QRCode from "qrcode";
 import { runQAAssistant } from "./modules/module0/qa-assistant";
 import { runDebate } from "./modules/module1/1a/debate";
 import { runReanalyze } from "./modules/module1/1b/reanalyze";
+import { runR3Fixes } from "./modules/module1/1c/r3-fixes";
+import { runListCreator } from "./modules/module1/1d/list-creator";
+import { runAiModifier } from "./modules/module1/1e/ai-modifier";
 
 const SALT_ROUNDS = 10;
 
@@ -21,8 +24,6 @@ const AGENT_TIMEOUT = 900000; // 15 minutes in milliseconds
 
 // Webhook URLs for n8n agents — loaded from environment variables
 const N8N_MECHANIC_WEBHOOK = process.env.N8N_MECHANIC_WEBHOOK!;
-const N8N_LIST_CREATOR_WEBHOOK = process.env.N8N_LIST_CREATOR_WEBHOOK!;
-const N8N_AI_IDEA_MODIFIER_WEBHOOK = process.env.N8N_AI_IDEA_MODIFIER_WEBHOOK!;
 const N8N_WHITESPACE_WEBHOOK = process.env.N8N_WHITESPACE_WEBHOOK!;
 const N8N_PROVISIONAL_WEBHOOK = process.env.N8N_PROVISIONAL_WEBHOOK!;
 const N8N_DIAGRAMS_WEBHOOK = process.env.N8N_DIAGRAMS_WEBHOOK!;
@@ -31,7 +32,6 @@ const N8N_PANNU_VALIDATE_WEBHOOK = process.env.N8N_PANNU_VALIDATE_WEBHOOK!;
 const N8N_PANNU_AI_SUGGESTION_WEBHOOK = process.env.N8N_PANNU_AI_SUGGESTION_WEBHOOK!;
 const N8N_PRACTITIONER_MATCH_WEBHOOK = process.env.N8N_PRACTITIONER_MATCH_WEBHOOK!;
 const N8N_QUICK_PRIOR_ART_WEBHOOK = process.env.N8N_QUICK_PRIOR_ART_WEBHOOK!;
-const N8N_R3_WEBHOOK = process.env.N8N_R3_WEBHOOK!;
 const N8N_MULTI_CONCEPT_SEARCH_WEBHOOK = process.env.N8N_MULTI_CONCEPT_SEARCH_WEBHOOK!;
 const N8N_DRAFT_PROVISIONAL_WEBHOOK = process.env.N8N_DRAFT_PROVISIONAL_WEBHOOK!;
 const N8N_CLAIMS_WEBHOOK = process.env.N8N_CLAIMS_WEBHOOK!;
@@ -2433,16 +2433,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const advocateMsg = agentsDebate.find((a: any) => a.speaker === "Advocate")?.message || "No response";
       const examinerMsg = agentsDebate.find((a: any) => a.speaker === "Examiner")?.message || "No response";
 
-      // Create new round data
+      // Create new round data (shape matches /rounds endpoint for UI + downstream consumers)
       const newRound = {
-        roundNumber: existingRounds.length + 1,
-        roundType: "brainstorm",
+        id: `round-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        userMessage: idea.trim(),
         agentsDebate,
         transcript: `Re-analysis of improved idea:\n\n${idea}\n\nAdvocate: ${advocateMsg}\n\nExaminer: ${examinerMsg}`,
-        timestamp: new Date().toISOString(),
+        roundType: "brainstorm" as const,
+        createdAt: new Date().toISOString(),
       };
 
       // Update agent 1 data with new round
+      const existingWebhookLog = (agent1Data?.data as any)?.webhookLog || [];
       await storage.upsertAgentData({
         projectId: req.params.id,
         agentNumber: 1,
@@ -2452,6 +2454,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           sessionId,
           rounds: [...existingRounds, newRound],
           extractedIdeas: null, // Clear old extracted ideas
+          webhookLog: [...existingWebhookLog, {
+            roundId: newRound.id,
+            timestamp: newRound.createdAt,
+            success: true,
+            type: newRound.roundType,
+          }],
         },
       });
 
@@ -2605,30 +2613,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Round 3: Call webhook to get AI fixes for all "needs work" items
         let aiFixes: any[] = [];
         if (needsWorkDetailed.length > 0 && coreIdea) {
-          console.log("=== ROUND 3: CALLING AI FIX WEBHOOK ===");
-          const r3WebhookUrl = N8N_R3_WEBHOOK;
-          
-          const r3Payload = {
-            coreIdea,
-            needsWorkItems: needsWorkDetailed,
-          };
-          
-          console.log("R3 PAYLOAD:", JSON.stringify(r3Payload, null, 2));
-          
+          console.log("=== ROUND 3: CALLING R3 FIXES (direct AI) ===");
           try {
-            const r3Response = await callN8nWebhook(r3WebhookUrl, r3Payload);
-            console.log("R3 webhook response:", JSON.stringify(r3Response).substring(0, 500));
-            
-            // Store AI fixes from response
-            if (r3Response.success && r3Response.data) {
-              aiFixes = Array.isArray(r3Response.data) ? r3Response.data : 
-                        r3Response.data.needsWorkItems ? r3Response.data.needsWorkItems :
-                        r3Response.data.fixes ? r3Response.data.fixes :
-                        r3Response.data.items ? r3Response.data.items : [];
-              console.log(`Got ${aiFixes.length} AI fixes from Round 3 webhook`);
+            const r3Response = await runR3Fixes({
+              coreIdea,
+              needsWorkItems: needsWorkDetailed,
+            });
+            if (r3Response.success && Array.isArray(r3Response.data)) {
+              aiFixes = r3Response.data;
+              console.log(`Got ${aiFixes.length} AI fixes from Round 3`);
             }
           } catch (err) {
-            console.error("R3 webhook error:", err);
+            console.error("R3 fixes error:", err);
             // Continue without AI fixes - don't block the flow
           }
         }
@@ -2750,7 +2746,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log("Advocate preview:", advocateText.substring(0, 200));
       console.log("Examiner preview:", examinerText.substring(0, 200));
       
-      const webhookResponse = await callN8nWebhook(N8N_LIST_CREATOR_WEBHOOK, {
+      const webhookResponse = await runListCreator({
         projectId: req.params.id,
         sessionId,
         original: originalText,
@@ -2967,13 +2963,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       ].filter(Boolean).join("\n\n");
 
       // Call AI idea modifier webhook with all context the n8n workflow expects
-      const webhookResponse = await callN8nWebhook(N8N_AI_IDEA_MODIFIER_WEBHOOK, {
+      const webhookResponse = await runAiModifier({
         projectId: req.params.id,
         sessionId,
         mainIdea,
-        originalIdea: originalIdeaContent || item,
         item: item,
-        fromOriginal,
+        fromOriginal: originalIdeaContent || fromOriginal,
         fromGoodCop,
         fromBadCop,
       });

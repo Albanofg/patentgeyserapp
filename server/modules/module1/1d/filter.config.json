@@ -1,0 +1,7 @@
+{
+  "model": "gemini-2.5-flash",
+  "fallback": "gpt-4o-mini",
+  "temperature": 0.1,
+  "topP": 0.9,
+  "maxTokens": 10
+}

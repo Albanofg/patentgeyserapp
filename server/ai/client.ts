@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, HarmCategory, HarmBlockThreshold } from "@google/genai";
 import OpenAI from "openai";
 import fs from "fs";
 import path from "path";
@@ -26,20 +26,41 @@ function isGemini(model: string): boolean {
   return model.startsWith("gemini");
 }
 
+const GEMINI_SAFETY_OFF = [
+  { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold: HarmBlockThreshold.BLOCK_NONE },
+];
+
+const EMPTY_RESPONSE_GUARD =
+  "\n\nCRITICAL: You must never return an empty response. If you cannot process an item due to safety or content restrictions, you must output the exact string 'ITEM_FILTERED' instead of returning nothing.";
+
 async function callGemini(opts: AgentCallOptions, model: string): Promise<string> {
+  const systemInstruction = (opts.systemPrompt || "") + EMPTY_RESPONSE_GUARD;
+  const maxOutputTokens = Math.max(opts.config.maxTokens || 0, 2048);
+
   const response = await gemini.models.generateContent({
     model,
     contents: opts.userMessage,
     config: {
-      systemInstruction: opts.systemPrompt,
-      maxOutputTokens: opts.config.maxTokens,
+      systemInstruction,
+      maxOutputTokens,
       temperature: opts.config.temperature,
       topP: opts.config.topP,
       responseMimeType: opts.jsonMode ? "application/json" : "text/plain",
+      safetySettings: GEMINI_SAFETY_OFF,
     },
   });
   const text = response.text;
-  if (!text) throw new Error("Gemini returned empty response");
+  if (!text) {
+    const finishReason = response.candidates?.[0]?.finishReason;
+    const blockReason = (response as any).promptFeedback?.blockReason;
+    throw new Error(
+      `Gemini returned empty response (finishReason=${finishReason ?? "n/a"}, blockReason=${blockReason ?? "n/a"})`
+    );
+  }
   return text;
 }
 

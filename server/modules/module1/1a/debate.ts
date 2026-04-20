@@ -7,13 +7,13 @@ interface DebatePayload {
 
 export async function runDebate(payload: DebatePayload) {
   const idea = payload.idea;
-  console.log("[Module1/1a] Starting debate — Advocate + Examiner in parallel");
+  console.log(">>> [M1-1a DEBATE] <<< direct AI — Advocate + Examiner in parallel");
 
   const [advocateResult, examinerResult] = await Promise.all([
     runAdvocate(idea),
     runExaminer(idea),
   ]);
-  console.log("[Module1/1a] Debate complete — both agents responded");
+  console.log(">>> [M1-1a DEBATE] <<< complete — both agents responded");
 
   const transcript = `🎭 PATENT GEYSER\n${'='.repeat(60)}\n\n` +
     `💡 IDEA: ${idea}\n\n` +
@@ -23,36 +23,38 @@ export async function runDebate(payload: DebatePayload) {
 
   return {
     success: true,
-    fullDebate: [
-      { speaker: "Advocate", message: advocateResult },
-      { speaker: "Examiner", message: examinerResult },
-    ],
-    transcript,
-    category: payload.category || "software",
-    totalRounds: 1,
-    debateComplete: true,
-    metadata: {
-      timestamp: new Date().toISOString(),
-      rounds: 1,
-      totalExchanges: 2,
+    data: {
+      fullDebate: [
+        { speaker: "Advocate", message: advocateResult },
+        { speaker: "Examiner", message: examinerResult },
+      ],
+      transcript,
+      category: payload.category || "software",
+      totalRounds: 1,
+      debateComplete: true,
+      metadata: {
+        timestamp: new Date().toISOString(),
+        rounds: 1,
+        totalExchanges: 2,
+      },
     },
   };
 }
 
 async function runAdvocate(idea: string): Promise<string> {
-  console.log("[Module1/1a/Advocate] Running...");
+  console.log("[M1-1a/Advocate] Running...");
   const config = loadAgentConfig("module1/1a/advocate.config.json");
   const systemPrompt = loadPrompt("module1/1a/advocate.md", { idea });
   const result = await callAgent({ systemPrompt, userMessage: idea, config });
-  console.log("[Module1/1a/Advocate] Done");
+  console.log("[M1-1a/Advocate] Done");
   return result;
 }
 
 async function runExaminer(idea: string): Promise<string> {
-  console.log("[Module1/1a/Examiner] Running...");
+  console.log("[M1-1a/Examiner] Running...");
   const config = loadAgentConfig("module1/1a/examiner.config.json");
   const systemPrompt = loadPrompt("module1/1a/examiner.md", { idea });
   const result = await callAgent({ systemPrompt, userMessage: idea, config });
-  console.log("[Module1/1a/Examiner] Done");
+  console.log("[M1-1a/Examiner] Done");
   return result;
 }

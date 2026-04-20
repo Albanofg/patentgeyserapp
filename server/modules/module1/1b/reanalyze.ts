@@ -12,12 +12,12 @@ interface ReanalyzePayload {
 }
 
 export async function runReanalyze(payload: ReanalyzePayload) {
-  console.log("[Module1/1b] Starting reanalyze audit — Advocate + Examiner in parallel");
+  console.log(">>> [M1-1b REANALYZE] <<< direct AI — Advocate + Examiner audit in parallel");
   const [advocateResult, examinerResult] = await Promise.all([
     runAdvocateAudit(payload),
     runExaminerAudit(payload),
   ]);
-  console.log("[Module1/1b] Reanalyze audit complete — both agents responded");
+  console.log(">>> [M1-1b REANALYZE] <<< complete — both agents responded");
 
   const transcript = `🎭 PATENT GEYSER - ROUND 2 AUDIT\n${'='.repeat(60)}\n\n` +
     `💡 ORIGINAL IDEA: ${payload.mainIdea.substring(0, 100)}...\n\n` +
@@ -46,7 +46,7 @@ export async function runReanalyze(payload: ReanalyzePayload) {
 }
 
 async function runAdvocateAudit(payload: ReanalyzePayload): Promise<string> {
-  console.log("[Module1/1b/Advocate] Running audit...");
+  console.log("[M1-1b/Advocate] Running audit...");
   const config = loadAgentConfig("module1/1b/advocate.config.json");
   const systemPrompt = loadPrompt("module1/1b/advocate.md");
 
@@ -62,12 +62,12 @@ Adhere strictly to the "Discard Rule": If a topic is in the User Discards list, 
 Return the audit log in strict JSON.`;
 
   const result = await callAgent({ systemPrompt, userMessage, config, jsonMode: true });
-  console.log("[Module1/1b/Advocate] Done");
+  console.log("[M1-1b/Advocate] Done");
   return result;
 }
 
 async function runExaminerAudit(payload: ReanalyzePayload): Promise<string> {
-  console.log("[Module1/1b/Examiner] Running audit...");
+  console.log("[M1-1b/Examiner] Running audit...");
   const config = loadAgentConfig("module1/1b/examiner.config.json");
   const systemPrompt = loadPrompt("module1/1b/examiner.md");
 
@@ -83,6 +83,6 @@ Adhere strictly to the "Discard Rule": If a topic is in the User Discards list, 
 Return the audit log in strict JSON.`;
 
   const result = await callAgent({ systemPrompt, userMessage, config, jsonMode: true });
-  console.log("[Module1/1b/Examiner] Done");
+  console.log("[M1-1b/Examiner] Done");
   return result;
 }
