@@ -98,61 +98,73 @@ async function filterItem(item: UnifiedItem, systemPrompt: string, config: any):
 export async function runListCreator(payload: ListCreatorPayload) {
   console.log(">>> [M1-1d LIST-CREATOR] <<< List Creator — generating unified items");
 
-  const listConfig = loadAgentConfig("module1/1d/list-maker.config.json");
-  const listSystem = loadPrompt("module1/1d/list-maker.md");
-  const listUserMessage =
-    `Here are the three texts you must analyze:\n\n` +
-    `ORIGINAL:\n${payload.original || ""}\n\n` +
-    `GOOD COP:\n${payload.goodCop || ""}\n\n` +
-    `BAD COP:\n${payload.badCop || ""}\n\n` +
-    `Please generate a Unified Items List based on your system rules.\n\n` +
-    `Use one unified item per unique idea, and for each item include:\n\n` +
-    `Item:\n[a neutral label of the merged idea]\n\n` +
-    `From Original:\n[summary or quote, or "Not mentioned"]\n\n` +
-    `From Good Cop:\n[summary or quote, or "Not mentioned"]\n\n` +
-    `From Bad Cop:\n[summary or quote, or "Not mentioned"]\n\n` +
-    `Output only the Unified Items List.`;
+  try {
+    const listConfig = loadAgentConfig("module1/1d/list-maker.config.json");
+    const listSystem = loadPrompt("module1/1d/list-maker.md");
+    const listUserMessage =
+      `Here are the three texts you must analyze:\n\n` +
+      `ORIGINAL:\n${payload.original || ""}\n\n` +
+      `GOOD COP:\n${payload.goodCop || ""}\n\n` +
+      `BAD COP:\n${payload.badCop || ""}\n\n` +
+      `Please generate a Unified Items List based on your system rules.\n\n` +
+      `Use one unified item per unique idea, and for each item include:\n\n` +
+      `Item:\n[a neutral label of the merged idea]\n\n` +
+      `From Original:\n[summary or quote, or "Not mentioned"]\n\n` +
+      `From Good Cop:\n[summary or quote, or "Not mentioned"]\n\n` +
+      `From Bad Cop:\n[summary or quote, or "Not mentioned"]\n\n` +
+      `Output only the Unified Items List.`;
 
-  const rawList = await callAgent({
-    systemPrompt: listSystem,
-    userMessage: listUserMessage,
-    config: listConfig,
-  });
+    const rawList = await callAgent({
+      systemPrompt: listSystem,
+      userMessage: listUserMessage,
+      config: listConfig,
+    });
 
-  const items = parseUnifiedList(rawList);
-  console.log(`>>> [M1-1d LIST-CREATOR] <<< Parsed ${items.length} unified items — filtering in parallel`);
+    const items = parseUnifiedList(rawList);
+    console.log(`>>> [M1-1d LIST-CREATOR] <<< Parsed ${items.length} unified items — filtering in parallel`);
 
-  if (items.length === 0) {
+    if (items.length === 0) {
+      return {
+        success: true as const,
+        data: { kept: [], removed: [], totalKept: 0, totalRemoved: 0 },
+      };
+    }
+
+    const filterConfig = loadAgentConfig("module1/1d/filter.config.json");
+    const filterSystem = loadPrompt("module1/1d/filter.md");
+
+    const decisions = await Promise.all(items.map((item) => filterItem(item, filterSystem, filterConfig)));
+
+    const kept: UnifiedItem[] = [];
+    const removed: RemovedItem[] = [];
+    items.forEach((item, idx) => {
+      if (decisions[idx]) {
+        kept.push(item);
+      } else {
+        removed.push({ ...item, reason: "Filter agent marked as redundant" });
+      }
+    });
+
+    console.log(`>>> [M1-1d LIST-CREATOR] <<< Kept ${kept.length}, removed ${removed.length}`);
+
     return {
-      success: true,
-      data: { kept: [], removed: [], totalKept: 0, totalRemoved: 0 },
+      success: true as const,
+      data: {
+        kept,
+        removed,
+        totalKept: kept.length,
+        totalRemoved: removed.length,
+      },
+    };
+  } catch (error: any) {
+    console.error(">>> [M1-1d LIST-CREATOR] <<< failed:", error);
+    const message = error?.message || String(error);
+    const errorMessage = message.includes("timeout") || message.includes("timed out")
+      ? "AI service timed out. Please try again."
+      : message || "List creator failed";
+    return {
+      success: false as const,
+      error: errorMessage,
     };
   }
-
-  const filterConfig = loadAgentConfig("module1/1d/filter.config.json");
-  const filterSystem = loadPrompt("module1/1d/filter.md");
-
-  const decisions = await Promise.all(items.map((item) => filterItem(item, filterSystem, filterConfig)));
-
-  const kept: UnifiedItem[] = [];
-  const removed: RemovedItem[] = [];
-  items.forEach((item, idx) => {
-    if (decisions[idx]) {
-      kept.push(item);
-    } else {
-      removed.push({ ...item, reason: "Filter agent marked as redundant" });
-    }
-  });
-
-  console.log(`>>> [M1-1d LIST-CREATOR] <<< Kept ${kept.length}, removed ${removed.length}`);
-
-  return {
-    success: true,
-    data: {
-      kept,
-      removed,
-      totalKept: kept.length,
-      totalRemoved: removed.length,
-    },
-  };
 }

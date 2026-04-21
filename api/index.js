@@ -1,13 +1,18 @@
 import{createRequire as __cr}from'module';const require=__cr(import.meta.url);
 var __defProp = Object.defineProperty;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __esm = (fn, res) => function __init() {
-  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
 };
+
+// server/app.ts
+import "dotenv/config";
+import express from "express";
+import cors from "cors";
+
+// server/routes.ts
+import { createServer } from "http";
+import https from "https";
 
 // shared/schema.ts
 var schema_exports = {};
@@ -36,241 +41,212 @@ import { sql, relations } from "drizzle-orm";
 import { pgTable, text, varchar, timestamp, integer, jsonb, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-var users, projects, agentData, ideaSnapshots, priorArtSearches, pannuRecords, usersRelations, projectsRelations, agentDataRelations, ideaSnapshotsRelations, pannuRecordsRelations, priorArtSearchesRelations, insertUserSchema, insertProjectSchema, insertAgentDataSchema, insertPannuRecordSchema, insertIdeaSnapshotSchema, insertPriorArtSearchSchema, emailWhitelist;
-var init_schema = __esm({
-  "shared/schema.ts"() {
-    "use strict";
-    users = pgTable("users", {
-      id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-      email: text("email").notNull().unique(),
-      password: text("password").notNull(),
-      // 2FA fields
-      twoFactorEnabled: boolean("two_factor_enabled").default(false),
-      twoFactorMethod: text("two_factor_method"),
-      // 'email' or 'totp'
-      totpSecret: text("totp_secret"),
-      // Secret for authenticator app
-      pendingTwoFactorCode: text("pending_two_factor_code"),
-      // Temporary code for email 2FA
-      pendingTwoFactorExpiry: timestamp("pending_two_factor_expiry"),
-      // When the code expires
-      twoFactorVerifiedAt: timestamp("two_factor_verified_at"),
-      // Session-level 2FA verification timestamp
-      lastLoginAt: timestamp("last_login_at"),
-      createdAt: timestamp("created_at").defaultNow(),
-      updatedAt: timestamp("updated_at").defaultNow()
-    });
-    projects = pgTable("projects", {
-      id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-      userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-      title: text("title").notNull(),
-      category: text("category").notNull(),
-      // Software, SaaS, or Blockchain
-      currentStage: integer("current_stage").notNull().default(1),
-      // 1-5 representing agent stages
-      currentSubstage: text("current_substage"),
-      // For Agent 2: '2a', '2b', '2c'
-      completed: integer("completed").notNull().default(0),
-      // 0 or 1 boolean
-      sourceCodeFiles: jsonb("source_code_files").$type(),
-      // Array of source code files
-      createdAt: timestamp("created_at").defaultNow(),
-      updatedAt: timestamp("updated_at").defaultNow()
-    });
-    agentData = pgTable("agent_data", {
-      id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-      projectId: varchar("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
-      agentNumber: integer("agent_number").notNull(),
-      // 1-5
-      data: jsonb("data").notNull(),
-      // Flexible JSON storage for each agent's output
-      createdAt: timestamp("created_at").defaultNow(),
-      updatedAt: timestamp("updated_at").defaultNow()
-    });
-    ideaSnapshots = pgTable("idea_snapshots", {
-      id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-      projectId: varchar("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
-      version: integer("version").notNull(),
-      // Sequential version number
-      snapshotType: text("snapshot_type").notNull(),
-      // See types above
-      title: text("title"),
-      // Brief title/label for this snapshot
-      content: text("content").notNull(),
-      // The idea content at this point (human-readable markdown)
-      command: text("command"),
-      // The user command that triggered this snapshot (for mechanic types)
-      qualityScore: text("quality_score"),
-      // Score from internal quality loop (for mechanic types)
-      metadata: jsonb("metadata"),
-      // Structured data: selectedIdeas, priorArt, claims, diagrams, etc.
-      createdAt: timestamp("created_at").defaultNow()
-    });
-    priorArtSearches = pgTable("prior_art_searches", {
-      id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-      userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-      searchText: text("search_text").notNull(),
-      results: jsonb("results"),
-      // Array of prior art results
-      analysis: jsonb("analysis"),
-      // Analysis with key_differentiators, claims_focus, etc.
-      createdAt: timestamp("created_at").defaultNow()
-    });
-    pannuRecords = pgTable("pannu_records", {
-      id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-      projectId: varchar("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
-      conceptId: text("concept_id").notNull(),
-      // ID of the concept/claim being validated
-      claimText: text("claim_text").notNull(),
-      // The claim text being validated
-      strategyContext: text("strategy_context"),
-      // White space strategy context
-      questions: jsonb("questions"),
-      // Generated Pannu questions
-      answers: jsonb("answers"),
-      // Human inventor's answers
-      certificationStatus: text("certification_status"),
-      // 'Certified', 'Needs Clarification', 'Rejected'
-      confidenceScore: text("confidence_score"),
-      // 0.0 to 1.0 as string
-      pannuRecordText: text("pannu_record_text"),
-      // Detailed justification
-      createdAt: timestamp("created_at").defaultNow(),
-      updatedAt: timestamp("updated_at").defaultNow()
-    });
-    usersRelations = relations(users, ({ many }) => ({
-      projects: many(projects)
-    }));
-    projectsRelations = relations(projects, ({ one, many }) => ({
-      user: one(users, {
-        fields: [projects.userId],
-        references: [users.id]
-      }),
-      agentData: many(agentData),
-      ideaSnapshots: many(ideaSnapshots),
-      pannuRecords: many(pannuRecords)
-    }));
-    agentDataRelations = relations(agentData, ({ one }) => ({
-      project: one(projects, {
-        fields: [agentData.projectId],
-        references: [projects.id]
-      })
-    }));
-    ideaSnapshotsRelations = relations(ideaSnapshots, ({ one }) => ({
-      project: one(projects, {
-        fields: [ideaSnapshots.projectId],
-        references: [projects.id]
-      })
-    }));
-    pannuRecordsRelations = relations(pannuRecords, ({ one }) => ({
-      project: one(projects, {
-        fields: [pannuRecords.projectId],
-        references: [projects.id]
-      })
-    }));
-    priorArtSearchesRelations = relations(priorArtSearches, ({ one }) => ({
-      user: one(users, {
-        fields: [priorArtSearches.userId],
-        references: [users.id]
-      })
-    }));
-    insertUserSchema = createInsertSchema(users).omit({
-      id: true,
-      createdAt: true,
-      updatedAt: true
-    });
-    insertProjectSchema = createInsertSchema(projects, {
-      sourceCodeFiles: z.array(z.object({
-        id: z.string(),
-        fileName: z.string(),
-        description: z.string(),
-        code: z.string(),
-        addedAt: z.string()
-      })).nullable().optional()
-    }).omit({
-      id: true,
-      createdAt: true,
-      updatedAt: true
-    });
-    insertAgentDataSchema = createInsertSchema(agentData).omit({
-      id: true,
-      createdAt: true,
-      updatedAt: true
-    });
-    insertPannuRecordSchema = createInsertSchema(pannuRecords).omit({
-      id: true,
-      createdAt: true,
-      updatedAt: true
-    });
-    insertIdeaSnapshotSchema = createInsertSchema(ideaSnapshots).omit({
-      id: true,
-      createdAt: true
-    });
-    insertPriorArtSearchSchema = createInsertSchema(priorArtSearches).omit({
-      id: true,
-      createdAt: true
-    });
-    emailWhitelist = pgTable("email_whitelist", {
-      id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-      email: text("email").notNull().unique(),
-      note: text("note"),
-      // optional label for who this is
-      status: text("status").notNull().default("active"),
-      // 'active' | 'read_only'
-      addedAt: timestamp("added_at").defaultNow()
-    });
-  }
+var users = pgTable("users", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  email: text("email").notNull().unique(),
+  password: text("password").notNull(),
+  // 2FA fields
+  twoFactorEnabled: boolean("two_factor_enabled").default(false),
+  twoFactorMethod: text("two_factor_method"),
+  // 'email' or 'totp'
+  totpSecret: text("totp_secret"),
+  // Secret for authenticator app
+  pendingTwoFactorCode: text("pending_two_factor_code"),
+  // Temporary code for email 2FA
+  pendingTwoFactorExpiry: timestamp("pending_two_factor_expiry"),
+  // When the code expires
+  twoFactorVerifiedAt: timestamp("two_factor_verified_at"),
+  // Session-level 2FA verification timestamp
+  lastLoginAt: timestamp("last_login_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow()
+});
+var projects = pgTable("projects", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  title: text("title").notNull(),
+  category: text("category").notNull(),
+  // Software, SaaS, or Blockchain
+  currentStage: integer("current_stage").notNull().default(1),
+  // 1-5 representing agent stages
+  currentSubstage: text("current_substage"),
+  // For Agent 2: '2a', '2b', '2c'
+  completed: integer("completed").notNull().default(0),
+  // 0 or 1 boolean
+  sourceCodeFiles: jsonb("source_code_files").$type(),
+  // Array of source code files
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow()
+});
+var agentData = pgTable("agent_data", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  projectId: varchar("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  agentNumber: integer("agent_number").notNull(),
+  // 1-5
+  data: jsonb("data").notNull(),
+  // Flexible JSON storage for each agent's output
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow()
+});
+var ideaSnapshots = pgTable("idea_snapshots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  projectId: varchar("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  version: integer("version").notNull(),
+  // Sequential version number
+  snapshotType: text("snapshot_type").notNull(),
+  // See types above
+  title: text("title"),
+  // Brief title/label for this snapshot
+  content: text("content").notNull(),
+  // The idea content at this point (human-readable markdown)
+  command: text("command"),
+  // The user command that triggered this snapshot (for mechanic types)
+  qualityScore: text("quality_score"),
+  // Score from internal quality loop (for mechanic types)
+  metadata: jsonb("metadata"),
+  // Structured data: selectedIdeas, priorArt, claims, diagrams, etc.
+  createdAt: timestamp("created_at").defaultNow()
+});
+var priorArtSearches = pgTable("prior_art_searches", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  searchText: text("search_text").notNull(),
+  results: jsonb("results"),
+  // Array of prior art results
+  analysis: jsonb("analysis"),
+  // Analysis with key_differentiators, claims_focus, etc.
+  createdAt: timestamp("created_at").defaultNow()
+});
+var pannuRecords = pgTable("pannu_records", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  projectId: varchar("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  conceptId: text("concept_id").notNull(),
+  // ID of the concept/claim being validated
+  claimText: text("claim_text").notNull(),
+  // The claim text being validated
+  strategyContext: text("strategy_context"),
+  // White space strategy context
+  questions: jsonb("questions"),
+  // Generated Pannu questions
+  answers: jsonb("answers"),
+  // Human inventor's answers
+  certificationStatus: text("certification_status"),
+  // 'Certified', 'Needs Clarification', 'Rejected'
+  confidenceScore: text("confidence_score"),
+  // 0.0 to 1.0 as string
+  pannuRecordText: text("pannu_record_text"),
+  // Detailed justification
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow()
+});
+var usersRelations = relations(users, ({ many }) => ({
+  projects: many(projects)
+}));
+var projectsRelations = relations(projects, ({ one, many }) => ({
+  user: one(users, {
+    fields: [projects.userId],
+    references: [users.id]
+  }),
+  agentData: many(agentData),
+  ideaSnapshots: many(ideaSnapshots),
+  pannuRecords: many(pannuRecords)
+}));
+var agentDataRelations = relations(agentData, ({ one }) => ({
+  project: one(projects, {
+    fields: [agentData.projectId],
+    references: [projects.id]
+  })
+}));
+var ideaSnapshotsRelations = relations(ideaSnapshots, ({ one }) => ({
+  project: one(projects, {
+    fields: [ideaSnapshots.projectId],
+    references: [projects.id]
+  })
+}));
+var pannuRecordsRelations = relations(pannuRecords, ({ one }) => ({
+  project: one(projects, {
+    fields: [pannuRecords.projectId],
+    references: [projects.id]
+  })
+}));
+var priorArtSearchesRelations = relations(priorArtSearches, ({ one }) => ({
+  user: one(users, {
+    fields: [priorArtSearches.userId],
+    references: [users.id]
+  })
+}));
+var insertUserSchema = createInsertSchema(users).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true
+});
+var insertProjectSchema = createInsertSchema(projects, {
+  sourceCodeFiles: z.array(z.object({
+    id: z.string(),
+    fileName: z.string(),
+    description: z.string(),
+    code: z.string(),
+    addedAt: z.string()
+  })).nullable().optional()
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true
+});
+var insertAgentDataSchema = createInsertSchema(agentData).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true
+});
+var insertPannuRecordSchema = createInsertSchema(pannuRecords).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true
+});
+var insertIdeaSnapshotSchema = createInsertSchema(ideaSnapshots).omit({
+  id: true,
+  createdAt: true
+});
+var insertPriorArtSearchSchema = createInsertSchema(priorArtSearches).omit({
+  id: true,
+  createdAt: true
+});
+var emailWhitelist = pgTable("email_whitelist", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  email: text("email").notNull().unique(),
+  note: text("note"),
+  // optional label for who this is
+  status: text("status").notNull().default("active"),
+  // 'active' | 'read_only'
+  addedAt: timestamp("added_at").defaultNow()
 });
 
 // server/db.ts
-var db_exports = {};
-__export(db_exports, {
-  db: () => db,
-  pool: () => pool
-});
 import { Pool, neonConfig } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-serverless";
 import ws from "ws";
-var pool, db;
-var init_db = __esm({
-  "server/db.ts"() {
-    "use strict";
-    init_schema();
-    neonConfig.webSocketConstructor = ws;
-    if (!process.env.DATABASE_URL) {
-      throw new Error(
-        "DATABASE_URL must be set. Did you forget to provision a database?"
-      );
-    }
-    pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      max: 10,
-      idleTimeoutMillis: 3e4,
-      connectionTimeoutMillis: 1e4
-    });
-    pool.on("error", (err) => {
-      if (err.code === "57P01") {
-        console.log("PG Pool: Connection terminated by server (idle timeout) - this is normal");
-      } else {
-        console.error("PG Pool error:", err);
-      }
-    });
-    db = drizzle({ client: pool, schema: schema_exports });
+neonConfig.webSocketConstructor = ws;
+if (!process.env.DATABASE_URL) {
+  throw new Error(
+    "DATABASE_URL must be set. Did you forget to provision a database?"
+  );
+}
+var pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 10,
+  idleTimeoutMillis: 3e4,
+  connectionTimeoutMillis: 1e4
+});
+pool.on("error", (err) => {
+  if (err.code === "57P01") {
+    console.log("PG Pool: Connection terminated by server (idle timeout) - this is normal");
+  } else {
+    console.error("PG Pool error:", err);
   }
 });
-
-// server/app.ts
-import "dotenv/config";
-import express from "express";
-import cors from "cors";
-
-// server/routes.ts
-import { createServer } from "http";
-import https from "https";
+var db = drizzle({ client: pool, schema: schema_exports });
 
 // server/storage.ts
-init_schema();
-init_db();
 import { eq, and, desc, sql as sql2 } from "drizzle-orm";
 var DatabaseStorage = class {
   // User operations
@@ -447,8 +423,6 @@ var DatabaseStorage = class {
 var storage = new DatabaseStorage();
 
 // server/routes.ts
-init_db();
-init_schema();
 import { z as z2 } from "zod";
 import bcrypt from "bcryptjs";
 import session from "express-session";
@@ -638,12 +612,13 @@ ${context}`;
 async function runDebate(payload) {
   const idea = payload.idea;
   console.log(">>> [M1-1a DEBATE] <<< direct AI \u2014 Advocate + Examiner in parallel");
-  const [advocateResult, examinerResult] = await Promise.all([
-    runAdvocate(idea),
-    runExaminer(idea)
-  ]);
-  console.log(">>> [M1-1a DEBATE] <<< complete \u2014 both agents responded");
-  const transcript = `\u{1F3AD} PATENT GEYSER
+  try {
+    const [advocateResult, examinerResult] = await Promise.all([
+      runAdvocate(idea),
+      runExaminer(idea)
+    ]);
+    console.log(">>> [M1-1a DEBATE] <<< complete \u2014 both agents responded");
+    const transcript = `\u{1F3AD} PATENT GEYSER
 ${"=".repeat(60)}
 
 \u{1F4A1} IDEA: ${idea}
@@ -655,24 +630,33 @@ ${advocateResult}
 ${examinerResult}
 
 ${"=".repeat(60)}`;
-  return {
-    success: true,
-    data: {
-      fullDebate: [
-        { speaker: "Advocate", message: advocateResult },
-        { speaker: "Examiner", message: examinerResult }
-      ],
-      transcript,
-      category: payload.category || "software",
-      totalRounds: 1,
-      debateComplete: true,
-      metadata: {
-        timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-        rounds: 1,
-        totalExchanges: 2
+    return {
+      success: true,
+      data: {
+        fullDebate: [
+          { speaker: "Advocate", message: advocateResult },
+          { speaker: "Examiner", message: examinerResult }
+        ],
+        transcript,
+        category: payload.category || "software",
+        totalRounds: 1,
+        debateComplete: true,
+        metadata: {
+          timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+          rounds: 1,
+          totalExchanges: 2
+        }
       }
-    }
-  };
+    };
+  } catch (error) {
+    console.error(">>> [M1-1a DEBATE] <<< failed:", error);
+    const message = error?.message || String(error);
+    const errorMessage = message.includes("timeout") || message.includes("timed out") ? "AI service timed out. Please try again." : message.includes("empty") || message.includes("no response") ? "AI service returned an empty response. Please try again." : message || "AI debate failed";
+    return {
+      success: false,
+      error: errorMessage
+    };
+  }
 }
 async function runAdvocate(idea) {
   console.log("[M1-1a/Advocate] Running...");
@@ -857,9 +841,10 @@ Respond with ONLY "KEEP" or "REMOVE" (one word only).`;
 }
 async function runListCreator(payload) {
   console.log(">>> [M1-1d LIST-CREATOR] <<< List Creator \u2014 generating unified items");
-  const listConfig = loadAgentConfig("module1/1d/list-maker.config.json");
-  const listSystem = loadPrompt("module1/1d/list-maker.md");
-  const listUserMessage = `Here are the three texts you must analyze:
+  try {
+    const listConfig = loadAgentConfig("module1/1d/list-maker.config.json");
+    const listSystem = loadPrompt("module1/1d/list-maker.md");
+    const listUserMessage = `Here are the three texts you must analyze:
 
 ORIGINAL:
 ${payload.original || ""}
@@ -887,49 +872,59 @@ From Bad Cop:
 [summary or quote, or "Not mentioned"]
 
 Output only the Unified Items List.`;
-  const rawList = await callAgent({
-    systemPrompt: listSystem,
-    userMessage: listUserMessage,
-    config: listConfig
-  });
-  const items = parseUnifiedList(rawList);
-  console.log(`>>> [M1-1d LIST-CREATOR] <<< Parsed ${items.length} unified items \u2014 filtering in parallel`);
-  if (items.length === 0) {
+    const rawList = await callAgent({
+      systemPrompt: listSystem,
+      userMessage: listUserMessage,
+      config: listConfig
+    });
+    const items = parseUnifiedList(rawList);
+    console.log(`>>> [M1-1d LIST-CREATOR] <<< Parsed ${items.length} unified items \u2014 filtering in parallel`);
+    if (items.length === 0) {
+      return {
+        success: true,
+        data: { kept: [], removed: [], totalKept: 0, totalRemoved: 0 }
+      };
+    }
+    const filterConfig = loadAgentConfig("module1/1d/filter.config.json");
+    const filterSystem = loadPrompt("module1/1d/filter.md");
+    const decisions = await Promise.all(items.map((item) => filterItem(item, filterSystem, filterConfig)));
+    const kept = [];
+    const removed = [];
+    items.forEach((item, idx) => {
+      if (decisions[idx]) {
+        kept.push(item);
+      } else {
+        removed.push({ ...item, reason: "Filter agent marked as redundant" });
+      }
+    });
+    console.log(`>>> [M1-1d LIST-CREATOR] <<< Kept ${kept.length}, removed ${removed.length}`);
     return {
       success: true,
-      data: { kept: [], removed: [], totalKept: 0, totalRemoved: 0 }
+      data: {
+        kept,
+        removed,
+        totalKept: kept.length,
+        totalRemoved: removed.length
+      }
+    };
+  } catch (error) {
+    console.error(">>> [M1-1d LIST-CREATOR] <<< failed:", error);
+    const message = error?.message || String(error);
+    const errorMessage = message.includes("timeout") || message.includes("timed out") ? "AI service timed out. Please try again." : message || "List creator failed";
+    return {
+      success: false,
+      error: errorMessage
     };
   }
-  const filterConfig = loadAgentConfig("module1/1d/filter.config.json");
-  const filterSystem = loadPrompt("module1/1d/filter.md");
-  const decisions = await Promise.all(items.map((item) => filterItem(item, filterSystem, filterConfig)));
-  const kept = [];
-  const removed = [];
-  items.forEach((item, idx) => {
-    if (decisions[idx]) {
-      kept.push(item);
-    } else {
-      removed.push({ ...item, reason: "Filter agent marked as redundant" });
-    }
-  });
-  console.log(`>>> [M1-1d LIST-CREATOR] <<< Kept ${kept.length}, removed ${removed.length}`);
-  return {
-    success: true,
-    data: {
-      kept,
-      removed,
-      totalKept: kept.length,
-      totalRemoved: removed.length
-    }
-  };
 }
 
 // server/modules/module1/1e/ai-modifier.ts
 async function runAiModifier(payload) {
   console.log(`>>> [M1-1e AI-MODIFIER] <<< AI Idea Modifier \u2014 refining item: "${payload.item?.substring(0, 60)}..."`);
-  const config = loadAgentConfig("module1/1e/ai-modifier.config.json");
-  const systemPrompt = loadPrompt("module1/1e/ai-modifier.md");
-  const userMessage = `Here is the MAIN IDEA (Context):
+  try {
+    const config = loadAgentConfig("module1/1e/ai-modifier.config.json");
+    const systemPrompt = loadPrompt("module1/1e/ai-modifier.md");
+    const userMessage = `Here is the MAIN IDEA (Context):
 ${payload.mainIdea || ""}
 
 Here is the TITLE:
@@ -951,15 +946,24 @@ Rewrite the ORIGINAL IDEA into a single, scientifically robust technical paragra
 \u2022 **Format:** Single dense paragraph. Patent English.
 
 Output strictly the rewritten text, followed by a line "Improvements Made:" and a short bulleted list of the specific changes applied.`;
-  const raw = await callAgent({ systemPrompt, userMessage, config });
-  const parts = raw.split(/Improvements Made:/i);
-  const improvedIdea = (parts[0] || "").trim();
-  const improvementsMade = parts.length > 1 ? parts[1].trim() : "";
-  console.log(`>>> [M1-1e AI-MODIFIER] <<< Done \u2014 improvedIdea ${improvedIdea.length} chars, improvementsMade ${improvementsMade.length} chars`);
-  return {
-    success: true,
-    data: { improvedIdea, improvementsMade }
-  };
+    const raw = await callAgent({ systemPrompt, userMessage, config });
+    const parts = raw.split(/Improvements Made:/i);
+    const improvedIdea = (parts[0] || "").trim();
+    const improvementsMade = parts.length > 1 ? parts[1].trim() : "";
+    console.log(`>>> [M1-1e AI-MODIFIER] <<< Done \u2014 improvedIdea ${improvedIdea.length} chars, improvementsMade ${improvementsMade.length} chars`);
+    return {
+      success: true,
+      data: { improvedIdea, improvementsMade }
+    };
+  } catch (error) {
+    console.error(">>> [M1-1e AI-MODIFIER] <<< failed:", error);
+    const message = error?.message || String(error);
+    const errorMessage = message.includes("timeout") || message.includes("timed out") ? "AI service timed out. Please try again." : message || "AI idea modifier failed";
+    return {
+      success: false,
+      error: errorMessage
+    };
+  }
 }
 
 // server/routes.ts
@@ -1224,17 +1228,8 @@ async function seedWhitelistIfEmpty() {
     console.error("[whitelist] Seed error:", err);
   }
 }
-async function runStartupMigrations() {
-  try {
-    const { pool: pgPool } = await Promise.resolve().then(() => (init_db(), db_exports));
-    await pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP`);
-  } catch (err) {
-    console.error("[migration] Startup migration error:", err);
-  }
-}
 async function registerRoutes(app2) {
-  await runStartupMigrations();
-  await seedWhitelistIfEmpty();
+  seedWhitelistIfEmpty().catch((err) => console.error("[whitelist] Seed error:", err));
   app2.use(getSession());
   app2.use(["/api/projects", "/api/prior-art-check"], (req, res, next) => {
     if (req.method === "GET") return next();
@@ -3034,7 +3029,8 @@ Examiner: ${examinerMsg}`,
         removedIdeas = responseData.removed || [];
         console.log(`New format (unwrapped): ${keptIdeas.length} kept, ${removedIdeas.length} removed`);
       } else {
-        keptIdeas = responseData?.ideas || responseData?.items || responseData || [];
+        const legacy = responseData;
+        keptIdeas = legacy?.ideas || legacy?.items || legacy || [];
         console.log(`Old format: ${keptIdeas.length} ideas`);
       }
       const cleanItemText = (text2) => {
@@ -3193,7 +3189,8 @@ Examiner: ${examinerMsg}`,
         improvedIdea = data.improvedIdea || "";
         improvementsMade = data.improvementsMade || "";
       } else {
-        const suggestion = data?.suggestion || data?.recommendation || data?.response || data;
+        const legacy = data;
+        const suggestion = legacy?.suggestion || legacy?.recommendation || legacy?.response || legacy;
         improvedIdea = typeof suggestion === "string" ? suggestion : JSON.stringify(suggestion);
       }
       const extractedIdeas = agent1Data?.data?.extractedIdeas || [];

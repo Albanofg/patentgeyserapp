@@ -344,21 +344,9 @@ async function seedWhitelistIfEmpty() {
   }
 }
 
-async function runStartupMigrations() {
-  try {
-    // Add last_login_at column if it doesn't exist (safe for production)
-    const { pool: pgPool } = await import("./db");
-    await pgPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP`);
-  } catch (err) {
-    console.error("[migration] Startup migration error:", err);
-  }
-}
-
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Run safe startup migrations before anything else
-  await runStartupMigrations();
-  // Seed whitelist on startup if empty (handles fresh production deployments)
-  await seedWhitelistIfEmpty();
+  // Seed whitelist in background — don't block cold start on DB round-trip
+  seedWhitelistIfEmpty().catch(err => console.error("[whitelist] Seed error:", err));
 
   // Session middleware
   app.use(getSession());
@@ -2780,8 +2768,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         removedIdeas = responseData.removed || [];
         console.log(`New format (unwrapped): ${keptIdeas.length} kept, ${removedIdeas.length} removed`);
       } else {
-        // Old format: direct array of ideas
-        keptIdeas = responseData?.ideas || responseData?.items || responseData || [];
+        // Old format: direct array of ideas (legacy shape, cast to any to preserve runtime fallback)
+        const legacy = responseData as any;
+        keptIdeas = legacy?.ideas || legacy?.items || legacy || [];
         console.log(`Old format: ${keptIdeas.length} ideas`);
       }
       
@@ -2994,8 +2983,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         improvedIdea = data.improvedIdea || "";
         improvementsMade = data.improvementsMade || "";
       } else {
-        // Fallback to old format for backwards compatibility
-        const suggestion = data?.suggestion || data?.recommendation || data?.response || data;
+        // Fallback to old format for backwards compatibility (legacy shape)
+        const legacy = data as any;
+        const suggestion = legacy?.suggestion || legacy?.recommendation || legacy?.response || legacy;
         improvedIdea = typeof suggestion === 'string' ? suggestion : JSON.stringify(suggestion);
       }
 
