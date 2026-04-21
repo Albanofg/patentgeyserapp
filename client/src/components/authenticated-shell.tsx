@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, lazy, Suspense } from "react";
 import { useLocation, useRoute, Switch, Route } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
@@ -7,28 +7,37 @@ import { Loader2, Menu, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import geyserLogo from "@/assets/geyser-logo.png";
-import Dashboard from "@/pages/dashboard";
-import Agent1 from "@/pages/agent1";
-import Agent1a from "@/pages/agent1a";
-import Agent1aAudit from "@/pages/agent1a-audit";
-import Agent1Inspect from "@/pages/agent1-inspect";
-import Agent2 from "@/pages/agent2";
-import Agent2a from "@/pages/agent2a";
-import Agent2b from "@/pages/agent2b";
-import Agent3 from "@/pages/agent3";
-import Agent4 from "@/pages/agent4";
-import Agent4b from "@/pages/agent4b";
-import Agent4PannuIntro from "@/pages/agent4-pannu-intro";
-import Agent4Pannu from "@/pages/agent4-pannu";
-import Agent4c from "@/pages/agent4c";
-import Agent5 from "@/pages/agent5";
-import Agent5Practitioner from "@/pages/agent5-practitioner";
-import PriorArtCheck from "@/pages/prior-art-check";
-import UserSettings from "@/pages/user-settings";
-import AdminWhitelist from "@/pages/admin-whitelist";
-import AdminUsers from "@/pages/admin-users";
-import TwoFactorVerify from "@/pages/two-factor-verify";
-import NotFound from "@/pages/not-found";
+
+const Dashboard = lazy(() => import("@/pages/dashboard"));
+const Agent1 = lazy(() => import("@/pages/agent1"));
+const Agent1a = lazy(() => import("@/pages/agent1a"));
+const Agent1aAudit = lazy(() => import("@/pages/agent1a-audit"));
+const Agent1Inspect = lazy(() => import("@/pages/agent1-inspect"));
+const Agent2 = lazy(() => import("@/pages/agent2"));
+const Agent2a = lazy(() => import("@/pages/agent2a"));
+const Agent2b = lazy(() => import("@/pages/agent2b"));
+const Agent3 = lazy(() => import("@/pages/agent3"));
+const Agent4 = lazy(() => import("@/pages/agent4"));
+const Agent4b = lazy(() => import("@/pages/agent4b"));
+const Agent4PannuIntro = lazy(() => import("@/pages/agent4-pannu-intro"));
+const Agent4Pannu = lazy(() => import("@/pages/agent4-pannu"));
+const Agent4c = lazy(() => import("@/pages/agent4c"));
+const Agent5 = lazy(() => import("@/pages/agent5"));
+const Agent5Practitioner = lazy(() => import("@/pages/agent5-practitioner"));
+const PriorArtCheck = lazy(() => import("@/pages/prior-art-check"));
+const UserSettings = lazy(() => import("@/pages/user-settings"));
+const AdminWhitelist = lazy(() => import("@/pages/admin-whitelist"));
+const AdminUsers = lazy(() => import("@/pages/admin-users"));
+const TwoFactorVerify = lazy(() => import("@/pages/two-factor-verify"));
+const NotFound = lazy(() => import("@/pages/not-found"));
+
+function RouteLoader() {
+  return (
+    <div className="h-full flex items-center justify-center">
+      <Loader2 className="h-8 w-8 animate-spin text-primary" />
+    </div>
+  );
+}
 
 interface AuthenticatedUser {
   id: number;
@@ -181,15 +190,17 @@ export function AuthenticatedShell() {
 
   if (needs2FAVerification) {
     return (
-      <TwoFactorVerify
-        method={user.twoFactorMethod || 'email'}
-        userId={user.id}
-        email={user.email}
-        onSuccess={() => {
-          setTwoFactorComplete(true);
-          refetch();
-        }}
-      />
+      <Suspense fallback={<RouteLoader />}>
+        <TwoFactorVerify
+          method={user.twoFactorMethod || 'email'}
+          userId={user.id}
+          email={user.email}
+          onSuccess={() => {
+            setTwoFactorComplete(true);
+            refetch();
+          }}
+        />
+      </Suspense>
     );
   }
 
@@ -218,6 +229,7 @@ export function AuthenticatedShell() {
             </div>
           )}
           <main className="flex-1 overflow-y-auto">
+            <Suspense fallback={<RouteLoader />}>
             <Switch>
             <Route path="/" component={Dashboard} />
             <Route path="/dashboard" component={Dashboard} />
@@ -244,6 +256,7 @@ export function AuthenticatedShell() {
             <Route path="/project/:id/agent/5-practitioner" component={Agent5Practitioner} />
             <Route component={NotFound} />
             </Switch>
+            </Suspense>
           </main>
         </div>
       </div>

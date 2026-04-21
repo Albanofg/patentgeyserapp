@@ -3,6 +3,7 @@
   "outputDirectory": "dist/public",
   "installCommand": "npm install",
   "framework": null,
+  "regions": ["cle1"],
   "functions": {
     "api/index.js": {
       "maxDuration": 300,
