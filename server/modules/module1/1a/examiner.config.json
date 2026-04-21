@@ -1,5 +1,5 @@
 {
-  "model": "gemini-3-flash-preview",
+  "model": "gemini-pro-latest",
   "fallback": "gpt-4o-mini",
   "temperature": 0.1,
   "topP": 0.9,
