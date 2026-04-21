@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, lazy, Suspense } from "react";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { AgentHeader } from "@/components/agent-header";
-import MDEditor from '@uiw/react-md-editor';
+const MDEditor = lazy(() => import('@uiw/react-md-editor'));
 import { Loader2, Download, FileText, Image as ImageIcon, CheckCircle2, Save, RefreshCw, ExternalLink, Sparkles, Pencil, Users, ArrowRight } from "lucide-react";
 import type { Project } from "@shared/schema";
 
@@ -779,12 +779,14 @@ export default function Agent5() {
                               </div>
                               {isEditing ? (
                                 <div data-color-mode="auto">
-                                  <MDEditor
-                                    value={editContent}
-                                    onChange={(val) => setEditContent(val || '')}
-                                    height={activeSpecSection === 'title' ? 200 : 300}
-                                    preview="edit"
-                                  />
+                                  <Suspense fallback={<div className="flex items-center justify-center h-[300px]"><Loader2 className="h-6 w-6 animate-spin text-primary" /></div>}>
+                                    <MDEditor
+                                      value={editContent}
+                                      onChange={(val) => setEditContent(val || '')}
+                                      height={activeSpecSection === 'title' ? 200 : 300}
+                                      preview="edit"
+                                    />
+                                  </Suspense>
                                 </div>
                               ) : (
                                 <div className="bg-muted p-3 sm:p-6 rounded-lg text-xs sm:text-sm leading-relaxed max-h-[400px] sm:max-h-[600px] overflow-y-auto prose prose-sm dark:prose-invert max-w-none">
