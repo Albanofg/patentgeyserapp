@@ -213,18 +213,13 @@ server/modules/
       refiner.config.json
       extract-concepts.ts
 
-  module3/   → Prior Art (Agent 3)  [DEFERRED — not a text-AI migration]
-    # Both quick-search and multi-concept-search are BigQuery vector-search
-    # pipelines (ML.GENERATE_EMBEDDING + VECTOR_SEARCH against
-    # patent-geyser.patents_us.patents_with_vectors). Currently served via
-    # N8N_QUICK_PRIOR_ART_WEBHOOK and N8N_MULTI_CONCEPT_SEARCH_WEBHOOK.
-    #
-    # These are infra glue, not AI agents — no prompt to own, no model to tune.
-    # Migrating in-house requires:
-    #   - adding @google-cloud/bigquery (large serverless-bundle impact)
-    #   - moving a GCP service-account JSON into Vercel env vars
-    #   - absorbing BigQuery billing directly from your GCP project
-    # Left on n8n for now; revisit when consolidation value outweighs the cost.
+  module3/   → Prior Art (Agent 3)
+    quick-search.md            → Single concept prior art search
+    quick-search.config.json
+    quick-search.ts
+    multi-search.md            → Multi-concept prior art search
+    multi-search.config.json
+    multi-search.ts
 
   module4/   → White Space & Claims (Agent 4, 4b, 4c)
     whitespace.md              → White space / gap analysis
