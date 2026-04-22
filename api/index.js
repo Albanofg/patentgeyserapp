@@ -498,16 +498,23 @@ async function callModel(opts, model) {
 }
 async function callAgent(opts) {
   const { model, fallback } = opts.config;
+  const started = Date.now();
+  console.log(`[AI] -> ${model} (maxTokens=${opts.config.maxTokens}, temp=${opts.config.temperature})`);
   try {
-    return await callModel(opts, model);
+    const result = await callModel(opts, model);
+    console.log(`[AI] <- ${model} ok (${Date.now() - started}ms, ${result.length} chars)`);
+    return result;
   } catch (error) {
-    console.error(`[AI] ${model} failed:`, error.message);
+    console.error(`[AI] ${model} failed after ${Date.now() - started}ms:`, error.message);
     if (!fallback) throw error;
-    console.log(`[AI] Falling back to ${fallback}`);
+    console.log(`[AI] -> fallback ${fallback}`);
+    const fbStarted = Date.now();
     try {
-      return await callModel(opts, fallback);
+      const result = await callModel(opts, fallback);
+      console.log(`[AI] <- ${fallback} ok (${Date.now() - fbStarted}ms, ${result.length} chars)`);
+      return result;
     } catch (fallbackError) {
-      console.error(`[AI] Fallback ${fallback} also failed:`, fallbackError.message);
+      console.error(`[AI] Fallback ${fallback} also failed after ${Date.now() - fbStarted}ms:`, fallbackError.message);
       throw fallbackError;
     }
   }
@@ -2052,7 +2059,7 @@ async function registerRoutes(app2) {
       const validation = updateSchema.safeParse(req.body);
       if (!validation.success) {
         return res.status(400).json({
-          message: validation.error.errors[0]?.message || "Invalid input"
+          message: validation.error.issues[0]?.message || "Invalid input"
         });
       }
       const updatedProject = await storage.updateProject(req.params.id, {
