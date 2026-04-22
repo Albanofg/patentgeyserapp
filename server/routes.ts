@@ -16,6 +16,15 @@ import { runReanalyze } from "./modules/module1/1b/reanalyze";
 import { runR3Fixes } from "./modules/module1/1c/r3-fixes";
 import { runListCreator } from "./modules/module1/1d/list-creator";
 import { runAiModifier } from "./modules/module1/1e/ai-modifier";
+import { runDraft } from "./modules/module2/2a/draft";
+import { runExtractConcepts } from "./modules/module2/2b/extract-concepts";
+import { runWhitespace } from "./modules/module4/4a/whitespace";
+import { runClaims } from "./modules/module4/4b/claims";
+import { runPannuQuestions, runPannuScorer } from "./modules/module4/4c/pannu";
+import { runPannuSuggestion } from "./modules/module4/4d/suggestion";
+import { runDiagrams } from "./modules/module5/5b/diagrams";
+import { runBroaderClaims } from "./modules/module5/5c/broader-claims";
+import { runProvisional } from "./modules/module5/5a/provisional";
 
 const SALT_ROUNDS = 10;
 
@@ -3183,49 +3192,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const isRefinement = !!refinementFeedback;
       console.log(isRefinement ? "Regenerating draft with refinement feedback" : "Generating initial provisional draft");
       
-      // Call Agent 2 webhook to extract patentable ideas
-      const agent2WebhookUrl = process.env.N8N_AGENT2_WEBHOOK;
-      if (!agent2WebhookUrl) {
-        return res.status(500).json({ message: "Agent 2 webhook is not configured. Please contact support." });
-      }
+      console.log("Calling Module 2 draft agent to generate provisional draft...");
 
-      console.log("Calling Agent 2 webhook to extract patentable ideas...");
-      
-      let result;
-      try {
-        const webhookResponse = await fetch(agent2WebhookUrl, {
-          method: "POST",
-          headers: { 
-            "Content-Type": "application/json; charset=utf-8",
-            "Accept": "application/json"
-          },
-          body: JSON.stringify(webhookPayload),
-          signal: AbortSignal.timeout(AGENT_TIMEOUT), // 10 minute timeout
-        });
+      const draftResponse = await runDraft(webhookPayload);
 
-        if (!webhookResponse.ok) {
-          throw new Error(`Webhook returned ${webhookResponse.status}: ${webhookResponse.statusText}`);
-        }
-
-        result = await webhookResponse.json();
-        console.log("Agent 2 webhook response received:", JSON.stringify(result).substring(0, 200));
-
-        // Validate webhook response - accept patentableIdeas, draftSpecification, or provisionalDraft
-        if (!result.patentableIdeas && !result.draftSpecification && !result.provisionalDraft) {
-          console.error("Webhook response structure:", Object.keys(result));
-          throw new Error(`Webhook response missing 'patentableIdeas', 'draftSpecification', or 'provisionalDraft' fields. Received: ${Object.keys(result).join(', ')}`);
-        }
-        
-        // Normalize field names - if provisionalDraft exists, map it to patentableIdeas
-        if (result.provisionalDraft && !result.patentableIdeas) {
-          result.patentableIdeas = result.provisionalDraft;
-        }
-      } catch (webhookError: any) {
-        console.error("Agent 2 webhook failed:", webhookError);
-        return res.status(503).json({ 
-          message: `Failed to extract ideas: ${webhookError.message}. Please try again.`
+      if (!draftResponse.success) {
+        return res.status(503).json({
+          message: `Failed to generate draft: ${draftResponse.error}. Please try again.`
         });
       }
+
+      // Map to the legacy result shape the rest of this route expects
+      const result: { patentableIdeas?: string; draftSpecification?: string; provisionalDraft?: string } = {
+        provisionalDraft: draftResponse.provisionalDraft,
+        patentableIdeas: draftResponse.provisionalDraft,
+      };
 
       // Only store if webhook succeeded
       await storage.upsertAgentData({
@@ -3288,15 +3269,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       const comprehensiveSummary = (agent2Data.data as any).comprehensiveSummary;
 
-      // Call webhook to extract ideas (webhook URL TBD)
-      // For now, we'll need the webhook endpoint - placeholder implementation
-      const webhookUrl = process.env.N8N_EXTRACT_IDEAS_WEBHOOK;
-      if (!webhookUrl) {
-        return res.status(500).json({ 
-          message: "Idea extraction webhook not configured yet. Please provide N8N_EXTRACT_IDEAS_WEBHOOK environment variable." 
-        });
-      }
-
       // Fetch source code files from project if available
       const project = await storage.getProject(req.params.id);
       let codeFromTheUser = "";
@@ -3309,64 +3281,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }).join("\n\n---\n\n");
       }
 
-      const webhookPayload: any = {
+      console.log("Calling Module 2/2b extract-concepts agent...");
+
+      const extractResult = await runExtractConcepts({
         sessionId: comprehensiveSummary?.sessionId,
         detailedConcept: provisionalDraft,
+        codeFromTheUser: codeFromTheUser || undefined,
         category: comprehensiveSummary?.category || "Software",
-      };
-
-      // Only add codeFromTheUser if there are code files
-      if (codeFromTheUser) {
-        webhookPayload.codeFromTheUser = codeFromTheUser;
-      }
-
-      console.log("Calling idea extraction webhook...");
-      
-      const webhookResponse = await fetch(webhookUrl, {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json; charset=utf-8",
-          "Accept": "application/json"
-        },
-        body: JSON.stringify(webhookPayload),
-        signal: AbortSignal.timeout(AGENT_TIMEOUT), // 10 minute timeout
       });
 
-      if (!webhookResponse.ok) {
-        throw new Error(`Webhook returned ${webhookResponse.status}: ${webhookResponse.statusText}`);
+      if (!extractResult.success) {
+        return res.status(503).json({ message: extractResult.error });
       }
 
-      const result = await webhookResponse.json();
-      console.log("Ideas extraction webhook response received:", JSON.stringify(result, null, 2));
-
-      // Transform n8n response format (concept_1, concept_2, etc.) into ideas array
-      const ideas = [];
-      let conceptIndex = 1;
-      while (result[`concept_${conceptIndex}`]) {
-        const concept = result[`concept_${conceptIndex}`];
-        
-        // Each idea is just a single text block
-        let text;
-        if (typeof concept === 'string') {
-          text = concept.trim();
-        } else if (typeof concept === 'object') {
-          // Try various possible properties
-          text = concept.text || concept.description || concept.content || concept.title || JSON.stringify(concept);
-        } else {
-          text = String(concept);
-        }
-        
-        ideas.push({
-          id: `concept-${conceptIndex}-${Date.now()}`,
-          text: text,
-        });
-        conceptIndex++;
-      }
-
-      if (ideas.length === 0) {
-        console.error("No concepts found in webhook response:", result);
-        throw new Error("No patentable concepts were extracted. Please try again.");
-      }
+      const ideas = extractResult.ideas.map((text, index) => ({
+        id: `concept-${index + 1}-${Date.now()}`,
+        text,
+      }));
 
       console.log(`Extracted ${ideas.length} patentable concepts`);
 
@@ -3876,33 +3807,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }))
       };
 
-      console.log("Calling white space analysis webhook...");
-      const webhookResponse = await sendWebhook(N8N_WHITESPACE_WEBHOOK, webhookPayload);
+      console.log("Calling Module 4/4a whitespace agent...");
+      const whitespaceResult = await runWhitespace(webhookPayload);
+      if (!whitespaceResult.success) {
+        return res.status(503).json({ message: whitespaceResult.error });
+      }
+      const webhookResponse = whitespaceResult;
       console.log("White space analysis response:", webhookResponse);
 
-      // Handle new conceptAnalyses structure OR legacy nuggetAnalyses structure
-      let enrichedConceptAnalyses: any[] = [];
-      let enrichedNuggetAnalyses: any[] = [];
-
-      if (webhookResponse?.conceptAnalyses && Array.isArray(webhookResponse.conceptAnalyses)) {
-        // New structure with conceptAnalyses containing patentAnalyses for each prior art
-        enrichedConceptAnalyses = webhookResponse.conceptAnalyses.map((concept: any, index: number) => {
-          const matchingPriorArt = priorArtResults[index];
-          return {
-            ...concept,
-            conceptTitle: concept.conceptTitle || matchingPriorArt?.conceptTitle || '',
-          };
-        });
-      } else if (webhookResponse?.nuggetAnalyses && Array.isArray(webhookResponse.nuggetAnalyses)) {
-        // Legacy structure with nuggetAnalyses
-        enrichedNuggetAnalyses = webhookResponse.nuggetAnalyses.map((nugget: any, index: number) => {
-          const matchingPriorArt = priorArtResults[index];
-          return {
-            ...nugget,
-            conceptTitle: nugget.conceptTitle || matchingPriorArt?.conceptTitle || nugget.nugget || nugget.concept || '',
-          };
-        });
-      }
+      // Enrich concept analyses with fallback conceptTitle from priorArtResults
+      const enrichedConceptAnalyses = (webhookResponse.conceptAnalyses || []).map((concept: any, index: number) => {
+        const matchingPriorArt = priorArtResults[index];
+        return {
+          ...concept,
+          conceptTitle: concept.conceptTitle || matchingPriorArt?.conceptTitle || '',
+        };
+      });
 
       // Store the response in Agent 4 data with enriched concept titles
       await storage.upsertAgentData({
@@ -3912,22 +3832,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           status: 'analysis_complete',
           ...webhookResponse,
           conceptAnalyses: enrichedConceptAnalyses.length > 0 ? enrichedConceptAnalyses : undefined,
-          nuggetAnalyses: enrichedNuggetAnalyses.length > 0 ? enrichedNuggetAnalyses : undefined,
           analyzedAt: new Date().toISOString()
         },
       });
 
       // Create snapshot for white space analysis (Agent 4a)
       const whiteSpaceVersion = await storage.getNextSnapshotVersion(req.params.id);
-      const conceptCount = enrichedConceptAnalyses.length || enrichedNuggetAnalyses.length || 0;
-      const whiteSpaceContent = enrichedConceptAnalyses.length > 0
-        ? enrichedConceptAnalyses.map((concept: any, idx: number) => {
-            const patentCount = concept.patentAnalyses?.length || 0;
-            return `**Concept ${idx + 1}: ${concept.conceptTitle || 'Untitled'}**\n- Risk Level: ${concept.overallRiskLevel || 'Unknown'}\n- Patents Analyzed: ${patentCount}`;
-          }).join('\n\n')
-        : enrichedNuggetAnalyses.map((nugget: any) => {
-            return `**${nugget.conceptTitle || nugget.nugget || nugget.concept || 'Concept'}**\n- White Space: ${nugget.whiteSpaceStrategy || 'Analyzed'}\n- Risk: ${nugget.riskLevel || 'Assessed'}`;
-          }).join('\n\n');
+      const whiteSpaceContent = enrichedConceptAnalyses.map((concept: any, idx: number) => {
+        const patentCount = concept.patentAnalyses?.length || 0;
+        return `**Concept ${idx + 1}: ${concept.conceptTitle || 'Untitled'}**\n- Risk Level: ${concept.overallRiskLevel || 'Unknown'}\n- Patents Analyzed: ${patentCount}`;
+      }).join('\n\n');
       
       await storage.createIdeaSnapshot({
         projectId: req.params.id,
@@ -3938,7 +3852,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         metadata: { 
           stage: 4,
           substage: '4a',
-          conceptCount: conceptCount,
+          conceptCount: enrichedConceptAnalyses.length,
           strategicDirective: webhookResponse?.strategicDirective,
         },
       });
@@ -4000,30 +3914,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       };
 
-      console.log("Calling claims writer webhook...");
-      // Uses env var declared at top of file
-      const webhookResponse = await sendWebhook(N8N_CLAIMS_WEBHOOK, webhookPayload);
-      console.log("Claims writer response:", webhookResponse);
-
-      // Normalize the webhook response - extract claim variations from nested structure
-      let claimVariations = [];
-      
-      // Handle nested array structure: [{data: [...]}] or direct array
-      if (Array.isArray(webhookResponse)) {
-        if (webhookResponse.length > 0 && webhookResponse[0]?.data) {
-          // Nested structure: [{data: [...]}]
-          claimVariations = webhookResponse[0].data;
-        } else {
-          // Direct array structure
-          claimVariations = webhookResponse;
-        }
-      } else if (webhookResponse?.data) {
-        // Single object with data property
-        claimVariations = Array.isArray(webhookResponse.data) ? webhookResponse.data : [webhookResponse.data];
-      } else {
-        // Fallback: treat entire response as single variation
-        claimVariations = [webhookResponse];
+      console.log("Calling Module 4/4b claims agent...");
+      const claimsResult = await runClaims(webhookPayload);
+      if (!claimsResult.success) {
+        return res.status(503).json({ message: claimsResult.error });
       }
+      const webhookResponse: any = { data: claimsResult.data };
+      let claimVariations: any[] = claimsResult.data;
 
       // Helper function to parse raw_output - handles both JSON and plain text formats
       const parseRawOutput = (rawOutput: string): any => {
@@ -4320,7 +4217,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
 
       console.log("Calling provisional patent writing webhook...");
-      const rawWebhookResponse = await sendWebhook(N8N_PROVISIONAL_WEBHOOK, webhookPayload);
+      const rawWebhookResponse: any = await runProvisional(webhookPayload);
+      if (rawWebhookResponse && rawWebhookResponse.success === false) {
+        return res.status(503).json({ message: rawWebhookResponse.error || "Provisional generation failed" });
+      }
       console.log("Provisional webhook response received");
       console.log("Provisional response structure:", JSON.stringify(rawWebhookResponse, null, 2));
 
@@ -4427,7 +4327,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
 
       console.log("Calling provisional patent writing webhook for regeneration...");
-      const rawWebhookResponse = await sendWebhook(N8N_PROVISIONAL_WEBHOOK, webhookPayload);
+      const rawWebhookResponse: any = await runProvisional(webhookPayload);
+      if (rawWebhookResponse && rawWebhookResponse.success === false) {
+        return res.status(503).json({ message: rawWebhookResponse.error || "Provisional generation failed" });
+      }
       
       // Handle array-wrapped response
       const provisionalDraft = Array.isArray(rawWebhookResponse) ? rawWebhookResponse[0] : rawWebhookResponse;
@@ -4557,11 +4460,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }).join('\n\n');
       }
 
-      // Build webhook payload matching the user's template structure
-      // Prior art notes come from nuggetAnalyses which contains white space strategies
-      const priorArtNotes = agent4DataObj?.nuggetAnalyses 
-        ? JSON.stringify(agent4DataObj.nuggetAnalyses) 
-        : '';
+      // Build payload. Prior art notes come from the whitespace analysis
+      // (conceptAnalyses from migrated 4a, or legacy nuggetAnalyses if old data).
+      const priorArtSource = agent4DataObj?.conceptAnalyses || agent4DataObj?.nuggetAnalyses || null;
+      const priorArtNotes = priorArtSource ? JSON.stringify(priorArtSource) : '';
       
       const webhookPayload = {
         patent_title: parsedDraft.title || 'Provisional Patent Application',
@@ -4574,23 +4476,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         important_claim_sets: ''
       };
 
-      console.log("Calling broader claims webhook...");
-      console.log("Webhook payload prior_art_notes length:", webhookPayload.prior_art_notes?.length || 0);
-      console.log("Has nuggetAnalyses:", !!agent4DataObj?.nuggetAnalyses);
-      
-      // Call n8n webhook for broader claims generation
-      // Uses env var declared at top of file
-      const webhookResponse = await sendWebhook(N8N_BROADER_CLAIMS_WEBHOOK, webhookPayload);
-      
-      console.log("Broader claims webhook response received");
-      console.log("Response type:", typeof webhookResponse);
-      console.log("Response is array:", Array.isArray(webhookResponse));
-      console.log("Response structure:", JSON.stringify(webhookResponse, null, 2).substring(0, 1000));
+      console.log("Calling Module 5/5c broader claims agent pipeline...");
+      console.log("prior_art_notes length:", webhookPayload.prior_art_notes?.length || 0);
 
-      // Handle array-wrapped response
-      const response = Array.isArray(webhookResponse) ? webhookResponse[0] : webhookResponse;
-      console.log("Parsed response type:", typeof response);
-      console.log("Parsed response keys:", response ? Object.keys(response) : 'null/undefined');
+      const agentResult = await runBroaderClaims(webhookPayload);
+      if (!agentResult.success) {
+        return res.status(503).json({ message: agentResult.error });
+      }
+      const response = { summary: agentResult.summary, claims: agentResult.claims };
 
       // Store both specific (original) and broad (new) claims separately
       // User will choose which to use in final draft via frontend modal
@@ -4799,7 +4692,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
 
       console.log("Calling provisional patent writing webhook...");
-      const rawWebhookResponse = await sendWebhook(N8N_PROVISIONAL_WEBHOOK, webhookPayload);
+      const rawWebhookResponse: any = await runProvisional(webhookPayload);
+      if (rawWebhookResponse && rawWebhookResponse.success === false) {
+        return res.status(503).json({ message: rawWebhookResponse.error || "Provisional generation failed" });
+      }
       
       // Handle array-wrapped response
       const provisionalDraft = Array.isArray(rawWebhookResponse) ? rawWebhookResponse[0] : rawWebhookResponse;
@@ -4967,7 +4863,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         diagramsPayload.codeFromTheUser = codeFromTheUser;
       }
       console.log("Calling diagrams generation webhook with full document...");
-      const diagramsResponse = await sendWebhook(N8N_DIAGRAMS_WEBHOOK, diagramsPayload);
+      const diagramsResponse: any = await runDiagrams(diagramsPayload);
       
       // Parse diagrams response
       let diagrams: any[] = [];
@@ -5137,7 +5033,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       console.log("Calling diagrams generation webhook with full document...");
-      const webhookResponse = await sendWebhook(N8N_DIAGRAMS_WEBHOOK, diagramsPayload);
+      const webhookResponse: any = await runDiagrams(diagramsPayload);
       console.log("Diagrams webhook response received");
 
       // Store diagram generation results in Agent 5 data
@@ -5398,19 +5294,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       ];
       
       let questions = defaultQuestions;
-      
+
       try {
-        const webhookResponse = await sendWebhook(N8N_PANNU_QUESTIONS_WEBHOOK, webhookPayload);
-        console.log("Pannu questions webhook response:", JSON.stringify(webhookResponse, null, 2));
-        
-        // Use webhook questions if they're an array with content
-        if (Array.isArray(webhookResponse?.questions) && webhookResponse.questions.length > 0) {
-          questions = webhookResponse.questions;
-        } else if (Array.isArray(webhookResponse) && webhookResponse.length > 0) {
-          questions = webhookResponse;
+        const agentResponse = await runPannuQuestions(webhookPayload);
+        if (agentResponse.success && Array.isArray(agentResponse.questions) && agentResponse.questions.length > 0) {
+          questions = agentResponse.questions;
+        } else {
+          console.log("Using default Pannu questions — agent returned no questions:", "error" in agentResponse ? agentResponse.error : "unknown");
         }
-      } catch (webhookError) {
-        console.log("Using default Pannu questions due to webhook error:", webhookError);
+      } catch (agentError) {
+        console.log("Using default Pannu questions due to agent error:", agentError);
       }
       
       await storage.updatePannuRecord(pannuRecord.id, {
@@ -5445,14 +5338,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         human_answers: answers,
       };
 
-      console.log("Calling Pannu validation webhook:", JSON.stringify(webhookPayload, null, 2));
-      const webhookResponse = await sendWebhook(N8N_PANNU_VALIDATE_WEBHOOK, webhookPayload);
-      console.log("Pannu validation webhook response:", JSON.stringify(webhookResponse, null, 2));
-
-      // Extract validation results
-      const certificationStatus = webhookResponse?.certification_status || webhookResponse?.certificationStatus || "Pending";
-      const confidenceScore = webhookResponse?.confidence_score || webhookResponse?.confidenceScore || "0.0";
-      const pannuRecordText = webhookResponse?.pannu_record_text || webhookResponse?.pannuRecordText || "";
+      console.log("Calling Module 4/4c Pannu scorer agent...");
+      const scorerResponse = await runPannuScorer(webhookPayload);
+      const certificationStatus = scorerResponse.certification_status;
+      const confidenceScore = scorerResponse.confidence_score;
+      const pannuRecordText = scorerResponse.pannu_record_text;
 
       // Update Pannu record with answers and validation results
       if (pannuRecordId) {
@@ -5509,11 +5399,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         factor,
       };
 
-      console.log("Calling Pannu AI suggestion webhook:", JSON.stringify(webhookPayload, null, 2));
-      const webhookResponse = await sendWebhook(N8N_PANNU_AI_SUGGESTION_WEBHOOK, webhookPayload);
-      console.log("Pannu AI suggestion webhook response:", JSON.stringify(webhookResponse, null, 2));
-
-      const suggestion = webhookResponse?.suggestion || webhookResponse?.answer || webhookResponse?.response || "Unable to generate suggestion at this time.";
+      console.log("Calling Module 4/4d Pannu suggestion agent...");
+      const agentResponse = await runPannuSuggestion(webhookPayload);
+      const suggestion = agentResponse.success
+        ? agentResponse.suggestion
+        : "Unable to generate suggestion at this time.";
 
       res.json({
         success: true,

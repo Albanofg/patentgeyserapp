@@ -519,6 +519,18 @@ async function callAgent(opts) {
     }
   }
 }
+async function callAgentJSON(opts) {
+  const raw = await callAgent({ ...opts, jsonMode: true });
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const jsonMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[1].trim());
+    }
+    throw new Error(`Failed to parse AI response as JSON: ${raw.substring(0, 200)}`);
+  }
+}
 var configCache = /* @__PURE__ */ new Map();
 var promptCache = /* @__PURE__ */ new Map();
 function loadAgentConfig(modulePath) {
@@ -970,6 +982,2185 @@ Output strictly the rewritten text, followed by a line "Improvements Made:" and 
       success: false,
       error: errorMessage
     };
+  }
+}
+
+// server/modules/module2/2a/draft.ts
+function stringify(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(stringify).filter(Boolean).join("\n\n");
+  if (typeof value === "object") return JSON.stringify(value, null, 2);
+  return String(value);
+}
+async function runDraft(payload) {
+  console.log(">>> [M2 DRAFT] <<< Generating provisional draft");
+  try {
+    const config = loadAgentConfig("module2/2a/draft.config.json");
+    const systemPrompt = loadPrompt("module2/2a/draft.md");
+    const userMessage = `IDEA SUMMARY:
+${stringify(payload.ideaSummary)}
+
+GOOD COP ANALYSIS:
+${stringify(payload.goodCopInsights)}
+
+BAD COP ANALYSIS:
+${stringify(payload.badCopChallenges)}
+
+FULL TRANSCRIPT:
+${stringify(payload.fullTranscript)}
+
+REFINEMENT FEEDBACK:
+${stringify(payload.refinementFeedback)}
+
+Your task is to evaluate all five sections.
+Use them exactly as provided.
+Do not infer priority.
+The system message contains the authority rules and conflict resolution logic.`;
+    const provisionalDraft = await callAgent({ systemPrompt, userMessage, config });
+    console.log(`>>> [M2 DRAFT] <<< Done \u2014 ${provisionalDraft.length} chars`);
+    return {
+      success: true,
+      provisionalDraft,
+      idea: payload.idea ?? payload.ideaSummary,
+      category: payload.category || "software",
+      metadata: {
+        timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+        wordCount: provisionalDraft.split(/\s+/).filter(Boolean).length,
+        draftType: "provisional"
+      }
+    };
+  } catch (error) {
+    console.error(">>> [M2 DRAFT] <<< failed:", error);
+    const message = error?.message || String(error);
+    const errorMessage = message.includes("timeout") || message.includes("timed out") ? "AI service timed out. Please try again." : message.includes("empty") || message.includes("no response") ? "AI service returned an empty response. Please try again." : message || "Provisional draft generation failed";
+    return {
+      success: false,
+      error: errorMessage
+    };
+  }
+}
+
+// server/modules/module2/2b/extract-concepts.ts
+function normalizeIdeas(raw) {
+  if (!raw) return [];
+  const list = raw.ideas ?? raw.concepts ?? [];
+  return list.map((s) => typeof s === "string" ? s.trim() : String(s).trim()).filter(Boolean);
+}
+async function runExtractConcepts(payload) {
+  console.log(">>> [M2-2b EXTRACT-CONCEPTS] <<< extractor + refiner pipeline");
+  try {
+    const extractorConfig = loadAgentConfig("module2/2b/extractor.config.json");
+    const extractorSystem = loadPrompt("module2/2b/extractor.md");
+    const extractorUserMessage = `Here's the detailed concept:
+${payload.detailedConcept}
+
+Here's some code the user gives you so you can understand how it works (if it's empty, it means the user did not add any code):
+${payload.codeFromTheUser || " "}`;
+    const extractorRaw = await callAgentJSON({
+      systemPrompt: extractorSystem,
+      userMessage: extractorUserMessage,
+      config: extractorConfig
+    });
+    const extracted = normalizeIdeas(extractorRaw);
+    console.log(`>>> [M2-2b EXTRACT-CONCEPTS] <<< extractor produced ${extracted.length} concepts`);
+    if (extracted.length === 0) {
+      return {
+        success: false,
+        error: "Extractor returned no concepts. Please try again."
+      };
+    }
+    const refinerConfig = loadAgentConfig("module2/2b/refiner.config.json");
+    const refinerSystem = loadPrompt("module2/2b/refiner.md");
+    const refinerUserMessage = `PROPOSED CONCEPTS (JSON):
+${JSON.stringify({ ideas: extracted })}
+
+ORIGINAL DETAILED CONCEPT (for context only \u2014 do not add new ideas):
+${payload.detailedConcept}`;
+    const refinerRaw = await callAgentJSON({
+      systemPrompt: refinerSystem,
+      userMessage: refinerUserMessage,
+      config: refinerConfig
+    });
+    const refined = normalizeIdeas(refinerRaw);
+    console.log(`>>> [M2-2b EXTRACT-CONCEPTS] <<< refiner kept ${refined.length}/${extracted.length}`);
+    const finalIdeas = refined.length > 0 ? refined : extracted;
+    return {
+      success: true,
+      ideas: finalIdeas,
+      totalConcepts: finalIdeas.length
+    };
+  } catch (error) {
+    console.error(">>> [M2-2b EXTRACT-CONCEPTS] <<< failed:", error);
+    const message = error?.message || String(error);
+    const errorMessage = message.includes("timeout") || message.includes("timed out") ? "AI service timed out. Please try again." : message.includes("Failed to parse AI response as JSON") ? "AI service returned invalid JSON. Please try again." : message || "Concept extraction failed";
+    return {
+      success: false,
+      error: errorMessage
+    };
+  }
+}
+
+// server/modules/module4/4a/whitespace.ts
+function matchPriorArt(idea, priorArtResults, index) {
+  if (idea.id) {
+    const byId = priorArtResults.find((pa) => pa.conceptId === idea.id);
+    if (byId) return byId;
+  }
+  if (priorArtResults[index]) return priorArtResults[index];
+  const searchText = (idea.text || idea.title || "").toLowerCase().substring(0, 40);
+  if (searchText) {
+    const byTitle = priorArtResults.find(
+      (pa) => pa.conceptTitle && pa.conceptTitle.toLowerCase().includes(searchText)
+    );
+    if (byTitle) return byTitle;
+  }
+  return null;
+}
+function buildUserMessage(nugget) {
+  const { nuggetTitle, nuggetDescription, expandedConcept, priorArt } = nugget;
+  const priorArtBlock = priorArt.length ? priorArt.map((pa, idx) => {
+    const pn = pa.publicationNumber || "";
+    const granted = pn.endsWith("-B1") || pn.endsWith("-B2");
+    return `---
+PATENT ${idx + 1} of ${priorArt.length}:
+  Publication Number: ${pn}
+  Title: ${pa.title || ""}
+  Summary: ${pa.summary || ""}
+  Relevance Score: ${pa.relevanceScore ?? ""}
+  Status: ${granted ? "GRANTED (Infringement Risk)" : "PENDING (Disclosure Risk)"}`;
+  }).join("\n\n") : "No prior art found for this concept.";
+  return `Analyze this inventive concept against ALL of the following prior art patents:
+
+**Inventive Concept (Nugget):**
+Title: ${nuggetTitle}
+Description: ${nuggetDescription || "No additional description provided"}
+
+**Full Invention Context:**
+${expandedConcept}
+
+**Prior Art Patents to Analyze (${priorArt.length} total):**
+${priorArtBlock}
+
+**CRITICAL: You must analyze EACH patent listed above and include it in your response.**
+
+**Your Task:**
+Conduct a rigorous differential analysis against EVERY patent listed. For each patent, determine if it creates a constraint on our claims. Return ONLY a JSON object with your comprehensive analysis.`;
+}
+function riskEmoji(level) {
+  return level === "Green" ? "\u{1F7E2}" : level === "Yellow" ? "\u{1F7E1}" : level === "Red" ? "\u{1F534}" : "\u26AA";
+}
+function threatEmoji(level) {
+  return level === "High" ? "\u{1F534}" : level === "Medium" ? "\u{1F7E1}" : "\u{1F7E2}";
+}
+function buildStrategicDirective(sessionId, conceptAnalyses) {
+  let md = "# White Space Analysis - Strategic Directive for Claims Drafting\n\n";
+  md += `**Analysis Date:** ${(/* @__PURE__ */ new Date()).toISOString().split("T")[0]}
+`;
+  md += `**Session ID:** ${sessionId}
+`;
+  md += `**Total Concepts Analyzed:** ${conceptAnalyses.length}
+
+`;
+  md += "## Executive Summary\n\n";
+  md += "| # | Concept Title | Risk Level | Patents Analyzed | High Threats |\n";
+  md += "|---|---------------|------------|------------------|--------------|\n";
+  conceptAnalyses.forEach((c, i) => {
+    md += `| ${i + 1} | ${c.conceptTitle} | ${riskEmoji(c.overallRiskLevel)} ${c.overallRiskLevel} | ${c.totalPatentsAnalyzed} | ${c.threatCounts.high} |
+`;
+  });
+  md += "\n---\n\n";
+  conceptAnalyses.forEach((c, i) => {
+    md += `## Concept ${i + 1}: ${c.conceptTitle}
+
+`;
+    if (c.conceptDescription) md += `> ${c.conceptDescription}
+
+`;
+    md += `### Overall Assessment
+`;
+    md += `* **Risk Level:** ${riskEmoji(c.overallRiskLevel)} ${c.overallRiskLevel}
+`;
+    md += `* **Patents Analyzed:** ${c.totalPatentsAnalyzed} (Input: ${c.priorArtInputCount})
+`;
+    md += `* **Threat Distribution:** \u{1F534} High: ${c.threatCounts.high} | \u{1F7E1} Medium: ${c.threatCounts.medium} | \u{1F7E2} Low: ${c.threatCounts.low}
+
+`;
+    if (c.patentAnalyses?.length > 0) {
+      md += `### Prior Art Patent Analysis
+
+`;
+      c.patentAnalyses.forEach((pa, j) => {
+        md += `#### ${j + 1}. ${pa.patentNumber} ${threatEmoji(pa.threatLevel)} ${pa.threatLevel}
+`;
+        md += `* **Title:** ${pa.patentTitle}
+`;
+        md += `* **Status:** ${pa.patentStatus}
+`;
+        md += `* **Specific Constraint:** "${pa.specificConstraint}"
+`;
+        md += `* **Differentiation Strategy:** ${pa.differentiationStrategy}
+`;
+        md += `* **Can Design Around:** ${pa.canDesignAround ? "\u2705 Yes" : "\u274C No"}
+
+`;
+      });
+    } else {
+      md += `### Prior Art Patent Analysis
+
+*No prior art patents were found for this concept.*
+
+`;
+    }
+    md += `### Strategic Guidance
+
+`;
+    md += `**White Space Strategy:**
+${c.strategy.whiteSpaceStrategy}
+
+`;
+    if (c.strategy.primaryDifferentiators?.length > 0) {
+      md += `**Primary Differentiators:**
+`;
+      c.strategy.primaryDifferentiators.forEach((d, idx) => {
+        md += `${idx + 1}. ${d}
+`;
+      });
+      md += "\n";
+    }
+    md += `**Claim Drafting Guidance:**
+${c.strategy.claimDraftingGuidance}
+
+`;
+    md += "---\n\n";
+  });
+  return md;
+}
+async function runWhitespace(payload) {
+  console.log(">>> [M4-4a WHITESPACE] <<< analyzing", payload.selectedIdeas?.length, "concepts");
+  try {
+    if (!Array.isArray(payload.selectedIdeas) || payload.selectedIdeas.length === 0) {
+      return { success: false, error: "No selected ideas provided." };
+    }
+    if (!Array.isArray(payload.priorArtResults)) {
+      return { success: false, error: "Missing priorArtResults." };
+    }
+    const config = loadAgentConfig("module4/4a/whitespace.config.json");
+    const systemPrompt = loadPrompt("module4/4a/whitespace.md");
+    const nuggetInputs = payload.selectedIdeas.map((idea, index) => {
+      const matched = matchPriorArt(idea, payload.priorArtResults, index);
+      const priorArt = matched?.priorArt || [];
+      const nuggetTitle = matched?.conceptTitle || idea.title || idea.text || idea.name || `Concept ${index + 1}`;
+      return {
+        index,
+        nuggetId: idea.id || `concept-${index}`,
+        nuggetTitle,
+        nuggetDescription: idea.description || "",
+        priorArt,
+        priorArtCount: priorArt.length
+      };
+    });
+    const analyses = await Promise.all(
+      nuggetInputs.map(async (nugget) => {
+        try {
+          const userMessage = buildUserMessage({
+            nuggetTitle: nugget.nuggetTitle,
+            nuggetDescription: nugget.nuggetDescription,
+            expandedConcept: payload.expandedConcept || "",
+            priorArt: nugget.priorArt
+          });
+          const parsed = await callAgentJSON({
+            systemPrompt,
+            userMessage,
+            config
+          });
+          return { nugget, parsed, parseError: null };
+        } catch (err) {
+          console.error(
+            `>>> [M4-4a WHITESPACE] <<< concept "${nugget.nuggetTitle}" failed:`,
+            err.message
+          );
+          return { nugget, parsed: null, parseError: err.message || String(err) };
+        }
+      })
+    );
+    const conceptAnalyses = analyses.map(({ nugget, parsed, parseError }) => {
+      const p = parsed || {};
+      return {
+        conceptNumber: nugget.index + 1,
+        conceptId: nugget.nuggetId,
+        conceptTitle: nugget.nuggetTitle,
+        conceptDescription: nugget.nuggetDescription,
+        overallRiskLevel: p.overallRiskLevel || (parseError ? "Error - Parse Failed" : "Unknown"),
+        totalPatentsAnalyzed: p.totalPatentsAnalyzed ?? (p.patentAnalyses?.length || 0),
+        priorArtInputCount: nugget.priorArtCount,
+        threatCounts: {
+          high: p.highThreatCount || 0,
+          medium: p.mediumThreatCount || 0,
+          low: p.lowThreatCount || 0
+        },
+        patentAnalyses: p.patentAnalyses || [],
+        strategy: {
+          whiteSpaceStrategy: p.consolidatedWhiteSpaceStrategy || (parseError ? `Analysis failed: ${parseError}` : "No strategy generated."),
+          primaryDifferentiators: p.primaryDifferentiators || [],
+          claimDraftingGuidance: p.claimDraftingGuidance || (parseError ? "Manual review required \u2014 AI call failed." : "")
+        }
+      };
+    });
+    const sessionId = payload.sessionId || "unknown";
+    const strategicDirective = buildStrategicDirective(sessionId, conceptAnalyses);
+    const summary = {
+      totalConceptsAnalyzed: conceptAnalyses.length,
+      totalPatentsAnalyzed: conceptAnalyses.reduce(
+        (sum, a) => sum + (a.totalPatentsAnalyzed || 0),
+        0
+      ),
+      totalHighThreats: conceptAnalyses.reduce(
+        (sum, a) => sum + (a.threatCounts.high || 0),
+        0
+      ),
+      riskDistribution: {
+        green: conceptAnalyses.filter((a) => a.overallRiskLevel === "Green").length,
+        yellow: conceptAnalyses.filter((a) => a.overallRiskLevel === "Yellow").length,
+        red: conceptAnalyses.filter((a) => a.overallRiskLevel === "Red").length
+      },
+      conceptTitles: conceptAnalyses.map((a) => a.conceptTitle)
+    };
+    console.log(
+      `>>> [M4-4a WHITESPACE] <<< done \u2014 ${summary.totalConceptsAnalyzed} concepts, ${summary.totalPatentsAnalyzed} patents, ${summary.totalHighThreats} high threats`
+    );
+    return {
+      success: true,
+      sessionId,
+      strategicDirective,
+      conceptAnalyses,
+      summary,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  } catch (error) {
+    console.error(">>> [M4-4a WHITESPACE] <<< failed:", error);
+    const message = error?.message || String(error);
+    const errorMessage = message.includes("timeout") || message.includes("timed out") ? "AI service timed out. Please try again." : message || "White space analysis failed";
+    return { success: false, error: errorMessage };
+  }
+}
+
+// server/modules/module4/4b/claims.ts
+function normalizeWhiteSpace(ws2) {
+  if (!ws2) return { contextBlock: "", perConcept: [] };
+  const perConcept = [];
+  let contextBlock = `
+
+### PRIOR ART CONSTRAINTS:
+${ws2.strategicDirective || ""}`;
+  if (Array.isArray(ws2.conceptAnalyses) && ws2.conceptAnalyses.length > 0) {
+    contextBlock += `
+
+KEY DIFFERENTIATION POINTS:
+`;
+    ws2.conceptAnalyses.forEach((c, idx) => {
+      const patentNums = (c.patentAnalyses || []).map((p) => p.patentNumber).filter(Boolean).join(", ");
+      const topConstraint = (c.patentAnalyses || [])[0]?.specificConstraint || "";
+      const wsStrategy = c.strategy?.whiteSpaceStrategy || c.consolidatedWhiteSpaceStrategy || "";
+      const differentiators = c.strategy?.primaryDifferentiators || c.primaryDifferentiators || [];
+      const guidance = c.strategy?.claimDraftingGuidance || c.claimDraftingGuidance || "";
+      contextBlock += `
+${idx + 1}. ${patentNums || "No prior art"}
+`;
+      contextBlock += `   Risk: ${c.overallRiskLevel || "Unknown"}
+`;
+      contextBlock += `   Constraint: ${topConstraint}
+`;
+      contextBlock += `   Strategy: ${wsStrategy}
+`;
+      contextBlock += `   Differentiation: ${differentiators.join("; ")}
+`;
+      contextBlock += `   Drafting Guidance: ${guidance}
+`;
+      perConcept.push({
+        primaryPriorArt: patentNums || "No prior art",
+        riskLevel: c.overallRiskLevel || "Unknown",
+        constraint: topConstraint,
+        whiteSpaceStrategy: wsStrategy,
+        differentiationLogic: differentiators.join("; ")
+      });
+    });
+    return { contextBlock, perConcept };
+  }
+  if (Array.isArray(ws2.nuggetAnalyses) && ws2.nuggetAnalyses.length > 0) {
+    contextBlock += `
+
+KEY DIFFERENTIATION POINTS:
+`;
+    ws2.nuggetAnalyses.forEach((n, idx) => {
+      contextBlock += `
+${idx + 1}. ${n.primaryPriorArt || ""}
+`;
+      contextBlock += `   Risk: ${n.riskLevel || ""}
+`;
+      contextBlock += `   Constraint: ${n.constraint || ""}
+`;
+      contextBlock += `   Strategy: ${n.whiteSpaceStrategy || ""}
+`;
+      contextBlock += `   Differentiation: ${n.differentiationLogic || ""}
+`;
+      perConcept.push({
+        primaryPriorArt: n.primaryPriorArt || "",
+        riskLevel: n.riskLevel || "",
+        constraint: n.constraint || "",
+        whiteSpaceStrategy: n.whiteSpaceStrategy || "",
+        differentiationLogic: n.differentiationLogic || ""
+      });
+    });
+    return { contextBlock, perConcept };
+  }
+  return { contextBlock, perConcept: [] };
+}
+function buildUserMessage2(args) {
+  const { category, mainIdea, expandedConcept, conceptText, whiteSpaceContext, nugget } = args;
+  const priorArtAware = whiteSpaceContext ? `---
+
+**PRIOR ART AWARENESS:**
+${whiteSpaceContext}
+` : "";
+  const differentiation = nugget ? `
+**DIFFERENTIATION STRATEGY:**
+- Risk Level: ${nugget.riskLevel}
+- Primary Prior Art: ${nugget.primaryPriorArt}
+- White Space Strategy: ${nugget.whiteSpaceStrategy}
+- Differentiation Logic: ${nugget.differentiationLogic}
+` : "";
+  return `**TECHNICAL CONTEXT:**
+
+**Invention Category:** ${category}
+
+**Core Innovation:**
+${mainIdea}
+
+**Technical Specification:**
+${expandedConcept}
+
+**Specific Concept for This Claim Set:**
+${conceptText}
+
+` + priorArtAware + differentiation + `
+---
+
+**YOUR MISSION:**
+
+Draft a comprehensive, technically detailed claim set that fully captures the innovation described above. Generate only claims that add meaningful strategic value - no padding, no redundancy. Follow the system instructions exactly for formatting, technical depth, and output structure.`;
+}
+function parseClaimsOutput(rawOutput, conceptId, conceptText, category, index) {
+  const output = rawOutput || "";
+  const complexityMatch = output.match(/\*\*Complexity Assessment\*\*\s*\n+([^\n*]+)/i);
+  const complexityAssessment = complexityMatch ? complexityMatch[1].trim() : "";
+  let complexityLevel = "moderate";
+  const cLow = complexityAssessment.toLowerCase();
+  if (cLow.includes("simple")) complexityLevel = "simple";
+  else if (cLow.includes("complex")) complexityLevel = "complex";
+  const claimTypeMatch = output.match(/\*\*Claim Type:\s*(SYSTEM|METHOD)\*\*/i);
+  const claimType = claimTypeMatch ? claimTypeMatch[1].toLowerCase() : "system";
+  const inventiveConceptMatch = output.match(/\*\*Inventive Concept\*\*\s*\n+([^\n*]+)/i);
+  const inventiveConcept = inventiveConceptMatch ? inventiveConceptMatch[1].trim() : "";
+  const claims = [];
+  const claimSections = output.split(/(?=\*\*Claim\s+\d+\s*\([^)]+\)\*\*)/i);
+  for (const section of claimSections) {
+    const headerMatch = section.match(/\*\*Claim\s+(\d+)\s*\(([^)]+)\)\*\*/i);
+    if (!headerMatch) continue;
+    const claimNumber = parseInt(headerMatch[1], 10);
+    const dependencyInfo = headerMatch[2].trim();
+    const textMatch = section.match(/\*\*Claim\s+\d+\s*\([^)]+\)\*\*\s*\n?([\s\S]*?)(?=\*\*|$)/i);
+    const claimText = textMatch ? textMatch[1].trim().replace(/\n+/g, " ").replace(/\s+/g, " ") : "";
+    const isIndependent = dependencyInfo.toLowerCase().includes("independent");
+    let parentClaim = null;
+    if (!isIndependent) {
+      const parentMatch = dependencyInfo.match(/(?:depends?\s+on|dependent\s+on)\s+claim\s+(\d+)/i);
+      if (parentMatch) parentClaim = parseInt(parentMatch[1], 10);
+      else {
+        const fallbackMatch = dependencyInfo.match(/claim\s+(\d+)/i);
+        parentClaim = fallbackMatch ? parseInt(fallbackMatch[1], 10) : 1;
+      }
+    }
+    claims.push({
+      number: claimNumber,
+      type: isIndependent ? "independent" : "dependent",
+      claimType,
+      parentClaim,
+      dependsOn: parentClaim,
+      text: claimText
+    });
+  }
+  const violations = [];
+  if (claims.length < 5) violations.push({ claim: 0, issue: `Too few claims: ${claims.length} (minimum 5)` });
+  if (claims.length > 10) violations.push({ claim: 0, issue: `Too many claims: ${claims.length} (maximum 10)` });
+  claims.forEach((claim) => {
+    const tl = claim.text.toLowerCase();
+    if (tl.includes("any preceding claim") || tl.includes("any of the preceding") || tl.includes("any one of claims") || tl.includes("any of claims")) {
+      violations.push({ claim: claim.number, issue: 'Uses prohibited "any preceding claim" language' });
+    }
+    if (tl.match(/system,?\s*method,?\s*(or|and)\s*medium/i) || tl.match(/method,?\s*system,?\s*(or|and)/i)) {
+      violations.push({ claim: claim.number, issue: "Uses mixed claim types (system, method, or medium)" });
+    }
+    if (claim.text.match(/claims?\s+\d+\s*[-–—]\s*\d+/i) || claim.text.match(/claims?\s+\d+\s*(?:to|through)\s+\d+/i)) {
+      violations.push({ claim: claim.number, issue: "Uses claim range reference instead of specific claim" });
+    }
+    if (claim.type === "dependent") {
+      const claimRefs = claim.text.match(/(?:the\s+)?(?:system|method)\s+of\s+claim\s+(\d+)/gi) || [];
+      if (claimRefs.length === 0) violations.push({ claim: claim.number, issue: "Dependent claim does not reference a parent claim" });
+      else if (claimRefs.length > 1) violations.push({ claim: claim.number, issue: "Dependent claim references multiple claims" });
+    }
+  });
+  const independentClaims = claims.filter((c) => c.type === "independent");
+  const dependentClaims = claims.filter((c) => c.type === "dependent");
+  const dependencyTree = {};
+  claims.forEach((c) => {
+    if (c.type === "independent") dependencyTree[c.number] = { claim: c.number, children: [] };
+  });
+  dependentClaims.forEach((c) => {
+    const parent = c.parentClaim;
+    if (parent == null) return;
+    if (!dependencyTree[parent]) dependencyTree[parent] = { claim: parent, children: [] };
+    dependencyTree[parent].children.push(c.number);
+  });
+  return {
+    concept_id: conceptId,
+    concept_text: conceptText,
+    category,
+    index,
+    complexity_assessment: complexityAssessment,
+    complexity_level: complexityLevel,
+    claim_type: claimType,
+    inventive_concept: inventiveConcept,
+    claims,
+    claims_count: claims.length,
+    independent_claims: independentClaims,
+    independent_claims_count: independentClaims.length,
+    dependent_claims: dependentClaims,
+    dependent_claims_count: dependentClaims.length,
+    formatting_violations: violations,
+    has_violations: violations.length > 0,
+    is_valid: violations.length === 0,
+    dependency_tree: dependencyTree,
+    independent_claim: independentClaims[0]?.text || "",
+    raw_output: output,
+    timestamp: (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+async function runClaims(payload) {
+  console.log(">>> [M4-4b CLAIMS] <<< generating claim sets for", payload.selectedIdeas?.length, "concepts");
+  try {
+    if (!Array.isArray(payload.selectedIdeas) || payload.selectedIdeas.length === 0) {
+      return { success: false, error: "No selected ideas provided." };
+    }
+    const config = loadAgentConfig("module4/4b/claims.config.json");
+    const systemPrompt = loadPrompt("module4/4b/claims.md");
+    const { contextBlock, perConcept } = normalizeWhiteSpace(payload.whiteSpaceAnalysis || null);
+    const category = payload.category || "";
+    const mainIdea = payload.mainIdea || "";
+    const expandedConcept = payload.expandedConcept || "";
+    const results = await Promise.all(
+      payload.selectedIdeas.map(async (idea, index) => {
+        const conceptId = idea.id || `concept-${index}`;
+        const conceptText = idea.text || "";
+        try {
+          const userMessage = buildUserMessage2({
+            category,
+            mainIdea,
+            expandedConcept,
+            conceptText,
+            whiteSpaceContext: contextBlock,
+            nugget: perConcept[index] || null
+          });
+          const raw = await callAgent({ systemPrompt, userMessage, config });
+          return parseClaimsOutput(raw, conceptId, conceptText, category, index);
+        } catch (err) {
+          console.error(`>>> [M4-4b CLAIMS] <<< concept "${conceptId}" failed:`, err.message);
+          return parseClaimsOutput(
+            `**Complexity Assessment**
+Analysis failed: ${err.message || String(err)}`,
+            conceptId,
+            conceptText,
+            category,
+            index
+          );
+        }
+      })
+    );
+    console.log(
+      `>>> [M4-4b CLAIMS] <<< done \u2014 ${results.length} concepts, ${results.reduce((s, r) => s + r.claims_count, 0)} total claims`
+    );
+    return {
+      success: true,
+      data: results
+    };
+  } catch (error) {
+    console.error(">>> [M4-4b CLAIMS] <<< failed:", error);
+    const message = error?.message || String(error);
+    const errorMessage = message.includes("timeout") || message.includes("timed out") ? "AI service timed out. Please try again." : message || "Claims generation failed";
+    return { success: false, error: errorMessage };
+  }
+}
+
+// server/modules/module4/4c/pannu.ts
+async function runPannuQuestions(payload) {
+  console.log(">>> [M4-4c PANNU/QUESTIONS] <<< generating questions for", payload.concept_id);
+  try {
+    const config = loadAgentConfig("module4/4c/questions.config.json");
+    const systemPrompt = loadPrompt("module4/4c/questions.md");
+    const userMessage = `Claim Text: ${payload.claim_text}
+
+Concept ID: ${payload.concept_id}
+
+White Space Strategy: ${payload.strategy_context || ""}
+
+Generate the three Pannu Test questions in JSON format.`;
+    const parsed = await callAgentJSON({
+      systemPrompt,
+      userMessage,
+      config
+    });
+    if (!Array.isArray(parsed.questions) || parsed.questions.length === 0) {
+      return { success: false, error: "AI returned no questions." };
+    }
+    return {
+      success: true,
+      status: "success",
+      concept_id: payload.concept_id,
+      questions: parsed.questions
+    };
+  } catch (error) {
+    console.error(">>> [M4-4c PANNU/QUESTIONS] <<< failed:", error);
+    const message = error?.message || String(error);
+    const errorMessage = message.includes("timeout") || message.includes("timed out") ? "AI service timed out. Please try again." : message.includes("Failed to parse AI response as JSON") ? "AI service returned invalid JSON. Please try again." : message || "Pannu questions generation failed";
+    return { success: false, error: errorMessage };
+  }
+}
+var VALID_STATUSES = /* @__PURE__ */ new Set(["Certified", "Needs Clarification", "Rejected"]);
+async function runPannuScorer(payload) {
+  console.log(">>> [M4-4c PANNU/SCORER] <<< scoring answers for", payload.concept_id);
+  try {
+    const config = loadAgentConfig("module4/4c/scorer.config.json");
+    const systemPrompt = loadPrompt("module4/4c/scorer.md");
+    const userMessage = `Claim Text: ${payload.claim_text}
+
+Concept ID: ${payload.concept_id}
+
+Human Answers:
+${JSON.stringify(payload.human_answers, null, 2)}
+
+Analyze and provide the compliance score in the required JSON format.`;
+    const parsed = await callAgentJSON({
+      systemPrompt,
+      userMessage,
+      config
+    });
+    if (!VALID_STATUSES.has(parsed.certification_status)) {
+      throw new Error(`Invalid certification_status: ${parsed.certification_status}`);
+    }
+    if (typeof parsed.confidence_score !== "number" || parsed.confidence_score < 0 || parsed.confidence_score > 1) {
+      throw new Error(`confidence_score out of range: ${parsed.confidence_score}`);
+    }
+    return {
+      success: true,
+      certification_status: parsed.certification_status,
+      concept_id: payload.concept_id,
+      confidence_score: parsed.confidence_score,
+      pannu_record_text: parsed.pannu_record_text || ""
+    };
+  } catch (error) {
+    console.error(">>> [M4-4c PANNU/SCORER] <<< failed:", error);
+    const message = error?.message || String(error);
+    return {
+      success: false,
+      certification_status: "Rejected",
+      concept_id: payload.concept_id,
+      confidence_score: 0,
+      pannu_record_text: `Scoring failed: ${message}`,
+      error: message
+    };
+  }
+}
+
+// server/modules/module4/4d/suggestion.ts
+var FACTOR_CONTEXT = {
+  conception: "Conception - This factor evaluates independent conception of the invention. Focus on how the inventor independently thought of and developed this specific technical solution.",
+  quality: "Contribution Quality - This factor evaluates the significance and substantiality of the contribution. Focus on how meaningful and substantial this contribution is to the invention.",
+  known_concepts: "Exceeding Known Concepts - This factor evaluates whether the contribution goes beyond known concepts. Focus on what makes this solution novel compared to existing knowledge."
+};
+async function runPannuSuggestion(payload) {
+  console.log(">>> [M4-4d PANNU/SUGGESTION] <<< factor:", payload.factor);
+  try {
+    const config = loadAgentConfig("module4/4d/suggestion.config.json");
+    const systemPrompt = loadPrompt("module4/4d/suggestion.md");
+    const contextDescription = FACTOR_CONTEXT[payload.factor] || "General Pannu Test Factor";
+    const userMessage = `You are helping evaluate a patent claim under the Pannu test.
+
+Factor: ${contextDescription}
+
+Claim Text:
+${payload.claimText || ""}
+
+Question to Answer:
+${payload.question || ""}
+
+Please provide a professional, thoughtful response that directly addresses this specific Pannu factor. Your response should be clear, concise, and helpful for patent documentation purposes.`;
+    const response = await callAgent({ systemPrompt, userMessage, config });
+    return {
+      success: true,
+      response: response.trim(),
+      suggestion: response.trim(),
+      factor: payload.factor,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  } catch (error) {
+    console.error(">>> [M4-4d PANNU/SUGGESTION] <<< failed:", error);
+    const message = error?.message || String(error);
+    const errorMessage = message.includes("timeout") || message.includes("timed out") ? "AI service timed out. Please try again." : message || "Pannu AI suggestion failed";
+    return { success: false, error: errorMessage };
+  }
+}
+
+// server/modules/module5/5b/diagrams.ts
+var ERASER_ENDPOINT = "https://app.eraser.io/api/render/prompt";
+var ERASER_TYPE_MAP = {
+  flowchart: "cloud-architecture-diagram",
+  "system-architecture": "cloud-architecture-diagram",
+  "data-model": "entity-relationship-diagram",
+  "component-map": "cloud-architecture-diagram",
+  "sequence-diagram": "sequence-diagram"
+};
+function extractPatentText(payload) {
+  const title = payload.title || payload.patent_title || "Untitled";
+  const patentText = payload.detailed_description || payload.patent_text || "";
+  const codeFromTheUser = payload.codeFromTheUser || {};
+  const codeSnippets = [];
+  let formattedCode = "";
+  for (const key of Object.keys(codeFromTheUser)) {
+    if (!key.startsWith("code")) continue;
+    const snippet = codeFromTheUser[key] || {};
+    codeSnippets.push({
+      id: key,
+      text: snippet.text || "",
+      code: snippet.code || ""
+    });
+    formattedCode += `
+--- ${snippet.text || key} ---
+${snippet.code || ""}
+`;
+  }
+  return { title, patentText, codeSnippets, codeCount: codeSnippets.length, formattedCode };
+}
+function allocateFigureIds(diagrams) {
+  let nextFig = 1;
+  for (const d of diagrams) {
+    const fig = d.figureId;
+    if (fig && typeof fig === "string") {
+      const match = fig.match(/(\d+)/);
+      if (match) {
+        const n = parseInt(match[1], 10);
+        if (!isNaN(n) && n >= nextFig) nextFig = n + 1;
+      }
+    }
+  }
+  return diagrams.map((d) => {
+    if (d.figureId) return d;
+    return { ...d, figureId: `FIG. ${nextFig++}` };
+  });
+}
+function checkComponents(d) {
+  const desc2 = d.detailed_description || "";
+  const comps = Array.isArray(d.referenced_components) ? d.referenced_components : [];
+  const present = [];
+  const missing = [];
+  for (const c of comps) {
+    if (!c) continue;
+    if (desc2.includes(String(c))) present.push(c);
+    else missing.push(c);
+  }
+  return { present, missing };
+}
+function buildEraserPrompt(d) {
+  const title = d.title || "Untitled";
+  const detailedDescription = d.detailed_description || "";
+  const rawDiagramType = (d.diagramType || "flowchart").toLowerCase().trim();
+  const eraserDSL = d.eraserDSL || null;
+  const eraserType = ERASER_TYPE_MAP[rawDiagramType] || "flowchart-diagram";
+  const useElementsAPI = eraserType === "flowchart-diagram" && !!eraserDSL;
+  const layoutInstruction = !useElementsAPI && (eraserType === "flowchart-diagram" || eraserType === "cloud-architecture-diagram") ? "IMPORTANT: Use vertical top-to-bottom layout (direction down). The flow must go from top to bottom, NOT left to right. This is required for patent PDF formatting.\n\n" : "";
+  const bwInstruction = "CRITICAL STYLE REQUIREMENT: This diagram must be black and white only, with no color of any kind. All shapes must have a white fill and black borders. All lines and arrows must be black. All text must be black. All group containers and bounding boxes must have a white or transparent fill with a black border \u2014 no colored backgrounds on groups. Do not use any color fills, gradients, shadows, or colored backgrounds on any element, group, or container. This is a strict requirement for USPTO/PCT patent compliance.\n\n";
+  const userPrompt = `Title: ${title}
+
+${bwInstruction}${layoutInstruction}${detailedDescription}`;
+  return { userPrompt, diagramType: eraserType, eraserDSL, useElementsAPI };
+}
+async function callEraser(prompt, diagramType) {
+  const apiKey = process.env.ERASER_API_KEY;
+  if (!apiKey) {
+    throw new Error("ERASER_API_KEY not set");
+  }
+  const resp = await fetch(ERASER_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      text: prompt,
+      diagramType,
+      mode: "standard",
+      theme: "light"
+    }),
+    signal: AbortSignal.timeout(12e4)
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`Eraser API ${resp.status}: ${errText.substring(0, 300)}`);
+  }
+  const data = await resp.json();
+  return {
+    imageUrl: data?.imageUrl || null,
+    editLink: data?.createEraserFileUrl || null,
+    diagramCode: data?.diagrams?.[0]?.code || null,
+    raw: data
+  };
+}
+async function runDiagrams(payload) {
+  console.log(">>> [M5-5b DIAGRAMS] <<< Generating patent diagrams");
+  try {
+    const { title, patentText, codeCount, formattedCode } = extractPatentText(payload);
+    const config = loadAgentConfig("module5/5b/planner.config.json");
+    const systemPrompt = loadPrompt("module5/5b/planner.md");
+    const userMessage = `Provisional Patent Title: ${title}
+Provisional Patent Text: ${patentText}
+
+Code Snippets Uploaded by the User (${codeCount} total):
+${formattedCode}`;
+    const plan = await callAgentJSON({
+      systemPrompt,
+      userMessage,
+      config
+    });
+    let diagrams = Array.isArray(plan.diagrams) ? plan.diagrams : [];
+    if (diagrams.length === 0) {
+      return {
+        success: false,
+        error: "Planner returned no diagrams."
+      };
+    }
+    diagrams = allocateFigureIds(diagrams);
+    const results = await Promise.all(
+      diagrams.map(async (d, index) => {
+        const chartNumber = index + 1;
+        const diagramTitle = d.title || `Diagram ${chartNumber}`;
+        const figureId = d.figureId || null;
+        const { present, missing } = checkComponents(d);
+        const { userPrompt, diagramType } = buildEraserPrompt(d);
+        try {
+          const eraserResp = await callEraser(userPrompt, diagramType);
+          const markdown = eraserResp.imageUrl ? `![Flowchart](${eraserResp.imageUrl})
+
+**[Edit in Eraser](${eraserResp.editLink || ""})**` : "";
+          return {
+            chartNumber,
+            title: diagramTitle,
+            figureId,
+            diagramType,
+            imageUrl: eraserResp.imageUrl,
+            editLink: eraserResp.editLink,
+            diagramCode: eraserResp.diagramCode,
+            markdown,
+            success: !!eraserResp.imageUrl,
+            referenced_components: present,
+            referenced_components_missing: missing
+          };
+        } catch (err) {
+          console.error(`>>> [M5-5b DIAGRAMS] <<< Eraser failed for "${diagramTitle}":`, err.message);
+          return {
+            chartNumber,
+            title: diagramTitle,
+            figureId,
+            diagramType,
+            imageUrl: null,
+            editLink: null,
+            diagramCode: null,
+            markdown: "",
+            success: false,
+            error: err.message || String(err),
+            referenced_components: present,
+            referenced_components_missing: missing
+          };
+        }
+      })
+    );
+    const successful = results.filter((r) => r.success).length;
+    const failed = results.length - successful;
+    console.log(
+      `>>> [M5-5b DIAGRAMS] <<< Done \u2014 ${results.length} diagrams (${successful} ok, ${failed} failed)`
+    );
+    return {
+      success: true,
+      totalFlowcharts: results.length,
+      successful,
+      failed,
+      flowcharts: results,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  } catch (error) {
+    console.error(">>> [M5-5b DIAGRAMS] <<< failed:", error);
+    const message = error?.message || String(error);
+    const errorMessage = message.includes("timeout") || message.includes("timed out") ? "AI service timed out. Please try again." : message.includes("ERASER_API_KEY") ? "Eraser API key is not configured. Set ERASER_API_KEY in environment." : message.includes("Failed to parse AI response as JSON") ? "Diagram planner returned invalid JSON. Please try again." : message || "Diagrams generation failed";
+    return { success: false, error: errorMessage };
+  }
+}
+
+// server/modules/module5/5c/broader-claims.ts
+function prepareData(payload) {
+  const currentClaimsText = payload.current_claims || "";
+  const fullSpecText = payload.full_specification || "";
+  const drawingsText = payload.drawing_descriptions_and_reference_numerals || "No drawings provided for this specification.";
+  let contextText = "";
+  if (payload.deep_research_notes) contextText += `DEEP RESEARCH NOTES:
+${payload.deep_research_notes}
+
+`;
+  if (payload.prior_art_notes) contextText += `PRIOR ART NOTES:
+${payload.prior_art_notes}
+
+`;
+  if (payload.important_claim_sets) contextText += `IMPORTANT CLAIM SETS:
+${payload.important_claim_sets}
+
+`;
+  let patentTitle = payload.patent_title || "";
+  if (!patentTitle && fullSpecText) {
+    const titleMatch = fullSpecText.match(/TITLE:\s*([^\n]+)/i);
+    if (titleMatch) patentTitle = titleMatch[1].trim();
+  }
+  return {
+    sessionId: payload.sessionId || "",
+    patent_title: patentTitle,
+    one_sentence_summary: payload.one_sentence_summary || "",
+    current_claims_text: currentClaimsText,
+    full_specification_text: fullSpecText,
+    drawings_text: drawingsText,
+    optional_context_text: contextText || "No additional context provided.",
+    execution_mode: payload.executionMode || "production",
+    webhook_url: payload.webhookUrl || ""
+  };
+}
+function buildReaderPrompt(d) {
+  return `TITLE: ${d.patent_title}
+
+SPECIFICATION:
+${d.full_specification_text}
+
+DRAWINGS:
+${d.drawings_text}
+
+CURRENT CLAIMS:
+${d.current_claims_text}
+
+CONTEXT:
+${d.optional_context_text || "None provided."}
+
+SUMMARY:
+${d.one_sentence_summary || "None provided."}
+
+Analyze the specification and current claims. Produce a single structured analysis with these exact sections:
+
+INNOVATIONS INVENTORY:
+List every distinct technical innovation described in the specification. For each:
+- Name it
+- What it does (one sentence)
+- Supporting paragraph (\xB6 number)
+- Is it covered by any current claim? (YES citing claim number / NO / PARTIALLY citing claim number and what's missing)
+
+UNCLAIMED INNOVATIONS:
+List every innovation marked NO or PARTIALLY above. These are broadening opportunities.
+
+INDEPENDENT CLAIM PROBLEMS:
+For each current independent claim:
+- Which limitations are non-essential implementation details that should be in dependents?
+- Which limitations use technology-specific language that could be generalized?
+- What is the minimum set of limitations that captures the inventive principle?
+
+STATUTORY CLASS GAPS:
+What statutory classes are missing from the current claim set? (system / method / non-transitory computer-readable medium)
+
+SPEC FLEXIBILITY:
+List every place the specification says the invention may be implemented using alternative technologies, in alternative industries, or with alternative architectures. These support broader claim language.
+
+Be exhaustive. Miss nothing. This analysis directly determines the quality of the broadened claims.`;
+}
+function buildStrategistPrompt(d, specAnalysis) {
+  return `You must produce a precise claim broadening blueprint. This blueprint will be handed directly to a claim drafter who will write formal USPTO claims from it. If your blueprint is vague, the claims will be vague. If you miss a feature, the patent loses that protection.
+
+SPEC ANALYSIS (from previous agent):
+${specAnalysis}
+
+ORIGINAL CLAIMS:
+${d.current_claims_text}
+
+CONTEXT:
+${d.optional_context_text}
+
+ONE-SENTENCE SUMMARY:
+${d.one_sentence_summary}
+
+Produce your blueprint in this exact order:
+
+PART 1 \u2014 INDEPENDENT CLAIM SKELETONS
+
+Design the independent claims. You must include at least one system, one method, and one medium claim. For each:
+
+INDEPENDENT CLAIM [N] ([SYSTEM/METHOD/MEDIUM]):
+- Limitation A: [exact language to use]
+- Limitation B: [exact language to use]
+- Limitation C: [exact language to use]
+(list every limitation \u2014 this is the full skeleton)
+
+Rules for independent claims:
+- Capture the inventive principle, not any specific implementation
+- No technology-specific language (no vendor names, no specific protocols, no specific database types, no specific file formats, no specific programming languages)
+- Replace specific technologies with functional descriptions
+- Do not lock claims to a specific industry
+- Every limitation must be supported by the specification
+
+PART 2 \u2014 COVERAGE AUDIT
+
+Go through every single original claim, one by one. For each original claim, determine its fate in the new claim set:
+
+Original Claim [N]: [brief description of what it covers]
+\u2192 ABSORBED INTO: Independent Claim [X], Limitation [Y] \u2014 because [reason]
+OR
+\u2192 DEPENDENT CLAIM NEEDED: [describe what the dependent should say, with generalized language if the original was too technology-specific]
+OR
+\u2192 INTENTIONALLY DROPPED: [specific reason \u2014 e.g., redundant with Claim X, or unsupported by spec, or damages prosecution strategy]
+
+Do not skip any original claim. Every single one must appear in this audit with one of the three dispositions above.
+
+PART 3 \u2014 NEW DEPENDENT CLAIMS FROM UNCLAIMED INNOVATIONS
+
+For each innovation the Spec Reader identified as unclaimed (NO or PARTIALLY covered), specify a new dependent claim:
+
+- Parent: Independent Claim [N]
+- Adds: [what specific limitation it adds]
+- Spec support: [paragraph reference]
+- Why: [what design-around path this closes or what feature this protects]
+
+PART 4 \u2014 COMPLETE DEPENDENT CLAIMS LIST
+
+Compile the full list of ALL dependent claims \u2014 both those carried over from Part 2 and those newly created in Part 3. For each:
+
+- Parent: Claim [N]
+- Limitation: [exact language]
+- Spec support: [paragraph reference]
+- Purpose: [what this protects that the independent doesn't]
+
+This list is what the drafter will convert directly into formal claims. Every item becomes one claim. Do not leave anything vague.
+
+PART 5 \u2014 NEW SPEC PARAGRAPHS NEEDED
+
+For each claim (independent or dependent) that lacks full spec support:
+- Topic: [what to describe]
+- Why: [which claim needs this]
+- Draft: [write the actual paragraph]
+
+If no new spec is needed, say so.
+
+PART 6 \u2014 PATENT ELIGIBILITY STRATEGY (\xA7101/Alice)
+
+For software patents:
+- What are the strongest technical improvements to emphasize?
+- What aspects cannot be performed by a human mind?
+- How should the claims be framed to survive \xA7101 challenges?`;
+}
+function buildDrafterPrompt(d, blueprint) {
+  return `CLAIM BLUEPRINT:
+${blueprint}
+
+ORIGINAL SPECIFICATION (for verifying support \u2014 do not copy-paste from it):
+${d.full_specification_text}
+
+DRAWINGS:
+${d.drawings_text || "non provided"}
+
+Convert the blueprint above into formal USPTO patent claims.
+
+Your ENTIRE response must be numbered patent claims. Nothing else. No headers. No commentary. No explanations. No sections. Start with "1." and end with the last claim number's period.
+
+Every item in Part 4 (Complete Dependent Claims List) of the blueprint becomes exactly one dependent claim. Every independent claim skeleton in Part 1 becomes exactly one independent claim. Do not consolidate, merge, skip, or summarize any item from the blueprint.
+
+Format rules:
+- Independent claims: "1. A system comprising:" or "N. A computer-implemented method comprising:" or "N. A non-transitory computer-readable medium storing instructions that, when executed by a processor, cause the processor to perform operations comprising:"
+- Dependent claims: "N. The [system/method/non-transitory computer-readable medium] of claim X, wherein..." or "...further comprising..."
+- Every claim is one sentence ending with a period
+- Use "comprising" on all independent claims
+- Antecedent basis: first mention "a/an", all subsequent "the/said"
+- Method claims: gerund verbs (receiving, determining, generating, filtering)
+- System claims: "a processor configured to" or "cause the processor to"
+- No source code, no pseudocode
+- No specific technology names in independent claims (no database vendors, no protocol names, no programming languages, no file formats)
+- Technology-specific language is acceptable in dependent claims where the blueprint specifies it`;
+}
+function parseClaims(rawOutput) {
+  const claims = [];
+  let currentClaim = null;
+  const lines = (rawOutput || "").split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const claimStart = trimmed.match(/^(\d+)\.\s+(.*)/);
+    if (claimStart) {
+      if (currentClaim) {
+        currentClaim.text = currentClaim.text.trim();
+        claims.push(currentClaim);
+      }
+      const num = parseInt(claimStart[1], 10);
+      const restOfLine = claimStart[2];
+      let type = "dependent";
+      let statutoryClass = null;
+      let parentClaim = null;
+      if (/^A system comprising/i.test(restOfLine)) {
+        type = "independent";
+        statutoryClass = "system";
+      } else if (/^A computer-implemented method comprising/i.test(restOfLine)) {
+        type = "independent";
+        statutoryClass = "method";
+      } else if (/^A non-transitory computer-readable medium/i.test(restOfLine)) {
+        type = "independent";
+        statutoryClass = "medium";
+      } else {
+        const depMatch = restOfLine.match(
+          /^The\s+(system|method|non-transitory computer-readable medium)\s+of\s+claim\s+(\d+)/i
+        );
+        if (depMatch) {
+          const classMap = {
+            system: "system",
+            method: "method",
+            "non-transitory computer-readable medium": "medium"
+          };
+          statutoryClass = classMap[depMatch[1].toLowerCase()] || depMatch[1].toLowerCase();
+          parentClaim = parseInt(depMatch[2], 10);
+        }
+      }
+      currentClaim = {
+        number: num,
+        type,
+        statutoryClass,
+        parentClaim,
+        text: restOfLine
+      };
+    } else if (currentClaim) {
+      currentClaim.text += "\n" + trimmed;
+    }
+  }
+  if (currentClaim) {
+    currentClaim.text = currentClaim.text.trim();
+    claims.push(currentClaim);
+  }
+  const independent = claims.filter((c) => c.type === "independent");
+  const dependent = claims.filter((c) => c.type === "dependent");
+  const dependentsByParent = {};
+  for (const dep of dependent) {
+    const key = dep.parentClaim != null ? String(dep.parentClaim) : "unknown";
+    dependentsByParent[key] = (dependentsByParent[key] || 0) + 1;
+  }
+  return {
+    summary: {
+      totalClaims: claims.length,
+      independentClaims: independent.length,
+      dependentClaims: dependent.length,
+      statutoryClasses: Array.from(new Set(independent.map((c) => c.statutoryClass).filter(Boolean))),
+      dependentsByParent
+    },
+    claims
+  };
+}
+async function runBroaderClaims(payload) {
+  console.log(">>> [M5-5c BROADER-CLAIMS] <<< starting 3-stage pipeline");
+  try {
+    const prepared = prepareData(payload);
+    console.log(">>> [M5-5c BROADER-CLAIMS] <<< stage 1/3 spec-reader");
+    const readerConfig = loadAgentConfig("module5/5c/spec-reader.config.json");
+    const readerSystem = loadPrompt("module5/5c/spec-reader.md");
+    const readerPrompt = buildReaderPrompt(prepared);
+    const specAnalysis = await callAgent({
+      systemPrompt: readerSystem,
+      userMessage: readerPrompt,
+      config: readerConfig
+    });
+    console.log(">>> [M5-5c BROADER-CLAIMS] <<< stage 2/3 claim-strategist");
+    const strategistConfig = loadAgentConfig("module5/5c/claim-strategist.config.json");
+    const strategistSystem = loadPrompt("module5/5c/claim-strategist.md");
+    const blueprint = await callAgent({
+      systemPrompt: strategistSystem,
+      userMessage: buildStrategistPrompt(prepared, specAnalysis),
+      config: strategistConfig
+    });
+    console.log(">>> [M5-5c BROADER-CLAIMS] <<< stage 3/3 claim-drafter");
+    const drafterConfig = loadAgentConfig("module5/5c/claim-drafter.config.json");
+    const drafterSystem = loadPrompt("module5/5c/claim-drafter.md");
+    const rawClaims = await callAgent({
+      systemPrompt: drafterSystem,
+      userMessage: buildDrafterPrompt(prepared, blueprint),
+      config: drafterConfig
+    });
+    const parsed = parseClaims(rawClaims);
+    console.log(
+      `>>> [M5-5c BROADER-CLAIMS] <<< done \u2014 ${parsed.summary.totalClaims} claims (${parsed.summary.independentClaims} independent, ${parsed.summary.dependentClaims} dependent)`
+    );
+    return {
+      success: true,
+      summary: parsed.summary,
+      claims: parsed.claims
+    };
+  } catch (error) {
+    console.error(">>> [M5-5c BROADER-CLAIMS] <<< failed:", error);
+    const message = error?.message || String(error);
+    const errorMessage = message.includes("timeout") || message.includes("timed out") ? "AI service timed out. Please try again." : message || "Broader claims generation failed";
+    return { success: false, error: errorMessage };
+  }
+}
+
+// server/modules/module5/5a/provisional.ts
+function parsePayload(payload) {
+  const sessionId = payload.sessionId || "";
+  const category = payload.category || "";
+  const coreIdea = payload.coreIdea || payload.mainIdea || "";
+  const expandedConcept = payload.expandedConcept || "";
+  const claimGroups = [];
+  let currentIndependent = null;
+  let dependents = [];
+  if (Array.isArray(payload.selectedClaims)) {
+    for (const claim of payload.selectedClaims) {
+      if (claim.type === "independent claim") {
+        if (currentIndependent != null) {
+          claimGroups.push({ independent: currentIndependent, dependents: dependents.slice() });
+        }
+        currentIndependent = claim.text || "";
+        dependents = [];
+      } else {
+        dependents.push(claim.text || "");
+      }
+    }
+    if (currentIndependent != null) {
+      claimGroups.push({ independent: currentIndependent, dependents: dependents.slice() });
+    }
+  }
+  const claimsText = claimGroups.map(
+    (g, i) => `Independent Claim ${i + 1}:
+${g.independent}
+
+Dependent Claims:
+${g.dependents.join("\n\n")}`
+  ).join("\n\n---\n\n");
+  return {
+    sessionId,
+    category,
+    coreIdea,
+    expandedConcept,
+    claimGroups,
+    claimsText,
+    totalClaims: payload.selectedClaims?.length || 0
+  };
+}
+async function runAgent(agentName, userMessage) {
+  const config = loadAgentConfig(`module5/5a/${agentName}.config.json`);
+  const systemPrompt = loadPrompt(`module5/5a/${agentName}.md`);
+  const result = await callAgent({ systemPrompt, userMessage, config });
+  return (result || "").trim();
+}
+function titleUserPrompt(p) {
+  return `**CATEGORY:** ${p.category}
+
+**CORE INNOVATION:**
+${p.coreIdea}
+
+**EXPANDED CONCEPT:**
+${p.expandedConcept}
+
+**INDEPENDENT CLAIMS:**
+${p.claimsText}
+
+---
+
+**YOUR MISSION: PATENT TITLE**
+
+Draft the title for a provisional patent application that will appear on the USPTO filing.
+
+**USPTO TITLE REQUIREMENTS:**
+- Technically precise - identify the exact technical field
+- Innovation clarity - state what the invention does
+- Professional format - no marketing language, pure technical description
+- Concise but complete - typically 10-15 words
+
+**EXAMPLES OF EFFECTIVE TITLES:**
+- "System and Method for Autonomous Multi-Application Workflow Synthesis via Observational Learning"
+- "Apparatus for Real-Time Semantic Action Abstraction Across Heterogeneous Software Environments"
+- "Cross-Platform Workflow Orchestration Using Behavioral Pattern Recognition"
+
+**OUTPUT:**
+Provide only the title text. No explanations, no preamble, no markdown.`;
+}
+function backgroundUserPrompt(p, s) {
+  return `**PATENT TITLE:**
+${s.title}
+
+**CATEGORY:** ${p.category}
+
+**CORE INNOVATION:**
+${p.coreIdea}
+
+**EXPANDED CONCEPT:**
+${p.expandedConcept}
+
+**INDEPENDENT CLAIMS:**
+${p.claimsText}
+
+---
+
+**YOUR MISSION: BACKGROUND SECTION**
+
+The background section establishes why this invention is necessary by documenting the deficiencies in existing solutions. Patent examiners use this section to understand the problem space and evaluate novelty.
+
+**REQUIRED CONTENT:**
+
+**1. FIELD OF THE INVENTION**
+State the precise technical domain - not just "software" but the specific area like "cross-application process automation using machine learning-based behavioral inference." Identify the specific industry problem space and establish technical context.
+
+**2. DESCRIPTION OF RELATED ART**
+Identify and analyze existing solution categories. For each category of prior art:
+- Explain what it does technically
+- Document its specific limitations and deficiencies  
+- Explain why it fails to solve the problem adequately
+- Identify technical gaps (e.g., "requires explicit user programming," "cannot infer cross-application workflows," "limited to predefined templates")
+
+Consider these categories of prior art:
+- Traditional RPA (Robotic Process Automation) tools
+- Workflow automation platforms (Zapier, IFTTT, n8n, Make)
+- Task recording/macro tools
+- AI assistants and copilots
+- Low-code/no-code platforms
+- Script-based automation
+- Enterprise integration platforms
+- Any other relevant existing approaches
+
+**3. TECHNICAL PROBLEMS WITH PRIOR ART**
+Document specific technical deficiencies:
+- Manual workflow design overhead
+- Inability to discover implicit user patterns
+- No cross-application behavioral learning
+- Template-based limitations
+- Lack of autonomous workflow synthesis
+- No semantic action abstraction
+- Inability to personalize without explicit configuration
+- Poor handling of disparate application environments
+
+For each problem, explain why it's technically significant and what failures or inefficiencies it causes.
+
+**WRITING APPROACH:**
+Be comprehensive and thorough. Use technical terminology. Build a clear case for why existing solutions are inadequate. Reference specific technical deficiencies, not marketing claims. Write in formal technical prose.
+
+**OUTPUT:**
+Provide only the background text. No section headers in the output, no markdown formatting.`;
+}
+function summaryUserPrompt(p, s) {
+  return `**PATENT TITLE:**
+${s.title}
+
+**BACKGROUND SECTION (ALREADY WRITTEN):**
+${s.background}
+
+**CORE INNOVATION:**
+${p.coreIdea}
+
+**INDEPENDENT CLAIMS:**
+${p.claimsText}
+
+---
+
+**YOUR MISSION: SUMMARY SECTION**
+
+The summary presents the solution to the problems documented in the background. This is where you explain what the invention IS and how it addresses the deficiencies in prior art.
+
+**REQUIRED CONTENT:**
+
+**1. INVENTION OVERVIEW**
+State clearly what the invention is and its core technical approach. Explain how it fundamentally differs from the prior art discussed in the background.
+
+**2. KEY INNOVATIONS**
+Explain each major innovation component:
+- **Autonomous discovery**: How the system learns by observation rather than programming
+- **Semantic abstraction**: How it understands user intent from raw interactions
+- **Cross-application synthesis**: How it chains actions across disparate tools
+- **Personalization without configuration**: How it adapts to individual users
+- **De novo workflow creation**: How it creates new automations rather than using templates
+
+**3. TECHNICAL ADVANTAGES**
+Explain the specific benefits and how they solve the problems identified in the background:
+- Eliminates manual workflow design burden
+- Discovers hidden efficiency opportunities
+- Adapts to individual user patterns
+- Handles heterogeneous application environments
+- Creates truly personalized automations
+- Reduces technical expertise requirements
+- Continuously learns and refines workflows
+
+**4. CONNECTION TO DETAILED DESCRIPTION**
+Bridge to the upcoming detailed description by indicating that comprehensive technical specifications follow.
+
+**WRITING APPROACH:**
+Be confident and comprehensive. Focus on WHAT the invention does and WHY it's valuable, saving the detailed HOW for the next section. Make it clear this invention solves the problems documented in the background. Use technical but accessible language.
+
+**OUTPUT:**
+Provide only the summary text. No section headers in the output, no markdown formatting.`;
+}
+function architectureUserPrompt(p, s) {
+  return `**PATENT TITLE:**
+${s.title}
+
+**SUMMARY:**
+${s.summary}
+
+**CORE INNOVATION:**
+${p.coreIdea}
+
+**EXPANDED CONCEPT:**
+${p.expandedConcept}
+
+---
+
+**YOUR MISSION: SYSTEM ARCHITECTURE (Part 1 of Detailed Description)**
+
+Document the complete system architecture with every component properly identified and described. This is the structural foundation that enables a PHOSITA to understand what needs to be built.
+
+**COMPONENT INVENTORY WITH REFERENCE NUMERALS:**
+
+Assign unique reference numerals to every component in the system. Use the format (100), (102), (104), etc.
+
+Example components to identify and describe:
+- Computing System (100)
+- User Device (102)
+- Interaction Monitoring Agent (104)
+- Operating System Event Hook (106)
+- Raw Interaction Data Repository (108)
+- Secure Data Transmission Protocol (110)
+- Backend Server Infrastructure (112)
+- Action Abstraction and Normalization Service (114)
+- Pattern Recognition Engine (116)
+- Machine Learning Model (118)
+- Workflow Discovery Engine (120)
+- Workflow Synthesis Module (122)
+- Synthesized Workflow Repository (124)
+- Cross-Application Integration Layer (126)
+- Application Connectors (128)
+- Automation Execution Environment (130)
+- Orchestration Engine (132)
+- User Interface Module (134)
+- [Continue with all necessary components]
+
+**FOR EACH COMPONENT, DESCRIBE:**
+
+**Structure - What is it made of?**
+- Hardware components: Specify CPU, RAM, storage, network requirements
+- Software components: Programming language, frameworks, libraries, dependencies
+- Data components: Database type, schema structure, indexing strategy
+
+**Location - Where does it exist?**
+- On user's local device?
+- On cloud server infrastructure?
+- Edge compute location?
+- Distributed across multiple locations?
+
+**Connectivity - How does it connect?**
+- What protocols does it use? (HTTP, WebSocket, gRPC, TCP, UDP)
+- What APIs does it expose or consume?
+- What message formats? (JSON, Protobuf, XML)
+- Authentication and security mechanisms?
+
+**Function - What does it do?**
+- Input: What data or signals does it receive?
+- Processing: What computations or transformations does it perform?
+- Output: What does it produce or send?
+- Purpose: Why is this component necessary?
+
+**PHYSICAL RELATIONSHIPS:**
+Explain how components are physically or logically connected:
+- "The Interaction Monitoring Agent (104) runs as a background process on User Device (102) and communicates with Backend Server (112) via Secure Transmission Protocol (110)..."
+- "Pattern Recognition Engine (116) queries Raw Interaction Data Repository (108) using SQL queries over TCP connection..."
+
+**WRITING APPROACH:**
+Use reference numerals consistently throughout. Be specific about technologies and implementations. Provide enough detail that a PHOSITA could design the system architecture.
+
+**OUTPUT:**
+Provide only the architecture description text. No section headers in output, no markdown formatting. This will be Part 1 of the Detailed Description section.`;
+}
+function dataStructuresUserPrompt(p, s) {
+  return `**PATENT TITLE:**
+${s.title}
+
+**SYSTEM ARCHITECTURE (ALREADY WRITTEN):**
+${s.architecture}
+
+**CORE INNOVATION:**
+${p.coreIdea}
+
+---
+
+**YOUR MISSION: DATA STRUCTURES & FORMATS (Part 2 of Detailed Description)**
+
+Document every data structure, format, and protocol used in the system. This enables a PHOSITA to understand how information is represented, stored, and transmitted.
+
+**REQUIRED DATA STRUCTURES:**
+
+**1. RAW INTERACTION EVENTS**
+Define the complete structure for captured user interactions:
+
+Fields to document:
+- Timestamp (format specification: ISO8601, Unix epoch, etc.)
+- Event type (enumeration of all possible types)
+- Application identifier (how applications are uniquely identified)
+- Window/element identification (DOM path, accessibility tree, window handle)
+- Input data (keystrokes, mouse coordinates, values entered)
+- Application state (current view, open documents, active elements)
+- Contextual metadata (user session, device info, environment variables)
+
+Explain the serialization format (JSON, Protocol Buffers, etc.) and provide example structure.
+
+**2. ABSTRACTED ACTIONS**
+Define the standardized action format that makes actions application-agnostic:
+
+Fields to document:
+- Action identifier (UUID, sequential ID)
+- Action type (standardized verb taxonomy: create, read, update, delete, navigate, etc.)
+- Source application (reference to application from which action originated)
+- Target element (abstracted element identifier)
+- Parameters (action-specific data in key-value format)
+- Semantic intent (interpreted purpose of the action)
+- Confidence score (if applicable for ML-based abstraction)
+
+Explain how normalization works across different application types.
+
+**3. PATTERN RECOGNITION OUTPUT**
+Define how identified patterns are represented:
+
+Structure to document:
+- Pattern identifier
+- Action sequence (ordered list of action references)
+- Frequency metrics (how often pattern occurs)
+- Temporal characteristics (typical timing between actions)
+- Contextual triggers (conditions under which pattern occurs)
+- Confidence metrics (statistical significance)
+
+**4. WORKFLOW DEFINITIONS (DAG)**
+Define the workflow representation in complete detail:
+
+Structure to document:
+- Workflow identifier
+- Workflow metadata (name, description, creation date)
+- Nodes array (each node represents an atomic action)
+  - Node identifier
+  - Action reference
+  - Input parameter mappings
+  - Output data structure
+- Edges array (each edge represents flow between nodes)
+  - Source node
+  - Target node
+  - Condition (optional conditional logic)
+  - Data transformation (how data passes between nodes)
+- Triggers array (what causes workflow to execute)
+  - Trigger type
+  - Trigger conditions
+  - Trigger parameters
+- Personalization metadata
+  - User-specific adaptations
+  - Historical performance metrics
+  - Optimization parameters
+
+**5. EXECUTION STATE**
+Define how workflow execution state is tracked:
+
+Fields to document:
+- Execution identifier
+- Workflow reference
+- Current node
+- Execution status (running, paused, completed, failed)
+- Node execution history
+- Variable state (current values of all variables)
+- Error information (if applicable)
+
+**STORAGE & TRANSMISSION:**
+Explain how these structures are:
+- Stored in databases (schema design, indexing)
+- Transmitted over network (serialization, compression)
+- Secured (encryption at rest and in transit)
+- Versioned (handling schema evolution)
+
+**WRITING APPROACH:**
+Be technically precise. Provide enough detail that a PHOSITA could implement these data structures. Use consistent terminology. Reference the component architecture from Part 1 using reference numerals where relevant.
+
+**OUTPUT:**
+Provide only the data structures description text. No section headers in output, no markdown formatting. This will be Part 2 of the Detailed Description section.`;
+}
+function operationsUserPrompt(p, s) {
+  return `**PATENT TITLE:**
+${s.title}
+
+**SYSTEM ARCHITECTURE:**
+${s.architecture}
+
+**DATA STRUCTURES:**
+${s.data_structures}
+
+**CORE INNOVATION:**
+${p.coreIdea}
+
+---
+
+**YOUR MISSION: OPERATIONAL WORKFLOW (Part 3 of Detailed Description)**
+
+Provide a complete chronological narrative of how the system operates from start to finish. A PHOSITA must be able to understand the exact sequence of operations.
+
+**CHRONOLOGICAL NARRATIVE STRUCTURE:**
+
+Use reference numerals from the architecture section consistently throughout. Write in a flowing narrative that traces execution.
+
+**PHASE 1: INTERACTION CAPTURE**
+
+Begin with: "During normal system operation, a user interacts with applications on User Device (102). When the user performs an action\u2014such as clicking a button, entering text, or switching applications\u2014the Interaction Monitoring Agent (104) detects this event through Operating System Event Hook (106)..."
+
+Continue with:
+- How the event is captured (specific OS APIs or hooks used)
+- What information is extracted
+- How the event is packaged into the Event Data Structure
+- Any filtering or preprocessing that occurs
+
+**PHASE 2: DATA TRANSMISSION & STORAGE**
+
+"The captured Event Object is transmitted from User Device (102) to Backend Server (112) via Secure Data Transmission Protocol (110), which implements TLS 1.3 encryption..."
+
+Continue with:
+- Network communication mechanism
+- Security and authentication
+- How the server receives and validates the data
+- Storage in Raw Interaction Data Repository (108)
+- Database operations (insert, index, etc.)
+
+**PHASE 3: ACTION ABSTRACTION**
+
+"Action Abstraction and Normalization Service (114) periodically queries Raw Interaction Data Repository (108) for new events. For each event, the service..."
+
+Continue with:
+- How raw events are processed
+- Application-specific interpretation logic
+- Semantic analysis mechanism
+- Creation of Abstracted Action objects
+- Storage of abstracted actions
+
+**PHASE 4: PATTERN RECOGNITION**
+
+"Pattern Recognition Engine (116) analyzes the stream of Abstracted Actions to identify recurring sequences. The engine employs..."
+
+Continue with:
+- Specific algorithms or ML models used
+- How patterns are identified (sequence mining, neural network inference, etc.)
+- Statistical significance testing
+- Pattern storage and indexing
+- Continuous learning updates
+
+**PHASE 5: WORKFLOW DISCOVERY**
+
+"Workflow Discovery Engine (120) examines identified patterns to determine which represent genuine automation opportunities..."
+
+Continue with:
+- Criteria for workflow candidacy
+- Cross-application sequence detection
+- Implicit data dependency identification
+- Contextual trigger inference
+
+**PHASE 6: WORKFLOW SYNTHESIS**
+
+"Workflow Synthesis Module (122) constructs executable workflow definitions from discovered patterns..."
+
+Continue with:
+- DAG construction algorithm
+- Node and edge creation
+- Parameter mapping logic
+- Personalization incorporation
+- Workflow validation
+
+**PHASE 7: WORKFLOW STORAGE & PRESENTATION**
+
+"The synthesized workflow is stored in Synthesized Workflow Repository (124) and presented to the user via User Interface Module (134)..."
+
+Continue with:
+- Repository storage mechanism
+- User notification method
+- Workflow display in UI
+- User review and approval process
+
+**PHASE 8: WORKFLOW EXECUTION**
+
+"When a user activates a workflow, or when a trigger condition is met, Automation Execution Environment (130) instantiates the workflow for execution..."
+
+Continue with:
+- Trigger detection mechanism
+- Execution initialization
+- Node-by-node execution with Orchestration Engine (132)
+- Cross-Application Integration Layer (126) invocation
+- API calls to target applications
+- Data flow between nodes
+- Error handling and retry logic
+- Execution state tracking
+- Completion handling
+
+**PHASE 9: CONTINUOUS REFINEMENT**
+
+"As the workflow executes and as the user continues working, the system continues monitoring to refine and optimize..."
+
+Continue with:
+- Performance metrics collection
+- Workflow adjustment logic
+- User feedback incorporation
+- Model retraining process
+
+**WRITING APPROACH:**
+Write as a flowing narrative, not bullet points. Use reference numerals constantly to tie back to the architecture. Describe the technical mechanism for each step. A PHOSITA should be able to implement the system's logic from this description.
+
+**OUTPUT:**
+Provide only the operational workflow description text. No section headers in output, no markdown formatting. This will be Part 3 of the Detailed Description section.`;
+}
+function alternativesUserPrompt(p, s) {
+  return `**PATENT TITLE:**
+${s.title}
+
+**SYSTEM ARCHITECTURE:**
+${s.architecture}
+
+**OPERATIONS:**
+${s.operations}
+
+---
+
+**YOUR MISSION: ALTERNATIVE EMBODIMENTS (Part 4 of Detailed Description)**
+
+Document technical variations that achieve the same inventive function. This shows that the invention is not limited to one specific implementation but represents a broader inventive concept.
+
+**HARDWARE & INFRASTRUCTURE ALTERNATIVES:**
+
+**Deployment Architectures:**
+Explain that while the primary embodiment may describe a cloud-based architecture, the invention can be implemented in alternative configurations:
+- Pure cloud infrastructure (all components on remote servers)
+- On-premise deployment (enterprise data center)
+- Hybrid architecture (monitoring agents on user devices, processing in cloud)
+- Edge computing (processing at network edge closer to users)
+- Peer-to-peer distributed (no central server)
+
+For each, explain what changes from the primary embodiment and what remains the same inventively.
+
+**Compute Platforms:**
+Describe platform flexibility:
+- Desktop systems (Windows, macOS, Linux)
+- Mobile devices (iOS, Android with platform-specific monitoring approaches)
+- Embedded systems (resource-constrained implementations)
+- Browser-based (web extension architecture)
+- Mixed heterogeneous environments
+
+**Hardware Acceleration:**
+Explain optional hardware acceleration:
+- GPU acceleration for machine learning inference
+- TPU or specialized AI accelerators
+- FPGA for low-latency pattern matching
+- Distributed computing clusters
+
+**SOFTWARE & TECHNOLOGY ALTERNATIVES:**
+
+**Programming Languages:**
+While the primary embodiment might use Python, explain that implementation language is not limiting:
+- Compiled languages (Go, Rust, C++) for performance-critical components
+- JVM languages (Java, Kotlin, Scala) for enterprise integration
+- JavaScript/TypeScript for web-based components
+- Multiple languages in microservices architecture
+
+**Machine Learning Frameworks:**
+Explain ML framework flexibility:
+- TensorFlow for large-scale neural networks
+- PyTorch for research and development
+- JAX for high-performance computing
+- Scikit-learn for traditional ML algorithms
+- Custom implementations of algorithms
+
+**Database Technologies:**
+Describe database alternatives:
+- Relational databases (PostgreSQL, MySQL) for structured data
+- NoSQL (MongoDB, Cassandra) for flexible schemas
+- Time-series databases (InfluxDB, TimescaleDB) for event streams
+- Graph databases (Neo4j) for relationship tracking
+- Vector databases (Pinecone, Weaviate) for embeddings
+
+**ALGORITHMIC ALTERNATIVES:**
+
+**Pattern Recognition:**
+Explain alternative approaches to pattern discovery:
+- Statistical methods: Markov chains, Hidden Markov Models, Bayesian networks
+- Deep learning: Transformer architectures, LSTM networks, GRU networks
+- Traditional ML: Random forests, gradient boosting, decision trees
+- Sequence mining: PrefixSpan, SPADE, CloSpan algorithms
+- Hybrid approaches combining multiple techniques
+
+**Workflow Optimization:**
+Describe alternative optimization methods:
+- Reinforcement learning for workflow improvement
+- Genetic algorithms for workflow synthesis
+- Simulated annealing for parameter optimization
+- Constraint satisfaction for workflow validation
+
+**INTEGRATION ALTERNATIVES:**
+
+**Application Integration Methods:**
+Explain that applications can be integrated through various means:
+- API-based integration (REST, GraphQL, gRPC)
+- UI automation (Selenium, Playwright, Puppeteer)
+- Native SDKs and libraries
+- Browser extensions
+- Hybrid approaches combining multiple methods
+
+**WRITING APPROACH:**
+Be comprehensive in showing technical variations. Use language like "in alternative embodiments," "additionally," "furthermore," "alternatively" to show scope. The goal is to demonstrate that the core inventive concept applies across many technical implementations.
+
+**OUTPUT:**
+Provide only the alternatives description text. No section headers in output, no markdown formatting. This will be Part 4 of the Detailed Description section.`;
+}
+function ramificationsUserPrompt(p, s) {
+  return `**DETAILED DESCRIPTION (ALREADY WRITTEN):**
+${s.detailed_description}
+
+**CORE INNOVATION:**
+${p.coreIdea}
+
+**INDEPENDENT CLAIMS:**
+${p.claimsText}
+
+---
+
+**YOUR MISSION: RAMIFICATIONS AND SCOPE SECTION**
+
+The detailed description showed one way to build the invention. This section demonstrates the breadth of the invention by showing the full range of variations, alternatives, and applications. This maximizes patent scope and defensibility.
+
+**PURPOSE:**
+Show that the invention isn't limited to one specific implementation but covers a broad class of related approaches. This prevents competitors from designing around the patent by making trivial modifications.
+
+**REQUIRED CONTENT:**
+
+**1. ALTERNATIVE MATERIALS & TECHNOLOGIES**
+
+For a software invention, cover the full technology stack:
+
+**Programming & Frameworks:**
+Explain that the system can be implemented in various programming languages (Python, JavaScript, Go, Rust, Java, C++, etc.), using different frameworks appropriate to each language. The choice of implementation language doesn't change the fundamental invention.
+
+**Data Storage:**
+Describe how different database technologies can be used depending on requirements: relational databases for structured data, NoSQL for flexibility, time-series databases for event streams, graph databases for relationship tracking, vector databases for embeddings.
+
+**Infrastructure:**
+Explain deployment flexibility: cloud platforms (AWS, Azure, GCP), on-premise infrastructure, hybrid approaches, edge computing, serverless architectures. The hosting model doesn't change the core invention.
+
+**2. DEPLOYMENT SCENARIOS & ENVIRONMENTS**
+
+**Scale Variations:**
+Explain how the invention adapts across scales:
+- Personal single-user automation on individual devices
+- Team/workgroup automation (small organizations)
+- Department-level deployment (medium scale)
+- Enterprise-wide deployment (large scale)
+- Multi-tenant SaaS (service provider model)
+
+**Platform Variations:**
+Describe deployment across platforms:
+- Desktop operating systems (Windows, macOS, Linux)
+- Mobile platforms (iOS, Android)
+- Web browsers
+- Embedded systems and IoT devices
+- Mixed-platform environments
+
+**3. APPLICATIONS & USE CASES**
+
+Beyond the primary use case, explain how this invention applies to:
+
+**Industry-Specific Applications:**
+Healthcare, finance, legal, manufacturing, retail, education, government - for each relevant industry, explain how the same core technology addresses that industry's automation needs.
+
+**Functional Categories:**
+- Personal productivity optimization
+- Business process automation
+- Data migration and integration
+- Testing and quality assurance
+- Security and compliance monitoring
+- Customer support operations
+- Content creation workflows
+
+**Cross-Industry Patterns:**
+Any multi-step process involving multiple applications, any repetitive task with observable patterns, any workflow requiring data coordination between systems.
+
+**4. ALGORITHMIC & METHODOLOGICAL ALTERNATIVES**
+
+**Pattern Recognition Approaches:**
+Explain that the pattern recognition can be achieved through various technical approaches: statistical methods (Markov models, Bayesian networks), deep learning (Transformers, recurrent networks), traditional ML (decision trees, ensemble methods), or hybrid approaches combining multiple techniques.
+
+**Optimization Methods:**
+Describe alternative approaches to workflow optimization: reinforcement learning, evolutionary algorithms, constraint satisfaction, heuristic search.
+
+**5. INTEGRATION METHODS**
+
+**Application Integration:**
+Explain that applications can be integrated through various technical means: REST APIs, GraphQL, gRPC, native SDKs, UI automation frameworks, browser extensions, or hybrid approaches combining multiple methods.
+
+**WRITING APPROACH:**
+Be comprehensive and thorough. Use language like "in alternative embodiments," "additionally," "furthermore," "in various implementations" to show scope. The goal is to demonstrate that the core inventive concept applies broadly across many technical variations.
+
+**OUTPUT:**
+Provide only the ramifications text. No section headers in the output, no markdown formatting. Be thorough in showing the breadth of patent coverage.`;
+}
+function abstractUserPrompt(p, s) {
+  return `**PATENT TITLE:**
+${s.title}
+
+**SUMMARY:**
+${s.summary}
+
+**INDEPENDENT CLAIMS:**
+${p.claimsText}
+
+
+
+---
+
+**YOUR MISSION: PATENT ABSTRACT**
+
+Write the abstract for this provisional patent application. The abstract is the first thing anyone reads and must provide a complete but concise overview.
+
+**USPTO ABSTRACT REQUIREMENTS:**
+- Maximum 150 words (this is a strict USPTO requirement)
+- Single paragraph with no line breaks
+- Technical precision required
+- Must be understandable to both technical and non-technical readers
+- Should enable someone to understand the invention without reading further
+- No marketing language or subjective claims
+
+**REQUIRED ELEMENTS:**
+
+**Opening Statement:**
+State what the invention is: "A computing system for..."
+
+**Problem Context:**
+Briefly explain what problem it solves: "Existing approaches require explicit programming and cannot..."
+
+**Technical Solution:**
+Explain how it works: "The system monitors user interactions, abstracts actions into standardized formats, employs machine learning to identify patterns, and autonomously synthesizes executable workflows..."
+
+**Result:**
+State the outcome: "Enabling zero-configuration, personalized automation across disparate applications."
+
+**WRITING REQUIREMENTS:**
+- One continuous paragraph
+- Exactly 150 words or fewer (count carefully)
+- Technical accuracy
+- Clear and direct language
+- Follow USPTO formatting conventions
+
+**OUTPUT:**
+Provide only the abstract text as a single paragraph. No preamble, no markdown formatting.`;
+}
+function abstractFixerUserPrompt(args) {
+  const { p, s, abstract, wordCount } = args;
+  return `**COMPLIANCE FAILURE: ABSTRACT EXCEEDS 150-WORD USPTO LIMIT**
+
+**FAILED ABSTRACT (${wordCount} words):**
+${abstract}
+
+---
+
+**PATENT BEING DESCRIBED:**
+
+**Title:** ${s.title}
+
+**Core Innovation:** ${p.coreIdea}
+
+**Technical Summary:** ${s.summary}
+
+**Legal Claims:** ${p.claimsText}
+
+---
+
+**YOUR TASK:**
+
+The abstract above is ${wordCount} words. USPTO maximum is 150 words.
+
+Rewrite this abstract to describe THE EXACT SAME INVENTION in under 150 words.
+
+PRESERVE:
+- Every system component mentioned
+- Every process and action described
+- Every input/output relationship
+- Every technical outcome stated
+
+The rewritten abstract must be legally equivalent - a patent attorney must confirm both versions describe the same invention with the same scope.
+
+**TARGET:** 120-140 words
+**MAXIMUM:** 150 words
+
+**OUTPUT:** The rewritten abstract only. Single paragraph. No commentary.`;
+}
+function countWords(text2) {
+  if (!text2) return 0;
+  return String(text2).trim().split(/\s+/).filter(Boolean).length;
+}
+var MAX_ABSTRACT_FIX_ATTEMPTS = 3;
+function buildFormattedDocument(args) {
+  const sep = "\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550";
+  return [
+    "TITLE:",
+    args.title,
+    "",
+    sep,
+    "",
+    "ABSTRACT:",
+    args.abstract,
+    "",
+    sep,
+    "",
+    "BACKGROUND:",
+    args.background,
+    "",
+    sep,
+    "",
+    "SUMMARY:",
+    args.summary,
+    "",
+    sep,
+    "",
+    "DETAILED DESCRIPTION:",
+    args.detailedDescription,
+    "",
+    sep,
+    "",
+    "RAMIFICATIONS AND SCOPE:",
+    args.ramifications,
+    "",
+    sep,
+    "",
+    "CLAIMS:",
+    args.claims.join("\n\n")
+  ].join("\n");
+}
+async function runProvisional(payload) {
+  console.log(">>> [M5-5a PROVISIONAL] <<< starting 9-10 agent pipeline");
+  try {
+    const parsed = parsePayload(payload);
+    const sections = {};
+    console.log(">>> [M5-5a PROVISIONAL] <<< 1/9 title");
+    sections.title = await runAgent("title", titleUserPrompt(parsed));
+    console.log(">>> [M5-5a PROVISIONAL] <<< 2/9 background");
+    sections.background = await runAgent("background", backgroundUserPrompt(parsed, sections));
+    console.log(">>> [M5-5a PROVISIONAL] <<< 3/9 summary");
+    sections.summary = await runAgent("summary", summaryUserPrompt(parsed, sections));
+    console.log(">>> [M5-5a PROVISIONAL] <<< 4/9 architecture");
+    sections.architecture = await runAgent("architecture", architectureUserPrompt(parsed, sections));
+    console.log(">>> [M5-5a PROVISIONAL] <<< 5/9 data-structures");
+    sections.data_structures = await runAgent(
+      "data-structures",
+      dataStructuresUserPrompt(parsed, sections)
+    );
+    console.log(">>> [M5-5a PROVISIONAL] <<< 6/9 operations");
+    sections.operations = await runAgent("operations", operationsUserPrompt(parsed, sections));
+    console.log(">>> [M5-5a PROVISIONAL] <<< 7/9 alternatives");
+    sections.alternatives = await runAgent(
+      "alternatives",
+      alternativesUserPrompt(parsed, sections)
+    );
+    sections.detailed_description = [
+      sections.architecture,
+      sections.data_structures,
+      sections.operations,
+      sections.alternatives
+    ].join("\n\n");
+    console.log(">>> [M5-5a PROVISIONAL] <<< 8/9 ramifications");
+    sections.ramifications_and_scope = await runAgent(
+      "ramifications",
+      ramificationsUserPrompt(parsed, sections)
+    );
+    console.log(">>> [M5-5a PROVISIONAL] <<< 9/9 abstract");
+    let abstract = await runAgent("abstract", abstractUserPrompt(parsed, sections));
+    let wordCount = countWords(abstract);
+    for (let attempt = 0; wordCount > 150 && attempt < MAX_ABSTRACT_FIX_ATTEMPTS; attempt++) {
+      console.log(
+        `>>> [M5-5a PROVISIONAL] <<< abstract ${wordCount} words > 150, fixer attempt ${attempt + 1}/${MAX_ABSTRACT_FIX_ATTEMPTS}`
+      );
+      abstract = await runAgent(
+        "abstract-fixer",
+        abstractFixerUserPrompt({ p: parsed, s: sections, abstract, wordCount })
+      );
+      wordCount = countWords(abstract);
+    }
+    sections.abstract = abstract;
+    const claimsArray = [];
+    let claimNumber = 1;
+    for (const group of parsed.claimGroups) {
+      claimsArray.push(`Claim ${claimNumber}: ${group.independent}`);
+      claimNumber++;
+      for (const dep of group.dependents) {
+        claimsArray.push(`Claim ${claimNumber}: ${dep}`);
+        claimNumber++;
+      }
+    }
+    const wordCounts = {
+      title: countWords(sections.title || ""),
+      abstract: countWords(sections.abstract || ""),
+      background: countWords(sections.background || ""),
+      summary: countWords(sections.summary || ""),
+      detailed_description: countWords(sections.detailed_description || ""),
+      ramifications: countWords(sections.ramifications_and_scope || "")
+    };
+    const totalWords = Object.values(wordCounts).reduce((a, b) => a + b, 0);
+    const formattedDocument = buildFormattedDocument({
+      title: sections.title || "",
+      abstract: sections.abstract || "",
+      background: sections.background || "",
+      summary: sections.summary || "",
+      detailedDescription: sections.detailed_description || "",
+      ramifications: sections.ramifications_and_scope || "",
+      claims: claimsArray
+    });
+    console.log(
+      `>>> [M5-5a PROVISIONAL] <<< done \u2014 ${claimsArray.length} claims, ${totalWords} total words (abstract ${wordCounts.abstract})`
+    );
+    return {
+      success: true,
+      sessionId: parsed.sessionId,
+      category: parsed.category,
+      coreIdea: parsed.coreIdea,
+      expandedConcept: parsed.expandedConcept,
+      claimGroups: parsed.claimGroups,
+      title: sections.title || "",
+      abstract: sections.abstract || "",
+      background: sections.background || "",
+      summary: sections.summary || "",
+      detailed_description: sections.detailed_description || "",
+      ramifications_and_scope: sections.ramifications_and_scope || "",
+      claims: claimsArray,
+      claims_count: claimsArray.length,
+      word_counts: wordCounts,
+      total_words: totalWords,
+      formatted_document: formattedDocument,
+      broad_claims_glossary: [],
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  } catch (error) {
+    console.error(">>> [M5-5a PROVISIONAL] <<< failed:", error);
+    const message = error?.message || String(error);
+    const errorMessage = message.includes("timeout") || message.includes("timed out") ? "AI service timed out. Please try again." : message || "Provisional generation failed";
+    return { success: false, error: errorMessage };
   }
 }
 
@@ -3349,41 +5540,17 @@ Examiner: ${examinerMsg}`,
       };
       const isRefinement = !!refinementFeedback;
       console.log(isRefinement ? "Regenerating draft with refinement feedback" : "Generating initial provisional draft");
-      const agent2WebhookUrl = process.env.N8N_AGENT2_WEBHOOK;
-      if (!agent2WebhookUrl) {
-        return res.status(500).json({ message: "Agent 2 webhook is not configured. Please contact support." });
-      }
-      console.log("Calling Agent 2 webhook to extract patentable ideas...");
-      let result;
-      try {
-        const webhookResponse = await fetch(agent2WebhookUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json; charset=utf-8",
-            "Accept": "application/json"
-          },
-          body: JSON.stringify(webhookPayload),
-          signal: AbortSignal.timeout(AGENT_TIMEOUT)
-          // 10 minute timeout
-        });
-        if (!webhookResponse.ok) {
-          throw new Error(`Webhook returned ${webhookResponse.status}: ${webhookResponse.statusText}`);
-        }
-        result = await webhookResponse.json();
-        console.log("Agent 2 webhook response received:", JSON.stringify(result).substring(0, 200));
-        if (!result.patentableIdeas && !result.draftSpecification && !result.provisionalDraft) {
-          console.error("Webhook response structure:", Object.keys(result));
-          throw new Error(`Webhook response missing 'patentableIdeas', 'draftSpecification', or 'provisionalDraft' fields. Received: ${Object.keys(result).join(", ")}`);
-        }
-        if (result.provisionalDraft && !result.patentableIdeas) {
-          result.patentableIdeas = result.provisionalDraft;
-        }
-      } catch (webhookError) {
-        console.error("Agent 2 webhook failed:", webhookError);
+      console.log("Calling Module 2 draft agent to generate provisional draft...");
+      const draftResponse = await runDraft(webhookPayload);
+      if (!draftResponse.success) {
         return res.status(503).json({
-          message: `Failed to extract ideas: ${webhookError.message}. Please try again.`
+          message: `Failed to generate draft: ${draftResponse.error}. Please try again.`
         });
       }
+      const result = {
+        provisionalDraft: draftResponse.provisionalDraft,
+        patentableIdeas: draftResponse.provisionalDraft
+      };
       await storage.upsertAgentData({
         projectId: req.params.id,
         agentNumber: 2,
@@ -3432,12 +5599,6 @@ ${JSON.stringify(draftContent, null, 2)}`,
         });
       }
       const comprehensiveSummary = agent2Data.data.comprehensiveSummary;
-      const webhookUrl = process.env.N8N_EXTRACT_IDEAS_WEBHOOK;
-      if (!webhookUrl) {
-        return res.status(500).json({
-          message: "Idea extraction webhook not configured yet. Please provide N8N_EXTRACT_IDEAS_WEBHOOK environment variable."
-        });
-      }
       const project = await storage.getProject(req.params.id);
       let codeFromTheUser = "";
       const sourceCodeFiles = project?.sourceCodeFiles || [];
@@ -3452,52 +5613,20 @@ Code:
 ${file.code}`;
         }).join("\n\n---\n\n");
       }
-      const webhookPayload = {
+      console.log("Calling Module 2/2b extract-concepts agent...");
+      const extractResult = await runExtractConcepts({
         sessionId: comprehensiveSummary?.sessionId,
         detailedConcept: provisionalDraft,
+        codeFromTheUser: codeFromTheUser || void 0,
         category: comprehensiveSummary?.category || "Software"
-      };
-      if (codeFromTheUser) {
-        webhookPayload.codeFromTheUser = codeFromTheUser;
-      }
-      console.log("Calling idea extraction webhook...");
-      const webhookResponse = await fetch(webhookUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          "Accept": "application/json"
-        },
-        body: JSON.stringify(webhookPayload),
-        signal: AbortSignal.timeout(AGENT_TIMEOUT)
-        // 10 minute timeout
       });
-      if (!webhookResponse.ok) {
-        throw new Error(`Webhook returned ${webhookResponse.status}: ${webhookResponse.statusText}`);
+      if (!extractResult.success) {
+        return res.status(503).json({ message: extractResult.error });
       }
-      const result = await webhookResponse.json();
-      console.log("Ideas extraction webhook response received:", JSON.stringify(result, null, 2));
-      const ideas = [];
-      let conceptIndex = 1;
-      while (result[`concept_${conceptIndex}`]) {
-        const concept = result[`concept_${conceptIndex}`];
-        let text2;
-        if (typeof concept === "string") {
-          text2 = concept.trim();
-        } else if (typeof concept === "object") {
-          text2 = concept.text || concept.description || concept.content || concept.title || JSON.stringify(concept);
-        } else {
-          text2 = String(concept);
-        }
-        ideas.push({
-          id: `concept-${conceptIndex}-${Date.now()}`,
-          text: text2
-        });
-        conceptIndex++;
-      }
-      if (ideas.length === 0) {
-        console.error("No concepts found in webhook response:", result);
-        throw new Error("No patentable concepts were extracted. Please try again.");
-      }
+      const ideas = extractResult.ideas.map((text2, index) => ({
+        id: `concept-${index + 1}-${Date.now()}`,
+        text: text2
+      }));
       console.log(`Extracted ${ideas.length} patentable concepts`);
       await storage.upsertAgentData({
         projectId: req.params.id,
@@ -3887,28 +6016,20 @@ _Total: ${totalPatentsFound} patents analyzed across ${priorArtResults.length} c
           priorArt: result.priorArt || []
         }))
       };
-      console.log("Calling white space analysis webhook...");
-      const webhookResponse = await sendWebhook(N8N_WHITESPACE_WEBHOOK, webhookPayload);
-      console.log("White space analysis response:", webhookResponse);
-      let enrichedConceptAnalyses = [];
-      let enrichedNuggetAnalyses = [];
-      if (webhookResponse?.conceptAnalyses && Array.isArray(webhookResponse.conceptAnalyses)) {
-        enrichedConceptAnalyses = webhookResponse.conceptAnalyses.map((concept, index) => {
-          const matchingPriorArt = priorArtResults[index];
-          return {
-            ...concept,
-            conceptTitle: concept.conceptTitle || matchingPriorArt?.conceptTitle || ""
-          };
-        });
-      } else if (webhookResponse?.nuggetAnalyses && Array.isArray(webhookResponse.nuggetAnalyses)) {
-        enrichedNuggetAnalyses = webhookResponse.nuggetAnalyses.map((nugget, index) => {
-          const matchingPriorArt = priorArtResults[index];
-          return {
-            ...nugget,
-            conceptTitle: nugget.conceptTitle || matchingPriorArt?.conceptTitle || nugget.nugget || nugget.concept || ""
-          };
-        });
+      console.log("Calling Module 4/4a whitespace agent...");
+      const whitespaceResult = await runWhitespace(webhookPayload);
+      if (!whitespaceResult.success) {
+        return res.status(503).json({ message: whitespaceResult.error });
       }
+      const webhookResponse = whitespaceResult;
+      console.log("White space analysis response:", webhookResponse);
+      const enrichedConceptAnalyses = (webhookResponse.conceptAnalyses || []).map((concept, index) => {
+        const matchingPriorArt = priorArtResults[index];
+        return {
+          ...concept,
+          conceptTitle: concept.conceptTitle || matchingPriorArt?.conceptTitle || ""
+        };
+      });
       await storage.upsertAgentData({
         projectId: req.params.id,
         agentNumber: 4,
@@ -3916,21 +6037,15 @@ _Total: ${totalPatentsFound} patents analyzed across ${priorArtResults.length} c
           status: "analysis_complete",
           ...webhookResponse,
           conceptAnalyses: enrichedConceptAnalyses.length > 0 ? enrichedConceptAnalyses : void 0,
-          nuggetAnalyses: enrichedNuggetAnalyses.length > 0 ? enrichedNuggetAnalyses : void 0,
           analyzedAt: (/* @__PURE__ */ new Date()).toISOString()
         }
       });
       const whiteSpaceVersion = await storage.getNextSnapshotVersion(req.params.id);
-      const conceptCount = enrichedConceptAnalyses.length || enrichedNuggetAnalyses.length || 0;
-      const whiteSpaceContent = enrichedConceptAnalyses.length > 0 ? enrichedConceptAnalyses.map((concept, idx) => {
+      const whiteSpaceContent = enrichedConceptAnalyses.map((concept, idx) => {
         const patentCount = concept.patentAnalyses?.length || 0;
         return `**Concept ${idx + 1}: ${concept.conceptTitle || "Untitled"}**
 - Risk Level: ${concept.overallRiskLevel || "Unknown"}
 - Patents Analyzed: ${patentCount}`;
-      }).join("\n\n") : enrichedNuggetAnalyses.map((nugget) => {
-        return `**${nugget.conceptTitle || nugget.nugget || nugget.concept || "Concept"}**
-- White Space: ${nugget.whiteSpaceStrategy || "Analyzed"}
-- Risk: ${nugget.riskLevel || "Assessed"}`;
       }).join("\n\n");
       await storage.createIdeaSnapshot({
         projectId: req.params.id,
@@ -3946,7 +6061,7 @@ ${whiteSpaceContent}`,
         metadata: {
           stage: 4,
           substage: "4a",
-          conceptCount,
+          conceptCount: enrichedConceptAnalyses.length,
           strategicDirective: webhookResponse?.strategicDirective
         }
       });
@@ -3988,21 +6103,13 @@ ${whiteSpaceContent}`,
           nuggetAnalyses: analysisResults.nuggetAnalyses || []
         }
       };
-      console.log("Calling claims writer webhook...");
-      const webhookResponse = await sendWebhook(N8N_CLAIMS_WEBHOOK, webhookPayload);
-      console.log("Claims writer response:", webhookResponse);
-      let claimVariations = [];
-      if (Array.isArray(webhookResponse)) {
-        if (webhookResponse.length > 0 && webhookResponse[0]?.data) {
-          claimVariations = webhookResponse[0].data;
-        } else {
-          claimVariations = webhookResponse;
-        }
-      } else if (webhookResponse?.data) {
-        claimVariations = Array.isArray(webhookResponse.data) ? webhookResponse.data : [webhookResponse.data];
-      } else {
-        claimVariations = [webhookResponse];
+      console.log("Calling Module 4/4b claims agent...");
+      const claimsResult = await runClaims(webhookPayload);
+      if (!claimsResult.success) {
+        return res.status(503).json({ message: claimsResult.error });
       }
+      const webhookResponse = { data: claimsResult.data };
+      let claimVariations = claimsResult.data;
       const parseRawOutput = (rawOutput) => {
         if (!rawOutput) return null;
         try {
@@ -4234,7 +6341,10 @@ ${dependentClaims.map((c, i) => `${i + 1}. ${c.text?.substring(0, 100)}...`).joi
         selectedClaims: formattedClaims
       };
       console.log("Calling provisional patent writing webhook...");
-      const rawWebhookResponse = await sendWebhook(N8N_PROVISIONAL_WEBHOOK, webhookPayload);
+      const rawWebhookResponse = await runProvisional(webhookPayload);
+      if (rawWebhookResponse && rawWebhookResponse.success === false) {
+        return res.status(503).json({ message: rawWebhookResponse.error || "Provisional generation failed" });
+      }
       console.log("Provisional webhook response received");
       console.log("Provisional response structure:", JSON.stringify(rawWebhookResponse, null, 2));
       const webhookResponse = Array.isArray(rawWebhookResponse) ? rawWebhookResponse[0] : rawWebhookResponse;
@@ -4325,7 +6435,10 @@ _Full specification includes: Background, Summary, Detailed Description, and Ram
         selectedClaims: formattedClaims
       };
       console.log("Calling provisional patent writing webhook for regeneration...");
-      const rawWebhookResponse = await sendWebhook(N8N_PROVISIONAL_WEBHOOK, webhookPayload);
+      const rawWebhookResponse = await runProvisional(webhookPayload);
+      if (rawWebhookResponse && rawWebhookResponse.success === false) {
+        return res.status(503).json({ message: rawWebhookResponse.error || "Provisional generation failed" });
+      }
       const provisionalDraft = Array.isArray(rawWebhookResponse) ? rawWebhookResponse[0] : rawWebhookResponse;
       if (!provisionalDraft || Object.keys(provisionalDraft).length === 0) {
         console.error("Webhook returned empty response");
@@ -4427,7 +6540,8 @@ _Full specification includes: Background, Summary, Detailed Description, and Ram
 ${markdown}`;
         }).join("\n\n");
       }
-      const priorArtNotes = agent4DataObj?.nuggetAnalyses ? JSON.stringify(agent4DataObj.nuggetAnalyses) : "";
+      const priorArtSource = agent4DataObj?.conceptAnalyses || agent4DataObj?.nuggetAnalyses || null;
+      const priorArtNotes = priorArtSource ? JSON.stringify(priorArtSource) : "";
       const webhookPayload = {
         patent_title: parsedDraft.title || "Provisional Patent Application",
         one_sentence_summary: parsedDraft.summary || parsedDraft.abstract || "Patent application for software invention",
@@ -4438,17 +6552,13 @@ ${markdown}`;
         prior_art_notes: priorArtNotes,
         important_claim_sets: ""
       };
-      console.log("Calling broader claims webhook...");
-      console.log("Webhook payload prior_art_notes length:", webhookPayload.prior_art_notes?.length || 0);
-      console.log("Has nuggetAnalyses:", !!agent4DataObj?.nuggetAnalyses);
-      const webhookResponse = await sendWebhook(N8N_BROADER_CLAIMS_WEBHOOK, webhookPayload);
-      console.log("Broader claims webhook response received");
-      console.log("Response type:", typeof webhookResponse);
-      console.log("Response is array:", Array.isArray(webhookResponse));
-      console.log("Response structure:", JSON.stringify(webhookResponse, null, 2).substring(0, 1e3));
-      const response = Array.isArray(webhookResponse) ? webhookResponse[0] : webhookResponse;
-      console.log("Parsed response type:", typeof response);
-      console.log("Parsed response keys:", response ? Object.keys(response) : "null/undefined");
+      console.log("Calling Module 5/5c broader claims agent pipeline...");
+      console.log("prior_art_notes length:", webhookPayload.prior_art_notes?.length || 0);
+      const agentResult = await runBroaderClaims(webhookPayload);
+      if (!agentResult.success) {
+        return res.status(503).json({ message: agentResult.error });
+      }
+      const response = { summary: agentResult.summary, claims: agentResult.claims };
       console.log("Saving broader claims to database for project:", req.params.id);
       console.log("Existing agent5 keys:", agent5DataObj ? Object.keys(agent5DataObj) : "none");
       await storage.upsertAgentData({
@@ -4613,7 +6723,10 @@ ${markdown}`;
         selectedClaims: formattedClaims
       };
       console.log("Calling provisional patent writing webhook...");
-      const rawWebhookResponse = await sendWebhook(N8N_PROVISIONAL_WEBHOOK, webhookPayload);
+      const rawWebhookResponse = await runProvisional(webhookPayload);
+      if (rawWebhookResponse && rawWebhookResponse.success === false) {
+        return res.status(503).json({ message: rawWebhookResponse.error || "Provisional generation failed" });
+      }
       const provisionalDraft = Array.isArray(rawWebhookResponse) ? rawWebhookResponse[0] : rawWebhookResponse;
       await storage.upsertAgentData({
         projectId: req.params.id,
@@ -4745,7 +6858,7 @@ _Full specification includes: Background, Summary, Detailed Description, and Ram
         diagramsPayload.codeFromTheUser = codeFromTheUser;
       }
       console.log("Calling diagrams generation webhook with full document...");
-      const diagramsResponse = await sendWebhook(N8N_DIAGRAMS_WEBHOOK, diagramsPayload);
+      const diagramsResponse = await runDiagrams(diagramsPayload);
       let diagrams = [];
       let totalFlowcharts = 0, successfulFlowcharts = 0, failedFlowcharts = 0;
       if (Array.isArray(diagramsResponse) && diagramsResponse.length > 0 && diagramsResponse[0]?.flowcharts) {
@@ -4884,7 +6997,7 @@ _${diagrams.length} diagram(s) ready for patent application_`;
         diagramsPayload.codeFromTheUser = codeFromTheUser4;
       }
       console.log("Calling diagrams generation webhook with full document...");
-      const webhookResponse = await sendWebhook(N8N_DIAGRAMS_WEBHOOK, diagramsPayload);
+      const webhookResponse = await runDiagrams(diagramsPayload);
       console.log("Diagrams webhook response received");
       console.log("Webhook response:", JSON.stringify(webhookResponse, null, 2));
       let diagrams = [];
@@ -5089,15 +7202,14 @@ _${diagrams.length} diagram(s) ready for patent application_`;
       ];
       let questions = defaultQuestions;
       try {
-        const webhookResponse = await sendWebhook(N8N_PANNU_QUESTIONS_WEBHOOK, webhookPayload);
-        console.log("Pannu questions webhook response:", JSON.stringify(webhookResponse, null, 2));
-        if (Array.isArray(webhookResponse?.questions) && webhookResponse.questions.length > 0) {
-          questions = webhookResponse.questions;
-        } else if (Array.isArray(webhookResponse) && webhookResponse.length > 0) {
-          questions = webhookResponse;
+        const agentResponse = await runPannuQuestions(webhookPayload);
+        if (agentResponse.success && Array.isArray(agentResponse.questions) && agentResponse.questions.length > 0) {
+          questions = agentResponse.questions;
+        } else {
+          console.log("Using default Pannu questions \u2014 agent returned no questions:", "error" in agentResponse ? agentResponse.error : "unknown");
         }
-      } catch (webhookError) {
-        console.log("Using default Pannu questions due to webhook error:", webhookError);
+      } catch (agentError) {
+        console.log("Using default Pannu questions due to agent error:", agentError);
       }
       await storage.updatePannuRecord(pannuRecord.id, {
         questions
@@ -5124,12 +7236,11 @@ _${diagrams.length} diagram(s) ready for patent application_`;
         concept_id: conceptId,
         human_answers: answers
       };
-      console.log("Calling Pannu validation webhook:", JSON.stringify(webhookPayload, null, 2));
-      const webhookResponse = await sendWebhook(N8N_PANNU_VALIDATE_WEBHOOK, webhookPayload);
-      console.log("Pannu validation webhook response:", JSON.stringify(webhookResponse, null, 2));
-      const certificationStatus = webhookResponse?.certification_status || webhookResponse?.certificationStatus || "Pending";
-      const confidenceScore = webhookResponse?.confidence_score || webhookResponse?.confidenceScore || "0.0";
-      const pannuRecordText = webhookResponse?.pannu_record_text || webhookResponse?.pannuRecordText || "";
+      console.log("Calling Module 4/4c Pannu scorer agent...");
+      const scorerResponse = await runPannuScorer(webhookPayload);
+      const certificationStatus = scorerResponse.certification_status;
+      const confidenceScore = scorerResponse.confidence_score;
+      const pannuRecordText = scorerResponse.pannu_record_text;
       if (pannuRecordId) {
         await storage.updatePannuRecord(pannuRecordId, {
           answers,
@@ -5178,10 +7289,9 @@ _${diagrams.length} diagram(s) ready for patent application_`;
         question,
         factor
       };
-      console.log("Calling Pannu AI suggestion webhook:", JSON.stringify(webhookPayload, null, 2));
-      const webhookResponse = await sendWebhook(N8N_PANNU_AI_SUGGESTION_WEBHOOK, webhookPayload);
-      console.log("Pannu AI suggestion webhook response:", JSON.stringify(webhookResponse, null, 2));
-      const suggestion = webhookResponse?.suggestion || webhookResponse?.answer || webhookResponse?.response || "Unable to generate suggestion at this time.";
+      console.log("Calling Module 4/4d Pannu suggestion agent...");
+      const agentResponse = await runPannuSuggestion(webhookPayload);
+      const suggestion = agentResponse.success ? agentResponse.suggestion : "Unable to generate suggestion at this time.";
       res.json({
         success: true,
         suggestion

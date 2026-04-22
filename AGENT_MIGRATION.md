@@ -1,52 +1,64 @@
 # How to Migrate an n8n Agent to Direct AI
 
+## Folder convention (per substage)
+
+Every agent lives in its own substage folder under the module: `server/modules/moduleX/<substage>/`. The substage name matches the route (e.g. route `/agent/2/draft` → `module2/2a/` because it produces the 2a concept-expansion snapshot; route `/agent/2/extract-ideas` → `module2/2b/`). Never drop agent files flat at the module root — even if a module has only one substage today, use the folder from day one so adding a second agent doesn't require a move + import-path rewrite + `loadAgentConfig` path update later.
+
+Single-agent substages have one `.md` + one `.config.json` + one `.ts` runner. Multi-agent pipelines (like 2b's extractor → refiner) put each agent's `.md` + `.config.json` side-by-side, plus one runner `.ts` that orchestrates them.
+
 ## 3 Files Per Agent
 
-Every agent lives in `server/modules/moduleX/` and has exactly 3 files:
+Every agent inside a substage folder has exactly 3 files:
 
 1. **`agent-name.md`** — The prompt. Edit anytime. No code changes needed.
 2. **`agent-name.config.json`** — Model, temperature, topP, maxTokens. Edit anytime. Each agent can use a completely different model.
 3. **`agent-name.ts`** — The logic. Builds the user message, calls `callAgent()`, returns result.
 
-## Available Models (verified 2026-04-14 against the live `/v1beta/models` endpoint)
+## Available Models (canonical for this project — 2026-04-22)
 
-### Gemini — text generation (use these in `.config.json` `model` / `fallback`)
-| Model | Best For |
-|-------|----------|
-| `gemini-3.1-pro-preview` | Latest flagship, best quality, complex reasoning, long drafts |
-| `gemini-3.1-flash-lite-preview` | Latest cheap/fast, simple tasks |
-| `gemini-3-flash-preview` | Current fast workhorse (used by most migrated modules today) |
-| `gemini-2.5-pro` | Stable flagship — reasoning, long patent drafts, claims |
-| `gemini-2.5-flash` | Stable fast general purpose, good balance |
-| `gemini-2.5-flash-lite` | Stable cheapest/fastest, simple tasks |
+Do not use `-preview` Gemini models in production. We saw silent quality regressions (fewer/nonsensical items) when an agent relied on `gemini-3-flash-preview`; the three stable "-latest" aliases below are the only Gemini models to use in any agent config.
 
-### Gemini — specialty (do NOT use for text agents)
-| Model | Purpose |
-|-------|---------|
-| `gemini-3.1-flash-image-preview`, `gemini-3-pro-image-preview`, `gemini-2.5-flash-image` | Image generation |
-| `gemini-3.1-flash-live-preview`, `gemini-live-2.5-flash-native-audio` | Live / realtime streaming |
-| `gemini-embedding-2-preview`, `gemini-embedding-001` | Embeddings (not `generateContent`) |
-| `gemini-robotics-er-1.6-preview` | Robotics-specific |
-| `veo-3.1-preview`, `veo-3.1-lite-generate-preview` | Video generation |
-| `lyria-3-pro-preview`, `lyria-3-clip-preview` | Music generation |
-| `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Gemma family (different API contract) |
+### Gemini — text generation
+Use the short name (no `models/` prefix). `isGemini()` in [client.ts:26](server/ai/client.ts#L26) dispatches on `startsWith("gemini")`, so if you paste the name as it appears in n8n (`models/gemini-flash-latest`), it routes to OpenAI and fails. **Always strip `models/` when writing to `.config.json`.**
 
-To refresh this list, run:
+| Model | Role it fits |
+|-------|--------------|
+| `gemini-pro-latest` | Heavy reasoning and long-form output — debates, audits, list-making, idea refinement, provisional drafts, claims. Default for any agent that produces structured long text. |
+| `gemini-flash-latest` | Interactive / balanced — Q&A assistants, mid-weight tasks where latency matters. |
+| `gemini-flash-lite-latest` | Binary / trivial — per-item classifiers (e.g. KEEP/REMOVE filter), very short outputs. Fast and cheap. |
+
+### Observed behavior when choosing between them (real data from this project)
+The list-maker agent is the canonical example — same prompt, same input, different models:
+
+| Model | Items produced | Why |
+|-------|---------------|-----|
+| `gemini-pro-latest` | ~13 | Consolidates/merges related ideas; denser output |
+| `gemini-flash-latest` | ~6 | Flash is concise by default, drops nuance |
+| `gemini-3-flash-preview` (DEPRECATED) | ~18 | Most literal, splits everything; unstable quality |
+
+Takeaway: **pro-latest prefers quality over count, flash-latest prefers brevity, preview models are unreliable**. Pick by what the downstream consumer needs — if the route shows the output to the user, Pro. If the route only needs a decision, Lite.
+
+### OpenAI (fallback only — use `OPENAI_API_KEY`)
+Fallback kicks in if the primary Gemini call throws. Match weight to the primary.
+
+| Model | Use as fallback for |
+|-------|---------------------|
+| `gpt-4o` | `gemini-pro-latest` agents |
+| `gpt-4o-mini` | `gemini-flash-latest` and `gemini-flash-lite-latest` agents |
+
+Provider auto-detect is by name prefix: `gemini-*` → Gemini API, everything else → OpenAI API.
+
+### Verifying a model exists
+If you must try a different name, verify it's live before wiring it in:
 ```bash
 curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY" \
   | jq -r '.models[] | select(.supportedGenerationMethods[]? == "generateContent") | .name'
 ```
 
-### OpenAI (fallback — use `OPENAI_API_KEY`)
-| Model | Best For |
-|-------|----------|
-| `gpt-4o` | Best quality, complex tasks |
-| `gpt-4o-mini` | Fast/cheap fallback |
-| `gpt-4.1` | Latest flagship |
-| `gpt-4.1-mini` | Latest fast model |
-| `gpt-4.1-nano` | Cheapest, simple tasks |
-
-Any model from either provider works in the config. The system auto-detects provider by name prefix (`gemini-*` → Gemini API, everything else → OpenAI API).
+### Models to avoid (seen breaking things in this codebase)
+- Any `-preview` Gemini name — unstable output, silently changes between versions. Caused the "app brings fewer ideas than n8n" regression we debugged.
+- Any Gemini name prefixed with `models/` — routes to the wrong provider because of `isGemini()` prefix check.
+- Specialty Gemini (`*-image`, `*-live`, `*-embedding`, `veo-*`, `lyria-*`, `gemma-*`) — they use different API contracts and will fail inside `callAgent()`.
 
 ## Steps
 
@@ -61,14 +73,14 @@ Any model from either provider works in the config. The system auto-detects prov
 **`server/modules/moduleX/agent-name.config.json`**
 ```json
 {
-  "model": "gemini-2.5-flash",
-  "fallback": "gpt-4o-mini",
+  "model": "gemini-pro-latest",
+  "fallback": "gpt-4o",
   "temperature": 0.3,
   "topP": 0.9,
   "maxTokens": 16000
 }
 ```
-Every field is independent per agent. One agent can use `gemini-2.5-pro` at temp 0.1, another can use `gpt-4o` at temp 0.9. Just edit the JSON.
+Every field is independent per agent. One agent can use `gemini-pro-latest` at temp 0.1, another can use `gemini-flash-lite-latest` at temp 0.9. Just edit the JSON. See the model table above for which model to pick per agent role.
 
 **`server/modules/moduleX/agent-name.md`**
 - Paste the system prompt from n8n
@@ -141,7 +153,8 @@ const [result1, result2, result3] = await Promise.all([
 | Change fallback model | Edit `.config.json` → `"fallback"` field |
 | Change prompt | Edit `.md` file |
 | Change temperature/topP/maxTokens | Edit `.config.json` |
-| Switch provider entirely | Just change the model name (e.g. `"gemini-2.5-flash"` → `"gpt-4o"`) |
+| Switch provider entirely | Just change the model name (e.g. `"gemini-pro-latest"` → `"gpt-4o"`) |
+| Trace which model actually served a call | Watch dev log for `[AI] -> <model>` / `[AI] <- <model> ok (Nms, N chars)` lines added in [client.ts](server/ai/client.ts). Fallback shows `[AI] -> fallback <name>`. |
 
 ## Module Folder Structure
 
@@ -189,17 +202,29 @@ server/modules/
       mechanic.ts
 
   module2/   → Concept Expansion (Agent 2, 2a, 2b, 2c)
-    draft.md                   → Draft provisional specification
-    draft.config.json
-    draft.ts
+    2a/                        → Draft provisional specification        [MIGRATED]
+      draft.md
+      draft.config.json
+      draft.ts
+    2b/                        → Extract + refine patentable concepts   [MIGRATED]
+      extractor.md
+      extractor.config.json
+      refiner.md
+      refiner.config.json
+      extract-concepts.ts
 
-  module3/   → Prior Art (Agent 3)
-    quick-search.md            → Single concept prior art search
-    quick-search.config.json
-    quick-search.ts
-    multi-search.md            → Multi-concept prior art search
-    multi-search.config.json
-    multi-search.ts
+  module3/   → Prior Art (Agent 3)  [DEFERRED — not a text-AI migration]
+    # Both quick-search and multi-concept-search are BigQuery vector-search
+    # pipelines (ML.GENERATE_EMBEDDING + VECTOR_SEARCH against
+    # patent-geyser.patents_us.patents_with_vectors). Currently served via
+    # N8N_QUICK_PRIOR_ART_WEBHOOK and N8N_MULTI_CONCEPT_SEARCH_WEBHOOK.
+    #
+    # These are infra glue, not AI agents — no prompt to own, no model to tune.
+    # Migrating in-house requires:
+    #   - adding @google-cloud/bigquery (large serverless-bundle impact)
+    #   - moving a GCP service-account JSON into Vercel env vars
+    #   - absorbing BigQuery billing directly from your GCP project
+    # Left on n8n for now; revisit when consolidation value outweighs the cost.
 
   module4/   → White Space & Claims (Agent 4, 4b, 4c)
     whitespace.md              → White space / gap analysis
@@ -340,7 +365,7 @@ Downstream code (backfill-snapshots, `originalIdea` in the UI, `webhookLog` entr
 
 ## Local dev behavior
 
-`npm run dev` uses `tsx server/index.ts` and watches for file changes — server edits trigger an automatic restart; client edits hot-reload through Vite. If changes are not picked up, tsx likely crashed on a previous error; kill and re-run.
+`npm run dev` uses `tsx server/index.ts` **without `--watch`** — server edits do NOT auto-restart. After editing any server-side file (including an agent's `.md`, `.config.json`, or `.ts`), stop and rerun `npm run dev` to pick up the change. Client edits still hot-reload through Vite. If the dev server appears stuck on old behavior, restart is almost always the fix.
 
 ## Checklist for every new migration
 

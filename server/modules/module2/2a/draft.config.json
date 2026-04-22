@@ -1,0 +1,7 @@
+{
+  "model": "gemini-pro-latest",
+  "fallback": "gpt-4o",
+  "temperature": 0.5,
+  "topP": 0.9,
+  "maxTokens": 36000
+}
