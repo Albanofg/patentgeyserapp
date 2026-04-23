@@ -26,7 +26,7 @@ interface PreparedData {
   webhook_url: string;
 }
 
-interface ParsedClaim {
+interface ParsedKeyConcept {
   number: number;
   type: "independent" | "dependent";
   statutoryClass: string | null;
@@ -34,15 +34,15 @@ interface ParsedClaim {
   text: string;
 }
 
-interface ParsedClaimsResult {
+interface ParsedKeyConceptsResult {
   summary: {
-    totalClaims: number;
+    totalKeyConcepts: number;
     independentClaims: number;
     dependentClaims: number;
     statutoryClasses: string[];
     dependentsByParent: Record<string, number>;
   };
-  claims: ParsedClaim[];
+  claims: ParsedKeyConcept[];
 }
 
 function prepareData(payload: BroaderClaimsPayload): PreparedData {
@@ -123,9 +123,9 @@ function buildDrafterPrompt(d: PreparedData, blueprint: string): string {
   );
 }
 
-function parseClaims(rawOutput: string): ParsedClaimsResult {
-  const claims: ParsedClaim[] = [];
-  let currentClaim: ParsedClaim | null = null;
+function parseClaims(rawOutput: string): ParsedKeyConceptsResult {
+  const claims: ParsedKeyConcept[] = [];
+  let currentClaim: ParsedKeyConcept | null = null;
 
   const lines = (rawOutput || "").split("\n");
 
@@ -199,7 +199,7 @@ function parseClaims(rawOutput: string): ParsedClaimsResult {
 
   return {
     summary: {
-      totalClaims: claims.length,
+      totalKeyConcepts: claims.length,
       independentClaims: independent.length,
       dependentClaims: dependent.length,
       statutoryClasses: Array.from(new Set(independent.map((c) => c.statutoryClass).filter(Boolean))) as string[],
@@ -248,7 +248,7 @@ export async function runBroaderClaims(payload: BroaderClaimsPayload) {
 
     const parsed = parseClaims(rawClaims);
     console.log(
-      `>>> [M5-5c BROADER-CLAIMS] <<< done — ${parsed.summary.totalClaims} claims (${parsed.summary.independentClaims} independent, ${parsed.summary.dependentClaims} dependent)`,
+      `>>> [M5-5c BROADER-CLAIMS] <<< done — ${parsed.summary.totalKeyConcepts} claims (${parsed.summary.independentClaims} independent, ${parsed.summary.dependentClaims} dependent)`,
     );
 
     return {

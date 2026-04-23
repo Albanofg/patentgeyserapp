@@ -254,13 +254,13 @@ async function clearDownstreamData(projectId: string, fromStage: string) {
     // Stage 4a: White space - clears claims, provisional, diagrams
     '4a': { 
       agents: [5], 
-      agent4Fields: ['claimVariations', 'selectedClaims', 'selectedVariationId', 'editedClaims', 'rawClaimsResponse', 'claimsGeneratedAt', 'claimsSelectedAt', 'provisionalDraft', 'provisionalGeneratedAt']
+      agent4Fields: ['claimVariations', 'selectedKeyConcepts', 'selectedVariationId', 'editedClaims', 'rawClaimsResponse', 'claimsGeneratedAt', 'claimsSelectedAt', 'provisionalDraft', 'provisionalGeneratedAt']
     },
     
     // Stage 4 claims: Clears selected claims, provisional, diagrams
     '4-claims': { 
       agents: [5],
-      agent4Fields: ['selectedClaims', 'selectedVariationId', 'editedClaims', 'claimsSelectedAt', 'provisionalDraft', 'provisionalGeneratedAt']
+      agent4Fields: ['selectedKeyConcepts', 'selectedVariationId', 'editedClaims', 'claimsSelectedAt', 'provisionalDraft', 'provisionalGeneratedAt']
     },
     
     // Stage 4b: Select claims - clears provisional, diagrams
@@ -1801,7 +1801,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             provisionalSummary,
             draft.title || 'Provisional Draft',
             undefined,
-            { claimsCount: draft.claims_count || draft.claims?.length || 0 }
+            { keyConcepts: draft.keyConcepts_count || draft.keyConcepts?.length || 0 }
           );
         }
       }
@@ -3948,18 +3948,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
           let match;
           
           while ((match = claimPattern.exec(text)) !== null) {
-            const claimNumber = parseInt(match[1]);
+            const keyConceptNumber = parseInt(match[1]);
             const claimType = match[2].toLowerCase();
-            const claimText = match[3].trim();
+            const keyConceptText = match[3].trim();
             
             const isIndependent = claimType.includes('independent');
             const isDependent = claimType.includes('dependent');
             
             claims.push({
-              number: claimNumber,
+              number: keyConceptNumber,
               type: isIndependent ? 'independent' : 'dependent',
-              label: `Claim ${claimNumber} (${match[2].trim()})`,
-              text: claimText,
+              label: `Claim ${keyConceptNumber} (${match[2].trim()})`,
+              text: keyConceptText,
               claimType: isIndependent ? 'independent' : 'dependent'
             });
           }
@@ -4081,7 +4081,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           status: 'claims_generated',
           claimVariations: normalizedVariations,
           selectedVariationId: null, // User hasn't selected yet
-          selectedClaims: null, // Clear old selections - user must re-select from new claims
+          selectedKeyConcepts: null, // Clear old selections - user must re-select from new claims
           editedClaims: null, // No edits yet
           rawClaimsResponse: webhookResponse, // Keep raw response for debugging
           claimsGeneratedAt: new Date().toISOString()
@@ -4102,35 +4102,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Select individual claims (Agent 4b) - user picks what's in and what's out
   app.post("/api/projects/:id/agent/4b/select-claims", isAuthenticated, async (req, res) => {
     try {
-      const { selectedClaims } = req.body;
-      
-      if (!selectedClaims || !Array.isArray(selectedClaims)) {
+      const { selectedKeyConcepts } = req.body;
+
+      console.log("[SELECT-CLAIMS] Received selectedKeyConcepts:", selectedKeyConcepts ? `${selectedKeyConcepts.length} items` : 'UNDEFINED');
+
+      if (!selectedKeyConcepts || !Array.isArray(selectedKeyConcepts)) {
         return res.status(400).json({ message: "Selected claims array is required" });
       }
 
       const agent4Data = await storage.getAgentData(req.params.id, 4);
       const existingData = agent4Data?.data || {};
-      
+
+      console.log("[SELECT-CLAIMS] About to save, existingData keys:", Object.keys(existingData));
+
       await storage.upsertAgentData({
         projectId: req.params.id,
         agentNumber: 4,
         data: {
           ...existingData,
-          selectedClaims, // Array of individual claims chosen by user
+          selectedKeyConcepts, // Array of individual claims chosen by user
           claimsSelectedAt: new Date().toISOString()
         },
       });
 
+      console.log("[SELECT-CLAIMS] Successfully saved", selectedKeyConcepts.length, "selected key concepts");
+
       // Create snapshot for claims selection (Agent 4b)
       const claimsVersion = await storage.getNextSnapshotVersion(req.params.id);
-      const independentClaims = selectedClaims.filter((c: any) => 
+      const independentClaims = selectedKeyConcepts.filter((c: any) => 
         c.type === 'independent' || c.claimType === 'independent' || c.label?.includes('Independent')
       );
-      const dependentClaims = selectedClaims.filter((c: any) => 
+      const dependentClaims = selectedKeyConcepts.filter((c: any) => 
         c.type === 'dependent' || c.claimType === 'dependent' || c.label?.includes('Dependent')
       );
       
-      const claimsContent = `**Patent Claims Selected:**\n\n` +
+      const keyConceptsContent = `**Patent Claims Selected:**\n\n` +
         `**Independent Claims (${independentClaims.length}):**\n${independentClaims.map((c: any, i: number) => `${i + 1}. ${c.text?.substring(0, 150)}...`).join('\n')}\n\n` +
         `**Dependent Claims (${dependentClaims.length}):**\n${dependentClaims.map((c: any, i: number) => `${i + 1}. ${c.text?.substring(0, 100)}...`).join('\n')}`;
       
@@ -4138,18 +4144,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         projectId: req.params.id,
         version: claimsVersion,
         snapshotType: '4b_claims',
-        title: `${selectedClaims.length} Claims Selected`,
-        content: claimsContent,
+        title: `${selectedKeyConcepts.length} Claims Selected`,
+        content: keyConceptsContent,
         metadata: { 
           stage: 4,
           substage: '4b',
-          totalClaims: selectedClaims.length,
+          totalKeyConcepts: selectedKeyConcepts.length,
           independentCount: independentClaims.length,
           dependentCount: dependentClaims.length,
         },
       });
 
-      res.json({ success: true, selectedClaimsCount: selectedClaims.length });
+      res.json({ success: true, selectedKeyConceptsCount: selectedKeyConcepts.length });
     } catch (error: any) {
       console.error("Select claims error:", error);
       res.status(500).json({ message: error.message || "Failed to save selected claims" });
@@ -4183,37 +4189,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Get Agent 4 data for selected claims
       const agent4Data = await storage.getAgentData(req.params.id, 4);
       const agent4DataObj = agent4Data?.data as any;
-      const selectedClaims = agent4DataObj?.selectedClaims || [];
+      console.log("[GENERATE-PROVISIONAL] Agent 4 data keys:", Object.keys(agent4DataObj || {}));
+      console.log("[GENERATE-PROVISIONAL] Has selectedKeyConcepts?", !!agent4DataObj?.selectedKeyConcepts);
+      console.log("[GENERATE-PROVISIONAL] Has selectedClaims?", !!agent4DataObj?.selectedClaims);
+      const selectedKeyConcepts = agent4DataObj?.selectedKeyConcepts || agent4DataObj?.selectedClaims || [];
 
-      if (selectedClaims.length === 0) {
+      if (selectedKeyConcepts.length === 0) {
         return res.status(400).json({ message: "No claims selected. Please select at least one claim." });
       }
 
-      // Format selected claims with proper labels and preserve original numbering
-      let dependentCount = 0;
-      const formattedClaims = selectedClaims.map((claim: any) => {
-        let claimLabel: string;
-        if (claim.type === 'independent') {
-          claimLabel = 'independent claim';
-        } else {
-          dependentCount++;
-          claimLabel = `dependent claim ${dependentCount}`;
-        }
-        return {
-          type: claimLabel,
-          text: claim.text,
-          number: claim.number, // Preserve original claim number (1, 2, 3...)
-          parentClaim: claim.parentClaim || null // Preserve dependency info
-        };
-      });
-
-      // Prepare webhook payload
+      // Prepare webhook payload with key concepts
       const webhookPayload = {
         sessionId,
         category: project.category,
         coreIdea: mainIdea,
         expandedConcept,
-        selectedClaims: formattedClaims
+        selectedKeyConcepts: selectedKeyConcepts.map((concept: any) => ({
+          text: concept.text,
+          number: concept.number,
+        }))
       };
 
       console.log("Calling provisional patent writing webhook...");
@@ -4234,6 +4228,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         data: {
           ...agent4DataObj,
           provisionalDraft: webhookResponse, // Store complete structured response (unwrapped)
+          selectedKeyConcepts: formattedClaims, // Save selected key concepts for regeneration
           provisionalGeneratedAt: new Date().toISOString()
         },
       });
@@ -4285,36 +4280,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const agent1Data = await storage.getAgentData(req.params.id, 1);
       const agent2Data = await storage.getAgentData(req.params.id, 2);
       const agent4Data = await storage.getAgentData(req.params.id, 4);
-      
+
       const agent1DataObj = agent1Data?.data as any;
       const agent2DataObj = agent2Data?.data as any;
       const agent4DataObj = agent4Data?.data as any;
+
+      console.log("[REGENERATE-DRAFT] Full agent4Data structure:", {
+        hasData: !!agent4DataObj,
+        topLevelKeys: Object.keys(agent4DataObj || {}),
+        selectedKeyConcepts: agent4DataObj?.selectedKeyConcepts ? `${agent4DataObj.selectedKeyConcepts.length} items` : 'NOT FOUND',
+        selectedClaims: agent4DataObj?.selectedClaims ? `${agent4DataObj.selectedClaims.length} items` : 'NOT FOUND',
+      });
       
       const mainIdea = agent1DataObj?.ideaSummary || agent1DataObj?.currentIdea || "";
       const expandedConcept = agent2DataObj?.provisionalDraft || agent2DataObj?.draftSpecification || "";
-      const selectedClaims = agent4DataObj?.selectedClaims || [];
+      const selectedKeyConcepts = agent4DataObj?.selectedKeyConcepts || agent4DataObj?.selectedClaims || [];
 
-      if (selectedClaims.length === 0) {
-        return res.status(400).json({ message: "No claims found. Cannot regenerate draft." });
+      console.log("=== REGENERATE DEBUG ===");
+      console.log("Agent4 keys:", Object.keys(agent4DataObj || {}));
+      console.log("selectedKeyConcepts exists?", !!agent4DataObj?.selectedKeyConcepts);
+      console.log("selectedClaims exists?", !!agent4DataObj?.selectedClaims);
+      console.log("selectedKeyConcepts value:", JSON.stringify(selectedKeyConcepts).substring(0, 200));
+
+      if (selectedKeyConcepts.length === 0) {
+        console.log("ERROR: No key concepts found in agent 4 data");
+        return res.status(400).json({ message: "No key concepts found. Cannot regenerate draft." });
       }
 
-      console.log("Regenerating provisional patent draft...");
+      console.log("Regenerating provisional patent draft with", selectedKeyConcepts.length, "key concepts...");
 
-      // Format claims for webhook - preserve original numbering
+      // Format key concepts for webhook - preserve original numbering
       let dependentCount = 0;
-      const formattedClaims = selectedClaims.map((claim: any) => {
-        let claimLabel: string;
-        if (claim.type === 'independent') {
-          claimLabel = 'independent claim';
+      const formattedConcepts = selectedKeyConcepts.map((concept: any) => {
+        let conceptType: string;
+        const typeStr = String(concept.type || '').toLowerCase();
+        if (typeStr.includes('independent')) {
+          conceptType = 'independent';
         } else {
           dependentCount++;
-          claimLabel = `dependent claim ${dependentCount}`;
+          conceptType = `dependent ${dependentCount}`;
         }
-        return { 
-          type: claimLabel, 
-          text: claim.text,
-          number: claim.number,
-          parentClaim: claim.parentClaim || null
+        return {
+          type: conceptType,
+          text: concept.text,
+          number: concept.number,
+          parentConcept: concept.parentConcept || null
         };
       });
 
@@ -4323,7 +4333,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         category: project.category,
         coreIdea: mainIdea,
         expandedConcept,
-        selectedClaims: formattedClaims
+        selectedKeyConcepts: formattedConcepts
       };
 
       console.log("Calling provisional patent writing webhook for regeneration...");
@@ -4414,13 +4424,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const formatClaims = (claims: any[]): string => {
         if (!claims || claims.length === 0) return '';
         return claims.map((claim: any, index: number) => {
-          const claimText = typeof claim === 'string' ? claim : claim.text || '';
-          const claimNumber = claim.number || (index + 1);
-          const trimmed = claimText.trim();
+          const keyConceptText = typeof claim === 'string' ? claim : claim.text || '';
+          const keyConceptNumber = claim.number || (index + 1);
+          const trimmed = keyConceptText.trim();
           if (/^(Claim\s+\d+[:.:]|^\d+[.)])/i.test(trimmed)) {
             return trimmed;
           }
-          return `${claimNumber}. ${trimmed}`;
+          return `${keyConceptNumber}. ${trimmed}`;
         }).join('\n\n');
       };
 
@@ -4445,8 +4455,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       ].join('\n');
 
       // Get current claims
-      const broadClaims = parsedDraft.claims || [];
-      const currentClaims = formatClaims(broadClaims);
+      const broadKeyConcepts = parsedDraft.claims || [];
+      const currentClaims = formatClaims(broadKeyConcepts);
 
       // Get diagrams if available (for drawing descriptions)
       const diagrams = agent5DataObj?.diagrams || [];
@@ -4494,8 +4504,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         agentNumber: 5,
         data: {
           ...agent5DataObj,
-          specificClaims: broadClaims, // Original claims from provisional (specific/narrow)
-          broadClaims: response, // New claims from webhook (broader scope)
+          specificKeyConcepts: broadKeyConcepts, // Original claims from provisional (specific/narrow)
+          broadKeyConcepts: response, // New claims from webhook (broader scope)
           broaderClaimsGeneratedAt: new Date().toISOString(),
           // Keep selectedClaimType if already set, default to 'specific'
           selectedClaimType: agent5DataObj?.selectedClaimType || 'specific'
@@ -4519,8 +4529,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json({ 
         success: true, 
-        specificClaims: broadClaims,
-        broadClaims: response,
+        specificKeyConcepts: broadKeyConcepts,
+        broadKeyConcepts: response,
         message: "Broader claims generated! Choose which claims to use in your final draft." 
       });
     } catch (error: any) {
@@ -4652,9 +4662,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const agent4Data = await storage.getAgentData(req.params.id, 4);
       
       const agent4DataObj = agent4Data?.data as any;
-      const selectedClaims = agent4DataObj?.selectedClaims || [];
+      const selectedKeyConcepts = agent4DataObj?.selectedKeyConcepts || agent4DataObj?.selectedClaims || [];
 
-      if (selectedClaims.length === 0) {
+      if (selectedKeyConcepts.length === 0) {
         return res.status(400).json({ message: "No claims selected. Please select at least one claim." });
       }
 
@@ -4665,30 +4675,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const agent2DataObj = agent2Data?.data as any;
       const expandedConcept = agent2DataObj?.provisionalDraft || agent2DataObj?.draftSpecification || "";
 
-      // Format claims for webhook - preserve original numbering
-      let dependentCount = 0;
-      const formattedClaims = selectedClaims.map((claim: any) => {
-        let claimLabel: string;
-        if (claim.type === 'independent') {
-          claimLabel = 'independent claim';
-        } else {
-          dependentCount++;
-          claimLabel = `dependent claim ${dependentCount}`;
-        }
-        return { 
-          type: claimLabel, 
-          text: claim.text,
-          number: claim.number,
-          parentClaim: claim.parentClaim || null
-        };
-      });
+      const formattedKeyConcepts = selectedKeyConcepts.map((concept: any) => ({
+        text: concept.text,
+        number: concept.number,
+      }));
 
       const webhookPayload = {
         sessionId,
         category: project.category,
         coreIdea: mainIdea,
         expandedConcept,
-        selectedClaims: formattedClaims
+        selectedKeyConcepts: formattedKeyConcepts
       };
 
       console.log("Calling provisional patent writing webhook...");
@@ -4696,7 +4693,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (rawWebhookResponse && rawWebhookResponse.success === false) {
         return res.status(503).json({ message: rawWebhookResponse.error || "Provisional generation failed" });
       }
-      
+
       // Handle array-wrapped response
       const provisionalDraft = Array.isArray(rawWebhookResponse) ? rawWebhookResponse[0] : rawWebhookResponse;
 
@@ -4707,6 +4704,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         data: {
           ...agent4DataObj,
           provisionalDraft,
+          selectedKeyConcepts: selectedKeyConcepts,
           provisionalGeneratedAt: new Date().toISOString()
         },
       });
@@ -4810,8 +4808,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // If broad claims are selected and the user hasn't edited the claims section,
       // use the broad claims data
-      if (selectedClaimType === 'broad' && agent5DataObj?.broadClaims) {
-        const claimsArr = extractClaimsFromBroadData(agent5DataObj.broadClaims);
+      if (selectedClaimType === 'broad' && agent5DataObj?.broadKeyConcepts) {
+        const claimsArr = extractClaimsFromBroadData(agent5DataObj.broadKeyConcepts);
         if (claimsArr.length > 0) {
           claimsForDiagrams = claimsArr.map((c, i) => `${i + 1}. ${c}`).join('\n\n');
         }
@@ -4890,12 +4888,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       console.log(`Diagrams generated: ${diagrams.length} (${successfulFlowcharts} successful, ${failedFlowcharts} failed)`);
       
-      // Store diagrams in Agent 5 data - PRESERVE existing fields like broadClaims
+      // Store diagrams in Agent 5 data - PRESERVE existing fields like broadKeyConcepts
       await storage.upsertAgentData({
         projectId: req.params.id,
         agentNumber: 5,
         data: {
-          ...agent5DataObj, // Preserve existing fields (broadClaims, selectedClaimType, etc.)
+          ...agent5DataObj, // Preserve existing fields (broadKeyConcepts, selectedClaimType, etc.)
           provisionalDraft,
           diagrams,
           diagramsGeneratedAt: new Date().toISOString()
@@ -4962,7 +4960,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Get Specific Claims (user-selected, technical claims for diagrams)
       // These are different from Broad Claims in provisionalDraft.claims (written by draft writer)
-      const specificClaims = agent4DataObj?.selectedClaims || [];
+      const specificKeyConcepts = agent4DataObj?.selectedKeyConcepts || [];
 
       if (!provisionalDraft) {
         return res.status(400).json({ message: "Provisional draft not found. Please generate the draft first." });
@@ -4975,19 +4973,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const formatSpecificClaims = (claims: any[]): string => {
         if (!claims || claims.length === 0) return '';
         return claims.map((claim: any, index: number) => {
-          const claimText = typeof claim === 'string' ? claim : claim.text || '';
-          const claimNumber = claim.number || (index + 1);
-          const trimmed = claimText.trim();
+          const keyConceptText = typeof claim === 'string' ? claim : claim.text || '';
+          const keyConceptNumber = claim.number || (index + 1);
+          const trimmed = keyConceptText.trim();
           // Check if claim already starts with number pattern - don't re-number
           if (/^(Claim\s+\d+[:.:]|^\d+[.)])/i.test(trimmed)) {
             return trimmed;
           }
           // Add claim number
-          return `${claimNumber}. ${trimmed}`;
+          return `${keyConceptNumber}. ${trimmed}`;
         }).join('\n\n');
       };
       
-      console.log(`Using ${specificClaims.length} Specific Claims for diagrams (not Broad Claims from provisional)`);
+      console.log(`Using ${specificKeyConcepts.length} Specific Claims for diagrams (not Broad Claims from provisional)`);
       
       // Build document for diagrams using Specific Claims (not Broad Claims)
       const formattedDocument = [
@@ -5006,7 +5004,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         parsedDraft.ramifications_and_scope || '',
         '',
         '--- CLAIMS ---',
-        formatSpecificClaims(specificClaims),  // Use Specific Claims for diagrams
+        formatSpecificClaims(specificKeyConcepts),  // Use Specific Claims for diagrams
         '',
         '--- ABSTRACT ---',
         parsedDraft.abstract || ''
@@ -5154,12 +5152,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const parsedDraft = parseProvisionalDraft(provisionalDraft);
       
       if (section === 'claims') {
-        const claimsArray = content.split(/\n\n+/).map((c: string) => c.trim()).filter((c: string) => c.length > 0);
-        parsedDraft.claims = claimsArray;
+        const keyConceptsArray = content.split(/\n\n+/).map((c: string) => c.trim()).filter((c: string) => c.length > 0);
+        parsedDraft.claims = keyConceptsArray;
+        parsedDraft.keyConcepts = keyConceptsArray;
+        parsedDraft.keyConcepts_count = keyConceptsArray.length;
       } else {
         parsedDraft[section] = content;
       }
-      
+
       await storage.mergeAgentData(req.params.id, 5, { provisionalDraft: parsedDraft });
       
       res.json({ success: true, section, updatedDraft: parsedDraft });
@@ -5188,14 +5188,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       const parsedDraft = parseProvisionalDraft(provisionalDraft);
-      
-      let claimsContent = Array.isArray(parsedDraft.claims) ? parsedDraft.claims.join('\n\n') : (parsedDraft.claims || '');
-      
+
+      // Get selected key concepts directly from Agent 4 data
+      const agent4Data = await storage.getAgentData(req.params.id, 4);
+      const agent4Obj = agent4Data?.data as any;
+      const selectedKeyConcepts = agent4Obj?.selectedKeyConcepts || agent4Obj?.selectedClaims || [];
+
+      let keyConceptsContent = '';
+
+      // Format selected key concepts grouped by variation
+      if (Array.isArray(selectedKeyConcepts) && selectedKeyConcepts.length > 0) {
+        // Group by variationId to maintain group structure
+        const groupedByVariation: Record<string, any[]> = {};
+        selectedKeyConcepts.forEach((concept: any) => {
+          const variationId = concept.variationId || 'default';
+          if (!groupedByVariation[variationId]) {
+            groupedByVariation[variationId] = [];
+          }
+          groupedByVariation[variationId].push(concept);
+        });
+
+        const formattedConcepts: string[] = [];
+        let groupNumber = 1;
+
+        Object.keys(groupedByVariation).forEach((variationId) => {
+          const groupConcepts = groupedByVariation[variationId];
+          groupConcepts.forEach((concept: any, conceptIndex: number) => {
+            formattedConcepts.push(`Group ${groupNumber} / Key Concept ${conceptIndex + 1}: ${concept.text || ''}`);
+          });
+          groupNumber++;
+        });
+
+        keyConceptsContent = formattedConcepts.join('\n\n');
+      }
+
       const selectedClaimType = agent5Obj?.selectedClaimType || 'specific';
-      if (selectedClaimType === 'broad' && agent5Obj?.broadClaims) {
-        const claimsArr = extractClaimsFromBroadData(agent5Obj.broadClaims);
+      if (selectedClaimType === 'broad' && agent5Obj?.broadKeyConcepts) {
+        const claimsArr = extractClaimsFromBroadData(agent5Obj.broadKeyConcepts);
         if (claimsArr.length > 0) {
-          claimsContent = claimsArr.map((c, i) => `Claim ${i + 1}: ${c}`).join('\n\n');
+          keyConceptsContent = claimsArr.map((c, i) => `${i + 1}. ${c}`).join('\n\n');
         }
       }
       
@@ -5206,7 +5237,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         { key: 'detailed_description', label: 'Detailed Description', content: parsedDraft.detailed_description || '' },
         { key: 'ramifications_and_scope', label: 'Ramifications & Scope', content: parsedDraft.ramifications_and_scope || '' },
         { key: 'abstract', label: 'Abstract', content: parsedDraft.abstract || '' },
-        { key: 'claims', label: 'Claims', content: claimsContent },
+        { key: 'claims', label: 'Key Concepts', content: keyConceptsContent },
       ];
       
       res.json(sections);
@@ -5231,23 +5262,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Generate Pannu questions for a claim
+  // Generate Pannu questions for a concept
   app.post("/api/projects/:id/pannu/generate-questions", isAuthenticated, async (req, res) => {
     try {
-      const { conceptId, claimText, strategyContext } = req.body;
-      
-      if (!conceptId || !claimText) {
-        return res.status(400).json({ message: "Missing required fields: conceptId, claimText" });
+      const { conceptId, keyConceptText, strategyContext } = req.body;
+
+      if (!conceptId || !keyConceptText) {
+        return res.status(400).json({ message: "Missing required fields: conceptId, keyConceptText" });
       }
 
       // Check for existing record and update, or create new
       const existingRecords = await storage.getPannuRecords(req.params.id);
       let pannuRecord = existingRecords.find(r => r.conceptId === conceptId);
-      
+
       if (pannuRecord) {
         // Update existing record - clear old data for retry
         await storage.updatePannuRecord(pannuRecord.id, {
-          claimText,
+          claimText: keyConceptText,
           strategyContext: strategyContext || null,
           questions: null,
           answers: null,
@@ -5260,14 +5291,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         pannuRecord = await storage.createPannuRecord({
           projectId: req.params.id,
           conceptId,
-          claimText,
+          claimText: keyConceptText,
           strategyContext: strategyContext || null,
         });
       }
 
       // Call n8n webhook to generate questions
       const webhookPayload = {
-        claim_text: claimText,
+        claim_text: keyConceptText,
         concept_id: conceptId,
         strategy_context: strategyContext || "",
       };
@@ -5325,15 +5356,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Validate Pannu answers for a claim
   app.post("/api/projects/:id/pannu/validate-answers", isAuthenticated, async (req, res) => {
     try {
-      const { pannuRecordId, conceptId, claimText, answers } = req.body;
+      const { pannuRecordId, conceptId, keyConceptText, answers } = req.body;
       
-      if (!conceptId || !claimText || !answers) {
-        return res.status(400).json({ message: "Missing required fields: conceptId, claimText, answers" });
+      if (!conceptId || !keyConceptText || !answers) {
+        return res.status(400).json({ message: "Missing required fields: conceptId, keyConceptText, answers" });
       }
 
       // Call n8n webhook to validate answers
       const webhookPayload = {
-        claim_text: claimText,
+        claim_text: keyConceptText,
         concept_id: conceptId,
         human_answers: answers,
       };
@@ -5366,7 +5397,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           await storage.createPannuRecord({
             projectId: req.params.id,
             conceptId,
-            claimText,
+            claimText: keyConceptText,
             answers,
             certificationStatus,
             confidenceScore: String(confidenceScore),
@@ -5391,10 +5422,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get AI suggestion for Pannu test answer
   app.post("/api/projects/:id/pannu/ai-suggestion", isAuthenticated, async (req, res) => {
     try {
-      const { claimText, question, factor } = req.body;
+      const { keyConceptText, question, factor } = req.body;
 
       const webhookPayload = {
-        claimText,
+        keyConceptText,
         question,
         factor,
       };
@@ -5464,11 +5495,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         priorArtResults: agent3Obj?.priorArtResults ? 'Prior art research completed' : 'Not yet completed',
         // Module 4 data
         whiteSpaceAnalysis: agent4Obj?.nuggetAnalyses ? 'White space analysis completed' : 'Not yet completed',
-        claimsGenerated: agent4Obj?.selectedClaims?.length || 0,
+        claimsGenerated: agent4Obj?.selectedKeyConcepts?.length || 0,
         provisionalDraftStatus: agent4Obj?.provisionalDraft ? 'Draft generated' : 'Not yet generated',
         // Module 5 data
         hasProvisionalDraft: !!agent5Obj?.provisionalDraft,
-        specificClaims: agent5Obj?.specificClaims || [],
+        specificKeyConcepts: agent5Obj?.specificKeyConcepts || [],
         broaderClaims: agent5Obj?.broaderClaims || [],
         hasDiagrams: !!(agent5Obj?.diagrams?.length > 0),
         diagramCount: agent5Obj?.diagrams?.length || 0,
@@ -5499,42 +5530,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Helper to extract just the claim text from broad claims webhook responses
   // The webhook returns claims_only with extra sections (Support Map, Risk Analysis, etc.)
-  const extractClaimsFromBroadData = (broadClaims: any): string[] => {
-    if (!broadClaims) return [];
+  const extractClaimsFromBroadData = (broadKeyConcepts: any): string[] => {
+    if (!broadKeyConcepts) return [];
 
     // New structured format: { summary: {...}, claims: [{ number, type, text, ... }] }
-    if (broadClaims.claims && Array.isArray(broadClaims.claims) && broadClaims.claims.length > 0 && broadClaims.claims[0]?.text) {
-      return broadClaims.claims
+    if (broadKeyConcepts.claims && Array.isArray(broadKeyConcepts.claims) && broadKeyConcepts.claims.length > 0 && broadKeyConcepts.claims[0]?.text) {
+      return broadKeyConcepts.claims
         .sort((a: any, b: any) => (a.number || 0) - (b.number || 0))
         .map((c: any) => c.text);
     }
 
     // Current format: { output: "1. A system comprising:..." }
-    if (broadClaims.output && typeof broadClaims.output === 'string') {
-      return extractClaimsFromBroadText(broadClaims.output);
+    if (broadKeyConcepts.output && typeof broadKeyConcepts.output === 'string') {
+      return extractClaimsFromBroadText(broadKeyConcepts.output);
     }
 
     // Legacy format: { claims_only: "..." }
-    if (broadClaims.claims_only && typeof broadClaims.claims_only === 'string') {
-      return extractClaimsFromBroadText(broadClaims.claims_only);
+    if (broadKeyConcepts.claims_only && typeof broadKeyConcepts.claims_only === 'string') {
+      return extractClaimsFromBroadText(broadKeyConcepts.claims_only);
     }
 
     // Plain string
-    if (typeof broadClaims === 'string') {
-      return extractClaimsFromBroadText(broadClaims);
+    if (typeof broadKeyConcepts === 'string') {
+      return extractClaimsFromBroadText(broadKeyConcepts);
     }
 
     // Already an array of strings
-    if (Array.isArray(broadClaims)) {
-      if (broadClaims.length > 0 && typeof broadClaims[0] === 'object' && broadClaims[0]?.text) {
-        return broadClaims.sort((a: any, b: any) => (a.number || 0) - (b.number || 0)).map((c: any) => c.text);
+    if (Array.isArray(broadKeyConcepts)) {
+      if (broadKeyConcepts.length > 0 && typeof broadKeyConcepts[0] === 'object' && broadKeyConcepts[0]?.text) {
+        return broadKeyConcepts.sort((a: any, b: any) => (a.number || 0) - (b.number || 0)).map((c: any) => c.text);
       }
-      return broadClaims.map((c: any) => typeof c === 'string' ? c : c.text || JSON.stringify(c));
+      return broadKeyConcepts.map((c: any) => typeof c === 'string' ? c : c.text || JSON.stringify(c));
     }
 
     // Generic object with claims property
-    if (broadClaims.claims) {
-      return extractClaimsFromBroadData(broadClaims.claims);
+    if (broadKeyConcepts.claims) {
+      return extractClaimsFromBroadData(broadKeyConcepts.claims);
     }
 
     return [];
@@ -5598,9 +5629,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Helper function to parse malformed provisional draft webhook responses
   const parseProvisionalDraft = (rawDraft: any): any => {
     if (!rawDraft) return {};
-    
+
     // If it's already structured properly
     if (rawDraft.title && rawDraft.background) {
+      // Add backward compatibility: map keyConcepts to claims
+      if (rawDraft.keyConcepts && !rawDraft.claims) {
+        rawDraft.claims = rawDraft.keyConcepts;
+        rawDraft.claims_count = rawDraft.keyConcepts_count;
+      }
       return rawDraft;
     }
     
@@ -5635,10 +5671,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const extractClaims = (): string[] => {
       const claimsMatch = textBlob.match(/<CLAIMS>([\s\S]*?)<\/CLAIMS>/i);
       if (claimsMatch) {
-        let claimsText = claimsMatch[1];
+        let keyConceptsText = claimsMatch[1];
         
         // First unescape the entire claims block to prevent double-encoding issues
-        claimsText = claimsText
+        keyConceptsText = keyConceptsText
           .replace(/\\n/g, '\n')
           .replace(/\\r/g, '\r')
           .replace(/\\t/g, '\t')
@@ -5647,7 +5683,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .replace(/^"|"$/g, '');
         
         // Now split by double newlines to get individual claims
-        const claims = claimsText
+        const claims = keyConceptsText
           .split(/\n\n+/)
           .map(c => c.trim())
           .filter(c => c.length > 0);
@@ -5952,8 +5988,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const selectedClaimType = agent5DataObj?.selectedClaimType || 'specific';
       
       let claimsToUse: any[] = [];
-      if (selectedClaimType === 'broad' && agent5DataObj?.broadClaims) {
-        claimsToUse = extractClaimsFromBroadData(agent5DataObj.broadClaims);
+      if (selectedClaimType === 'broad' && agent5DataObj?.broadKeyConcepts) {
+        claimsToUse = extractClaimsFromBroadData(agent5DataObj.broadKeyConcepts);
         if (!claimsToUse || claimsToUse.length === 0) {
           claimsToUse = parsedDraft.claims || [];
         }
@@ -6134,41 +6170,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
         doc.moveDown(0.5);
       }
 
-      // Claims - with (Original) status identifier - starts on new page per USPTO convention
-      if (draft.claims && Array.isArray(draft.claims) && draft.claims.length > 0) {
+      // Key Concepts - use user-selected key concepts grouped by variation
+      const selectedKeyConcepts = (agent4cData.data as any)?.selectedKeyConcepts || (agent4cData.data as any)?.selectedClaims || [];
+      if (Array.isArray(selectedKeyConcepts) && selectedKeyConcepts.length > 0) {
         doc.addPage();
-        doc.fontSize(14).font('Helvetica-Bold').text('CLAIMS');
+        doc.fontSize(14).font('Helvetica-Bold').text('KEY CONCEPTS');
         doc.moveDown(0.5);
-        
-        // Claims preamble
-        doc.font('Helvetica-Oblique').fontSize(11).text('What is claimed is:', { lineGap: 4 });
-        doc.moveDown(0.5);
-        
-        for (let index = 0; index < draft.claims.length; index++) {
-          const claim = draft.claims[index];
-          const claimNumber = index + 1;
-          
-          // Strip any existing "Claim X:" or "X." prefix to avoid duplication
-          let cleanedClaim = claim.trim()
-            .replace(/^(?:\*\*)?Claim\s*\d+[:.]\*?\*?\s*/i, '')  // "Claim 1:", "**Claim 1:**"
-            .replace(/^\d+\.\s*/, '')  // "1. "
-            .trim();
-          
-          // Check if claim is a dependent claim (references another claim)
-          const isDependent = /system of claim|method of claim|medium of claim/i.test(cleanedClaim);
-          
-          // Dependent claims get indentation
-          const indent = isDependent ? 20 : 0;
-          
-          // Add claim number with (Original) status as required by USPTO
-          const numberedClaim = `${claimNumber}. (Original) ${cleanedClaim}`;
-          doc.font('Helvetica').fontSize(11).text(numberedClaim, { 
-            lineGap: 4, 
-            indent,
-            align: 'left'
+
+        // Group by variationId
+        const groupedByVariation: Record<string, any[]> = {};
+        selectedKeyConcepts.forEach((concept: any) => {
+          const variationId = concept.variationId || 'default';
+          if (!groupedByVariation[variationId]) {
+            groupedByVariation[variationId] = [];
+          }
+          groupedByVariation[variationId].push(concept);
+        });
+
+        let groupNumber = 1;
+        Object.keys(groupedByVariation).forEach((variationId) => {
+          const groupConcepts = groupedByVariation[variationId];
+          doc.moveDown(0.3);
+          doc.font('Helvetica-Bold').fontSize(12).text(`Group ${groupNumber}`, { lineGap: 4 });
+          doc.moveDown(0.3);
+
+          groupConcepts.forEach((concept: any, conceptIndex: number) => {
+            const cleanedText = sanitizeForPDF(String(concept.text || '')).trim();
+            const label = `Key Concept ${conceptIndex + 1}: `;
+            doc.font('Helvetica').fontSize(11).text(label + cleanedText, {
+              lineGap: 4,
+              align: 'left'
+            });
+            doc.moveDown(0.5);
           });
-          doc.moveDown(0.5);
-        }
+
+          groupNumber++;
+        });
         doc.moveDown(0.5);
       }
 
@@ -6234,8 +6271,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const selectedClaimType = agent5DocxObj?.selectedClaimType || 'specific';
       
       let claimsToUse: any[] = [];
-      if (selectedClaimType === 'broad' && agent5DocxObj?.broadClaims) {
-        claimsToUse = extractClaimsFromBroadData(agent5DocxObj.broadClaims);
+      if (selectedClaimType === 'broad' && agent5DocxObj?.broadKeyConcepts) {
+        claimsToUse = extractClaimsFromBroadData(agent5DocxObj.broadKeyConcepts);
         if (!claimsToUse || claimsToUse.length === 0) {
           claimsToUse = parsedDraft.claims || [];
         }
@@ -6636,50 +6673,53 @@ export async function registerRoutes(app: Express): Promise<Server> {
         );
       }
 
-      // Claims - with (Original) status identifier as required by USPTO - starts on new page
-      if (draft.claims && Array.isArray(draft.claims) && draft.claims.length > 0) {
+      // Key Concepts - use user-selected key concepts grouped by variation
+      const selectedKeyConceptsDocx = (agent4cData.data as any)?.selectedKeyConcepts || (agent4cData.data as any)?.selectedClaims || [];
+      if (Array.isArray(selectedKeyConceptsDocx) && selectedKeyConceptsDocx.length > 0) {
         paragraphs.push(
           new Paragraph({
             children: [new PageBreak()],
           }),
           new Paragraph({
-            text: 'CLAIMS',
+            text: 'KEY CONCEPTS',
             heading: HeadingLevel.HEADING_1,
             spacing: { before: 400, after: 240, line: lineSpacing },
           })
         );
-        
-        // Add preamble paragraph
-        paragraphs.push(
-          new Paragraph({
-            children: [new TextRun({ text: 'What is claimed is:', size: bodyFontSize, italics: true })],
-            spacing: { after: 240, line: lineSpacing },
-          })
-        );
-        
-        draft.claims.forEach((claim: string, index: number) => {
-          const claimNumber = index + 1;
-          
-          // Strip any existing "Claim X:" or "X." prefix to avoid duplication
-          let cleanedClaim = claim.trim()
-            .replace(/^(?:\*\*)?Claim\s*\d+[:.]\*?\*?\s*/i, '')  // "Claim 1:", "**Claim 1:**"
-            .replace(/^\d+\.\s*/, '')  // "1. "
-            .replace(/\*\*/g, '')  // Remove any remaining markdown bold
-            .trim();
-          
-          // Check if claim is a dependent claim (references another claim)
-          const isDependent = /system of claim|method of claim|medium of claim/i.test(cleanedClaim);
-          
-          // Add claim number with (Original) status as required by USPTO
-          const numberedClaim = `${claimNumber}. (Original) ${cleanedClaim}`;
-          
+
+        // Group by variationId
+        const groupedByVariationDocx: Record<string, any[]> = {};
+        selectedKeyConceptsDocx.forEach((concept: any) => {
+          const variationId = concept.variationId || 'default';
+          if (!groupedByVariationDocx[variationId]) {
+            groupedByVariationDocx[variationId] = [];
+          }
+          groupedByVariationDocx[variationId].push(concept);
+        });
+
+        let groupNumberDocx = 1;
+        Object.keys(groupedByVariationDocx).forEach((variationId) => {
+          const groupConcepts = groupedByVariationDocx[variationId];
+
           paragraphs.push(
             new Paragraph({
-              children: [new TextRun({ text: numberedClaim, size: bodyFontSize })],
-              spacing: { after: 240, line: lineSpacing },
-              indent: isDependent ? { left: 360 } : undefined, // Indent dependent claims
+              children: [new TextRun({ text: `Group ${groupNumberDocx}`, size: bodyFontSize, bold: true })],
+              spacing: { before: 240, after: 120, line: lineSpacing },
             })
           );
+
+          groupConcepts.forEach((concept: any, conceptIndex: number) => {
+            const cleanedText = processTextForDocx(String(concept.text || '')).trim();
+            const label = `Key Concept ${conceptIndex + 1}: `;
+            paragraphs.push(
+              new Paragraph({
+                children: [new TextRun({ text: label + cleanedText, size: bodyFontSize })],
+                spacing: { after: 240, line: lineSpacing },
+              })
+            );
+          });
+
+          groupNumberDocx++;
         });
       }
 

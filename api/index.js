@@ -584,11 +584,11 @@ ${projectContext.ideaSummary}`);
   if (projectContext.hasDiagrams) statusParts.push(`Diagrams: ${projectContext.diagramCount || "Yes"}`);
   if (statusParts.length) sections.push(`## STATUS
 ${statusParts.join("\n")}`);
-  if (projectContext.specificClaims?.length) {
-    const claimsPreview = projectContext.specificClaims.slice(0, 3).join("\n\n");
-    const moreCount = projectContext.specificClaims.length - 3;
+  if (projectContext.specificKeyConcepts?.length) {
+    const claimsPreview = projectContext.specificKeyConcepts.slice(0, 3).join("\n\n");
+    const moreCount = projectContext.specificKeyConcepts.length - 3;
     sections.push(
-      `## SPECIFIC CLAIMS (${projectContext.specificClaims.length} total)
+      `## SPECIFIC CLAIMS (${projectContext.specificKeyConcepts.length} total)
 ${claimsPreview}${moreCount > 0 ? `
 
 [...and ${moreCount} more claims]` : ""}`
@@ -1440,103 +1440,80 @@ ${mainIdea}
 **Technical Specification:**
 ${expandedConcept}
 
-**Specific Concept for This Claim Set:**
+**Specific Concept to Document:**
 ${conceptText}
 
 ` + priorArtAware + differentiation + `
 ---
 
-**YOUR MISSION:**
-
-Draft a comprehensive, technically detailed claim set that fully captures the innovation described above. Generate only claims that add meaningful strategic value - no padding, no redundancy. Follow the system instructions exactly for formatting, technical depth, and output structure.`;
+Document the invention above following your system instructions exactly. Produce one plain sentence describing what the invention is, then a numbered **Key Concepts** list where each item is a self-contained paragraph covering one novel technical element. No preamble, no closing.`;
 }
 function parseClaimsOutput(rawOutput, conceptId, conceptText, category, index) {
-  const output = rawOutput || "";
-  const complexityMatch = output.match(/\*\*Complexity Assessment\*\*\s*\n+([^\n*]+)/i);
-  const complexityAssessment = complexityMatch ? complexityMatch[1].trim() : "";
-  let complexityLevel = "moderate";
-  const cLow = complexityAssessment.toLowerCase();
-  if (cLow.includes("simple")) complexityLevel = "simple";
-  else if (cLow.includes("complex")) complexityLevel = "complex";
-  const claimTypeMatch = output.match(/\*\*Claim Type:\s*(SYSTEM|METHOD)\*\*/i);
-  const claimType = claimTypeMatch ? claimTypeMatch[1].toLowerCase() : "system";
-  const inventiveConceptMatch = output.match(/\*\*Inventive Concept\*\*\s*\n+([^\n*]+)/i);
-  const inventiveConcept = inventiveConceptMatch ? inventiveConceptMatch[1].trim() : "";
-  const claims = [];
-  const claimSections = output.split(/(?=\*\*Claim\s+\d+\s*\([^)]+\)\*\*)/i);
-  for (const section of claimSections) {
-    const headerMatch = section.match(/\*\*Claim\s+(\d+)\s*\(([^)]+)\)\*\*/i);
-    if (!headerMatch) continue;
-    const claimNumber = parseInt(headerMatch[1], 10);
-    const dependencyInfo = headerMatch[2].trim();
-    const textMatch = section.match(/\*\*Claim\s+\d+\s*\([^)]+\)\*\*\s*\n?([\s\S]*?)(?=\*\*|$)/i);
-    const claimText = textMatch ? textMatch[1].trim().replace(/\n+/g, " ").replace(/\s+/g, " ") : "";
-    const isIndependent = dependencyInfo.toLowerCase().includes("independent");
-    let parentClaim = null;
-    if (!isIndependent) {
-      const parentMatch = dependencyInfo.match(/(?:depends?\s+on|dependent\s+on)\s+claim\s+(\d+)/i);
-      if (parentMatch) parentClaim = parseInt(parentMatch[1], 10);
-      else {
-        const fallbackMatch = dependencyInfo.match(/claim\s+(\d+)/i);
-        parentClaim = fallbackMatch ? parseInt(fallbackMatch[1], 10) : 1;
+  const output = (rawOutput || "").trim();
+  const headingMatch = output.match(/\*\*\s*Key\s+Concepts\s*\*\*/i);
+  let inventionSentence = "";
+  let listBody = output;
+  if (headingMatch && headingMatch.index !== void 0) {
+    inventionSentence = output.slice(0, headingMatch.index).trim();
+    listBody = output.slice(headingMatch.index + headingMatch[0].length).trim();
+  }
+  inventionSentence = inventionSentence.replace(/^\*\*[^*]+\*\*\s*\n?/g, "").replace(/^#+\s.*\n?/g, "").trim();
+  const parseNumberedList = (body) => {
+    const out = [];
+    if (!body) return out;
+    const chunks = body.split(/\n(?=\s*\d+[.)]\s+)/);
+    for (const chunk of chunks) {
+      const m = chunk.match(/^\s*(\d+)[.)]\s+([\s\S]*)$/);
+      if (!m) continue;
+      const number = parseInt(m[1], 10);
+      const text2 = m[2].replace(/\s+/g, " ").trim();
+      if (!text2) continue;
+      out.push({
+        number,
+        type: "independent",
+        claimType: "key-concept",
+        parentClaim: null,
+        dependsOn: null,
+        text: text2
+      });
+    }
+    return out;
+  };
+  let claims = parseNumberedList(listBody);
+  if (claims.length === 0) {
+    claims = parseNumberedList(output);
+    if (claims.length > 0 && !inventionSentence) {
+      const firstNumMatch = output.match(/\n\s*\d+[.)]\s+/) || output.match(/^\s*\d+[.)]\s+/);
+      if (firstNumMatch && firstNumMatch.index !== void 0) {
+        inventionSentence = output.slice(0, firstNumMatch.index).trim();
       }
     }
-    claims.push({
-      number: claimNumber,
-      type: isIndependent ? "independent" : "dependent",
-      claimType,
-      parentClaim,
-      dependsOn: parentClaim,
-      text: claimText
-    });
   }
   const violations = [];
-  if (claims.length < 5) violations.push({ claim: 0, issue: `Too few claims: ${claims.length} (minimum 5)` });
-  if (claims.length > 10) violations.push({ claim: 0, issue: `Too many claims: ${claims.length} (maximum 10)` });
-  claims.forEach((claim) => {
-    const tl = claim.text.toLowerCase();
-    if (tl.includes("any preceding claim") || tl.includes("any of the preceding") || tl.includes("any one of claims") || tl.includes("any of claims")) {
-      violations.push({ claim: claim.number, issue: 'Uses prohibited "any preceding claim" language' });
-    }
-    if (tl.match(/system,?\s*method,?\s*(or|and)\s*medium/i) || tl.match(/method,?\s*system,?\s*(or|and)/i)) {
-      violations.push({ claim: claim.number, issue: "Uses mixed claim types (system, method, or medium)" });
-    }
-    if (claim.text.match(/claims?\s+\d+\s*[-–—]\s*\d+/i) || claim.text.match(/claims?\s+\d+\s*(?:to|through)\s+\d+/i)) {
-      violations.push({ claim: claim.number, issue: "Uses claim range reference instead of specific claim" });
-    }
-    if (claim.type === "dependent") {
-      const claimRefs = claim.text.match(/(?:the\s+)?(?:system|method)\s+of\s+claim\s+(\d+)/gi) || [];
-      if (claimRefs.length === 0) violations.push({ claim: claim.number, issue: "Dependent claim does not reference a parent claim" });
-      else if (claimRefs.length > 1) violations.push({ claim: claim.number, issue: "Dependent claim references multiple claims" });
-    }
-  });
-  const independentClaims = claims.filter((c) => c.type === "independent");
-  const dependentClaims = claims.filter((c) => c.type === "dependent");
+  if (claims.length === 0) {
+    violations.push({ claim: 0, issue: "No key concepts parsed from model output" });
+  }
+  const independentClaims = claims;
+  const dependentClaims = [];
   const dependencyTree = {};
   claims.forEach((c) => {
-    if (c.type === "independent") dependencyTree[c.number] = { claim: c.number, children: [] };
-  });
-  dependentClaims.forEach((c) => {
-    const parent = c.parentClaim;
-    if (parent == null) return;
-    if (!dependencyTree[parent]) dependencyTree[parent] = { claim: parent, children: [] };
-    dependencyTree[parent].children.push(c.number);
+    dependencyTree[c.number] = { claim: c.number, children: [] };
   });
   return {
     concept_id: conceptId,
     concept_text: conceptText,
     category,
     index,
-    complexity_assessment: complexityAssessment,
-    complexity_level: complexityLevel,
-    claim_type: claimType,
-    inventive_concept: inventiveConcept,
+    complexity_assessment: "",
+    complexity_level: "moderate",
+    claim_type: "key-concept",
+    inventive_concept: inventionSentence,
     claims,
     claims_count: claims.length,
     independent_claims: independentClaims,
     independent_claims_count: independentClaims.length,
     dependent_claims: dependentClaims,
-    dependent_claims_count: dependentClaims.length,
+    dependent_claims_count: 0,
     formatting_violations: violations,
     has_violations: violations.length > 0,
     is_valid: violations.length === 0,
@@ -1547,7 +1524,7 @@ function parseClaimsOutput(rawOutput, conceptId, conceptText, category, index) {
   };
 }
 async function runClaims(payload) {
-  console.log(">>> [M4-4b CLAIMS] <<< generating claim sets for", payload.selectedIdeas?.length, "concepts");
+  console.log(">>> [M4-4b CLAIMS] <<< generating key concepts for", payload.selectedIdeas?.length, "concepts");
   try {
     if (!Array.isArray(payload.selectedIdeas) || payload.selectedIdeas.length === 0) {
       return { success: false, error: "No selected ideas provided." };
@@ -1587,7 +1564,7 @@ Analysis failed: ${err.message || String(err)}`,
       })
     );
     console.log(
-      `>>> [M4-4b CLAIMS] <<< done \u2014 ${results.length} concepts, ${results.reduce((s, r) => s + r.claims_count, 0)} total claims`
+      `>>> [M4-4b CLAIMS] <<< done \u2014 ${results.length} concepts, ${results.reduce((s, r) => s + r.claims_count, 0)} total key concepts`
     );
     return {
       success: true,
@@ -1698,7 +1675,7 @@ async function runPannuSuggestion(payload) {
 Factor: ${contextDescription}
 
 Claim Text:
-${payload.claimText || ""}
+${payload.keyConceptText || ""}
 
 Question to Answer:
 ${payload.question || ""}
@@ -2168,7 +2145,7 @@ function parseClaims(rawOutput) {
   }
   return {
     summary: {
-      totalClaims: claims.length,
+      totalKeyConcepts: claims.length,
       independentClaims: independent.length,
       dependentClaims: dependent.length,
       statutoryClasses: Array.from(new Set(independent.map((c) => c.statutoryClass).filter(Boolean))),
@@ -2208,7 +2185,7 @@ async function runBroaderClaims(payload) {
     });
     const parsed = parseClaims(rawClaims);
     console.log(
-      `>>> [M5-5c BROADER-CLAIMS] <<< done \u2014 ${parsed.summary.totalClaims} claims (${parsed.summary.independentClaims} independent, ${parsed.summary.dependentClaims} dependent)`
+      `>>> [M5-5c BROADER-CLAIMS] <<< done \u2014 ${parsed.summary.totalKeyConcepts} claims (${parsed.summary.independentClaims} independent, ${parsed.summary.dependentClaims} dependent)`
     );
     return {
       success: true,
@@ -2229,30 +2206,30 @@ function parsePayload(payload) {
   const category = payload.category || "";
   const coreIdea = payload.coreIdea || payload.mainIdea || "";
   const expandedConcept = payload.expandedConcept || "";
-  const claimGroups = [];
+  const keyConceptGroups = [];
   let currentIndependent = null;
   let dependents = [];
-  if (Array.isArray(payload.selectedClaims)) {
-    for (const claim of payload.selectedClaims) {
-      if (claim.type === "independent claim") {
+  if (Array.isArray(payload.selectedKeyConcepts)) {
+    for (const concept of payload.selectedKeyConcepts) {
+      if (concept.type === "independent") {
         if (currentIndependent != null) {
-          claimGroups.push({ independent: currentIndependent, dependents: dependents.slice() });
+          keyConceptGroups.push({ independent: currentIndependent, dependents: dependents.slice() });
         }
-        currentIndependent = claim.text || "";
+        currentIndependent = concept.text || "";
         dependents = [];
       } else {
-        dependents.push(claim.text || "");
+        dependents.push(concept.text || "");
       }
     }
     if (currentIndependent != null) {
-      claimGroups.push({ independent: currentIndependent, dependents: dependents.slice() });
+      keyConceptGroups.push({ independent: currentIndependent, dependents: dependents.slice() });
     }
   }
-  const claimsText = claimGroups.map(
-    (g, i) => `Independent Claim ${i + 1}:
+  const keyConceptsText = keyConceptGroups.map(
+    (g, i) => `Primary Concept ${i + 1}:
 ${g.independent}
 
-Dependent Claims:
+Supporting Concepts:
 ${g.dependents.join("\n\n")}`
   ).join("\n\n---\n\n");
   return {
@@ -2260,9 +2237,9 @@ ${g.dependents.join("\n\n")}`
     category,
     coreIdea,
     expandedConcept,
-    claimGroups,
-    claimsText,
-    totalClaims: payload.selectedClaims?.length || 0
+    keyConceptGroups,
+    keyConceptsText,
+    totalKeyConcepts: payload.selectedKeyConcepts?.length || 0
   };
 }
 async function runAgent(agentName, userMessage) {
@@ -2280,8 +2257,8 @@ ${p.coreIdea}
 **EXPANDED CONCEPT:**
 ${p.expandedConcept}
 
-**INDEPENDENT CLAIMS:**
-${p.claimsText}
+**KEY CONCEPTS:**
+${p.keyConceptsText}
 
 ---
 
@@ -2315,8 +2292,8 @@ ${p.coreIdea}
 **EXPANDED CONCEPT:**
 ${p.expandedConcept}
 
-**INDEPENDENT CLAIMS:**
-${p.claimsText}
+**KEY CONCEPTS:**
+${p.keyConceptsText}
 
 ---
 
@@ -2375,8 +2352,8 @@ ${s.background}
 **CORE INNOVATION:**
 ${p.coreIdea}
 
-**INDEPENDENT CLAIMS:**
-${p.claimsText}
+**KEY CONCEPTS:**
+${p.keyConceptsText}
 
 ---
 
@@ -2839,8 +2816,8 @@ ${s.detailed_description}
 **CORE INNOVATION:**
 ${p.coreIdea}
 
-**INDEPENDENT CLAIMS:**
-${p.claimsText}
+**KEY CONCEPTS:**
+${p.keyConceptsText}
 
 ---
 
@@ -2929,8 +2906,8 @@ ${s.title}
 **SUMMARY:**
 ${s.summary}
 
-**INDEPENDENT CLAIMS:**
-${p.claimsText}
+**KEY CONCEPTS:**
+${p.keyConceptsText}
 
 
 
@@ -2989,7 +2966,7 @@ ${abstract}
 
 **Technical Summary:** ${s.summary}
 
-**Legal Claims:** ${p.claimsText}
+**Key Concepts:** ${p.keyConceptsText}
 
 ---
 
@@ -3050,8 +3027,8 @@ function buildFormattedDocument(args) {
     "",
     sep,
     "",
-    "CLAIMS:",
-    args.claims.join("\n\n")
+    "KEY CONCEPTS:",
+    args.keyConcepts.join("\n\n")
   ].join("\n");
 }
 async function runProvisional(payload) {
@@ -3104,14 +3081,14 @@ async function runProvisional(payload) {
       wordCount = countWords(abstract);
     }
     sections.abstract = abstract;
-    const claimsArray = [];
-    let claimNumber = 1;
-    for (const group of parsed.claimGroups) {
-      claimsArray.push(`Claim ${claimNumber}: ${group.independent}`);
-      claimNumber++;
+    const keyConceptsArray = [];
+    let keyConceptNumber = 1;
+    for (const group of parsed.keyConceptGroups) {
+      keyConceptsArray.push(`${keyConceptNumber}. ${group.independent}`);
+      keyConceptNumber++;
       for (const dep of group.dependents) {
-        claimsArray.push(`Claim ${claimNumber}: ${dep}`);
-        claimNumber++;
+        keyConceptsArray.push(`${keyConceptNumber}. ${dep}`);
+        keyConceptNumber++;
       }
     }
     const wordCounts = {
@@ -3130,10 +3107,10 @@ async function runProvisional(payload) {
       summary: sections.summary || "",
       detailedDescription: sections.detailed_description || "",
       ramifications: sections.ramifications_and_scope || "",
-      claims: claimsArray
+      keyConcepts: keyConceptsArray
     });
     console.log(
-      `>>> [M5-5a PROVISIONAL] <<< done \u2014 ${claimsArray.length} claims, ${totalWords} total words (abstract ${wordCounts.abstract})`
+      `>>> [M5-5a PROVISIONAL] <<< done \u2014 ${keyConceptsArray.length} key concepts, ${totalWords} total words (abstract ${wordCounts.abstract})`
     );
     return {
       success: true,
@@ -3141,19 +3118,19 @@ async function runProvisional(payload) {
       category: parsed.category,
       coreIdea: parsed.coreIdea,
       expandedConcept: parsed.expandedConcept,
-      claimGroups: parsed.claimGroups,
+      keyConceptGroups: parsed.keyConceptGroups,
       title: sections.title || "",
       abstract: sections.abstract || "",
       background: sections.background || "",
       summary: sections.summary || "",
       detailed_description: sections.detailed_description || "",
       ramifications_and_scope: sections.ramifications_and_scope || "",
-      claims: claimsArray,
-      claims_count: claimsArray.length,
+      keyConcepts: keyConceptsArray,
+      keyConcepts_count: keyConceptsArray.length,
       word_counts: wordCounts,
       total_words: totalWords,
       formatted_document: formattedDocument,
-      broad_claims_glossary: [],
+      broad_concepts_glossary: [],
       timestamp: (/* @__PURE__ */ new Date()).toISOString()
     };
   } catch (error) {
@@ -3339,12 +3316,12 @@ async function clearDownstreamData(projectId, fromStage) {
     // Stage 4a: White space - clears claims, provisional, diagrams
     "4a": {
       agents: [5],
-      agent4Fields: ["claimVariations", "selectedClaims", "selectedVariationId", "editedClaims", "rawClaimsResponse", "claimsGeneratedAt", "claimsSelectedAt", "provisionalDraft", "provisionalGeneratedAt"]
+      agent4Fields: ["claimVariations", "selectedKeyConcepts", "selectedVariationId", "editedClaims", "rawClaimsResponse", "claimsGeneratedAt", "claimsSelectedAt", "provisionalDraft", "provisionalGeneratedAt"]
     },
     // Stage 4 claims: Clears selected claims, provisional, diagrams
     "4-claims": {
       agents: [5],
-      agent4Fields: ["selectedClaims", "selectedVariationId", "editedClaims", "claimsSelectedAt", "provisionalDraft", "provisionalGeneratedAt"]
+      agent4Fields: ["selectedKeyConcepts", "selectedVariationId", "editedClaims", "claimsSelectedAt", "provisionalDraft", "provisionalGeneratedAt"]
     },
     // Stage 4b: Select claims - clears provisional, diagrams
     "4b": {
@@ -4508,7 +4485,7 @@ ${draft.summary.substring(0, 500)}...
             provisionalSummary,
             draft.title || "Provisional Draft",
             void 0,
-            { claimsCount: draft.claims_count || draft.claims?.length || 0 }
+            { keyConcepts: draft.keyConcepts_count || draft.keyConcepts?.length || 0 }
           );
         }
       }
@@ -6125,16 +6102,16 @@ ${whiteSpaceContent}`,
           const claims = [];
           let match;
           while ((match = claimPattern.exec(text2)) !== null) {
-            const claimNumber = parseInt(match[1]);
+            const keyConceptNumber = parseInt(match[1]);
             const claimType = match[2].toLowerCase();
-            const claimText = match[3].trim();
+            const keyConceptText = match[3].trim();
             const isIndependent = claimType.includes("independent");
             const isDependent = claimType.includes("dependent");
             claims.push({
-              number: claimNumber,
+              number: keyConceptNumber,
               type: isIndependent ? "independent" : "dependent",
-              label: `Claim ${claimNumber} (${match[2].trim()})`,
-              text: claimText,
+              label: `Claim ${keyConceptNumber} (${match[2].trim()})`,
+              text: keyConceptText,
               claimType: isIndependent ? "independent" : "dependent"
             });
           }
@@ -6224,7 +6201,7 @@ ${whiteSpaceContent}`,
           claimVariations: normalizedVariations,
           selectedVariationId: null,
           // User hasn't selected yet
-          selectedClaims: null,
+          selectedKeyConcepts: null,
           // Clear old selections - user must re-select from new claims
           editedClaims: null,
           // No edits yet
@@ -6245,30 +6222,33 @@ ${whiteSpaceContent}`,
   });
   app2.post("/api/projects/:id/agent/4b/select-claims", isAuthenticated, async (req, res) => {
     try {
-      const { selectedClaims } = req.body;
-      if (!selectedClaims || !Array.isArray(selectedClaims)) {
+      const { selectedKeyConcepts } = req.body;
+      console.log("[SELECT-CLAIMS] Received selectedKeyConcepts:", selectedKeyConcepts ? `${selectedKeyConcepts.length} items` : "UNDEFINED");
+      if (!selectedKeyConcepts || !Array.isArray(selectedKeyConcepts)) {
         return res.status(400).json({ message: "Selected claims array is required" });
       }
       const agent4Data = await storage.getAgentData(req.params.id, 4);
       const existingData = agent4Data?.data || {};
+      console.log("[SELECT-CLAIMS] About to save, existingData keys:", Object.keys(existingData));
       await storage.upsertAgentData({
         projectId: req.params.id,
         agentNumber: 4,
         data: {
           ...existingData,
-          selectedClaims,
+          selectedKeyConcepts,
           // Array of individual claims chosen by user
           claimsSelectedAt: (/* @__PURE__ */ new Date()).toISOString()
         }
       });
+      console.log("[SELECT-CLAIMS] Successfully saved", selectedKeyConcepts.length, "selected key concepts");
       const claimsVersion = await storage.getNextSnapshotVersion(req.params.id);
-      const independentClaims = selectedClaims.filter(
+      const independentClaims = selectedKeyConcepts.filter(
         (c) => c.type === "independent" || c.claimType === "independent" || c.label?.includes("Independent")
       );
-      const dependentClaims = selectedClaims.filter(
+      const dependentClaims = selectedKeyConcepts.filter(
         (c) => c.type === "dependent" || c.claimType === "dependent" || c.label?.includes("Dependent")
       );
-      const claimsContent = `**Patent Claims Selected:**
+      const keyConceptsContent = `**Patent Claims Selected:**
 
 **Independent Claims (${independentClaims.length}):**
 ${independentClaims.map((c, i) => `${i + 1}. ${c.text?.substring(0, 150)}...`).join("\n")}
@@ -6279,17 +6259,17 @@ ${dependentClaims.map((c, i) => `${i + 1}. ${c.text?.substring(0, 100)}...`).joi
         projectId: req.params.id,
         version: claimsVersion,
         snapshotType: "4b_claims",
-        title: `${selectedClaims.length} Claims Selected`,
-        content: claimsContent,
+        title: `${selectedKeyConcepts.length} Claims Selected`,
+        content: keyConceptsContent,
         metadata: {
           stage: 4,
           substage: "4b",
-          totalClaims: selectedClaims.length,
+          totalKeyConcepts: selectedKeyConcepts.length,
           independentCount: independentClaims.length,
           dependentCount: dependentClaims.length
         }
       });
-      res.json({ success: true, selectedClaimsCount: selectedClaims.length });
+      res.json({ success: true, selectedKeyConceptsCount: selectedKeyConcepts.length });
     } catch (error) {
       console.error("Select claims error:", error);
       res.status(500).json({ message: error.message || "Failed to save selected claims" });
@@ -6311,34 +6291,22 @@ ${dependentClaims.map((c, i) => `${i + 1}. ${c.text?.substring(0, 100)}...`).joi
       const expandedConcept = agent2DataObj?.provisionalDraft || agent2DataObj?.draftSpecification || "";
       const agent4Data = await storage.getAgentData(req.params.id, 4);
       const agent4DataObj = agent4Data?.data;
-      const selectedClaims = agent4DataObj?.selectedClaims || [];
-      if (selectedClaims.length === 0) {
+      console.log("[GENERATE-PROVISIONAL] Agent 4 data keys:", Object.keys(agent4DataObj || {}));
+      console.log("[GENERATE-PROVISIONAL] Has selectedKeyConcepts?", !!agent4DataObj?.selectedKeyConcepts);
+      console.log("[GENERATE-PROVISIONAL] Has selectedClaims?", !!agent4DataObj?.selectedClaims);
+      const selectedKeyConcepts = agent4DataObj?.selectedKeyConcepts || agent4DataObj?.selectedClaims || [];
+      if (selectedKeyConcepts.length === 0) {
         return res.status(400).json({ message: "No claims selected. Please select at least one claim." });
       }
-      let dependentCount = 0;
-      const formattedClaims = selectedClaims.map((claim) => {
-        let claimLabel;
-        if (claim.type === "independent") {
-          claimLabel = "independent claim";
-        } else {
-          dependentCount++;
-          claimLabel = `dependent claim ${dependentCount}`;
-        }
-        return {
-          type: claimLabel,
-          text: claim.text,
-          number: claim.number,
-          // Preserve original claim number (1, 2, 3...)
-          parentClaim: claim.parentClaim || null
-          // Preserve dependency info
-        };
-      });
       const webhookPayload = {
         sessionId,
         category: project.category,
         coreIdea: mainIdea,
         expandedConcept,
-        selectedClaims: formattedClaims
+        selectedKeyConcepts: selectedKeyConcepts.map((concept) => ({
+          text: concept.text,
+          number: concept.number
+        }))
       };
       console.log("Calling provisional patent writing webhook...");
       const rawWebhookResponse = await runProvisional(webhookPayload);
@@ -6355,6 +6323,8 @@ ${dependentClaims.map((c, i) => `${i + 1}. ${c.text?.substring(0, 100)}...`).joi
           ...agent4DataObj,
           provisionalDraft: webhookResponse,
           // Store complete structured response (unwrapped)
+          selectedKeyConcepts: formattedClaims,
+          // Save selected key concepts for regeneration
           provisionalGeneratedAt: (/* @__PURE__ */ new Date()).toISOString()
         }
       });
@@ -6404,27 +6374,40 @@ _Full specification includes: Background, Summary, Detailed Description, and Ram
       const agent1DataObj = agent1Data?.data;
       const agent2DataObj = agent2Data?.data;
       const agent4DataObj = agent4Data?.data;
+      console.log("[REGENERATE-DRAFT] Full agent4Data structure:", {
+        hasData: !!agent4DataObj,
+        topLevelKeys: Object.keys(agent4DataObj || {}),
+        selectedKeyConcepts: agent4DataObj?.selectedKeyConcepts ? `${agent4DataObj.selectedKeyConcepts.length} items` : "NOT FOUND",
+        selectedClaims: agent4DataObj?.selectedClaims ? `${agent4DataObj.selectedClaims.length} items` : "NOT FOUND"
+      });
       const mainIdea = agent1DataObj?.ideaSummary || agent1DataObj?.currentIdea || "";
       const expandedConcept = agent2DataObj?.provisionalDraft || agent2DataObj?.draftSpecification || "";
-      const selectedClaims = agent4DataObj?.selectedClaims || [];
-      if (selectedClaims.length === 0) {
-        return res.status(400).json({ message: "No claims found. Cannot regenerate draft." });
+      const selectedKeyConcepts = agent4DataObj?.selectedKeyConcepts || agent4DataObj?.selectedClaims || [];
+      console.log("=== REGENERATE DEBUG ===");
+      console.log("Agent4 keys:", Object.keys(agent4DataObj || {}));
+      console.log("selectedKeyConcepts exists?", !!agent4DataObj?.selectedKeyConcepts);
+      console.log("selectedClaims exists?", !!agent4DataObj?.selectedClaims);
+      console.log("selectedKeyConcepts value:", JSON.stringify(selectedKeyConcepts).substring(0, 200));
+      if (selectedKeyConcepts.length === 0) {
+        console.log("ERROR: No key concepts found in agent 4 data");
+        return res.status(400).json({ message: "No key concepts found. Cannot regenerate draft." });
       }
-      console.log("Regenerating provisional patent draft...");
+      console.log("Regenerating provisional patent draft with", selectedKeyConcepts.length, "key concepts...");
       let dependentCount = 0;
-      const formattedClaims = selectedClaims.map((claim) => {
-        let claimLabel;
-        if (claim.type === "independent") {
-          claimLabel = "independent claim";
+      const formattedConcepts = selectedKeyConcepts.map((concept) => {
+        let conceptType;
+        const typeStr = String(concept.type || "").toLowerCase();
+        if (typeStr.includes("independent")) {
+          conceptType = "independent";
         } else {
           dependentCount++;
-          claimLabel = `dependent claim ${dependentCount}`;
+          conceptType = `dependent ${dependentCount}`;
         }
         return {
-          type: claimLabel,
-          text: claim.text,
-          number: claim.number,
-          parentClaim: claim.parentClaim || null
+          type: conceptType,
+          text: concept.text,
+          number: concept.number,
+          parentConcept: concept.parentConcept || null
         };
       });
       const webhookPayload = {
@@ -6432,7 +6415,7 @@ _Full specification includes: Background, Summary, Detailed Description, and Ram
         category: project.category,
         coreIdea: mainIdea,
         expandedConcept,
-        selectedClaims: formattedClaims
+        selectedKeyConcepts: formattedConcepts
       };
       console.log("Calling provisional patent writing webhook for regeneration...");
       const rawWebhookResponse = await runProvisional(webhookPayload);
@@ -6500,13 +6483,13 @@ _Full specification includes: Background, Summary, Detailed Description, and Ram
       const formatClaims = (claims) => {
         if (!claims || claims.length === 0) return "";
         return claims.map((claim, index) => {
-          const claimText = typeof claim === "string" ? claim : claim.text || "";
-          const claimNumber = claim.number || index + 1;
-          const trimmed = claimText.trim();
+          const keyConceptText = typeof claim === "string" ? claim : claim.text || "";
+          const keyConceptNumber = claim.number || index + 1;
+          const trimmed = keyConceptText.trim();
           if (/^(Claim\s+\d+[:.:]|^\d+[.)])/i.test(trimmed)) {
             return trimmed;
           }
-          return `${claimNumber}. ${trimmed}`;
+          return `${keyConceptNumber}. ${trimmed}`;
         }).join("\n\n");
       };
       const fullSpecification = [
@@ -6527,8 +6510,8 @@ _Full specification includes: Background, Summary, Detailed Description, and Ram
         "--- ABSTRACT ---",
         parsedDraft.abstract || ""
       ].join("\n");
-      const broadClaims = parsedDraft.claims || [];
-      const currentClaims = formatClaims(broadClaims);
+      const broadKeyConcepts = parsedDraft.claims || [];
+      const currentClaims = formatClaims(broadKeyConcepts);
       const diagrams = agent5DataObj?.diagrams || [];
       let drawingDescriptions = "";
       if (diagrams.length > 0) {
@@ -6566,9 +6549,9 @@ ${markdown}`;
         agentNumber: 5,
         data: {
           ...agent5DataObj,
-          specificClaims: broadClaims,
+          specificKeyConcepts: broadKeyConcepts,
           // Original claims from provisional (specific/narrow)
-          broadClaims: response,
+          broadKeyConcepts: response,
           // New claims from webhook (broader scope)
           broaderClaimsGeneratedAt: (/* @__PURE__ */ new Date()).toISOString(),
           // Keep selectedClaimType if already set, default to 'specific'
@@ -6590,8 +6573,8 @@ ${markdown}`;
       });
       res.json({
         success: true,
-        specificClaims: broadClaims,
-        broadClaims: response,
+        specificKeyConcepts: broadKeyConcepts,
+        broadKeyConcepts: response,
         message: "Broader claims generated! Choose which claims to use in your final draft."
       });
     } catch (error) {
@@ -6690,8 +6673,8 @@ ${markdown}`;
       const agent2Data = await storage.getAgentData(req.params.id, 2);
       const agent4Data = await storage.getAgentData(req.params.id, 4);
       const agent4DataObj = agent4Data?.data;
-      const selectedClaims = agent4DataObj?.selectedClaims || [];
-      if (selectedClaims.length === 0) {
+      const selectedKeyConcepts = agent4DataObj?.selectedKeyConcepts || agent4DataObj?.selectedClaims || [];
+      if (selectedKeyConcepts.length === 0) {
         return res.status(400).json({ message: "No claims selected. Please select at least one claim." });
       }
       console.log("Generating provisional patent (no diagrams)...");
@@ -6699,28 +6682,16 @@ ${markdown}`;
       const mainIdea = agent1DataObj?.ideaSummary || agent1DataObj?.currentIdea || "";
       const agent2DataObj = agent2Data?.data;
       const expandedConcept = agent2DataObj?.provisionalDraft || agent2DataObj?.draftSpecification || "";
-      let dependentCount = 0;
-      const formattedClaims = selectedClaims.map((claim) => {
-        let claimLabel;
-        if (claim.type === "independent") {
-          claimLabel = "independent claim";
-        } else {
-          dependentCount++;
-          claimLabel = `dependent claim ${dependentCount}`;
-        }
-        return {
-          type: claimLabel,
-          text: claim.text,
-          number: claim.number,
-          parentClaim: claim.parentClaim || null
-        };
-      });
+      const formattedKeyConcepts = selectedKeyConcepts.map((concept) => ({
+        text: concept.text,
+        number: concept.number
+      }));
       const webhookPayload = {
         sessionId,
         category: project.category,
         coreIdea: mainIdea,
         expandedConcept,
-        selectedClaims: formattedClaims
+        selectedKeyConcepts: formattedKeyConcepts
       };
       console.log("Calling provisional patent writing webhook...");
       const rawWebhookResponse = await runProvisional(webhookPayload);
@@ -6734,6 +6705,7 @@ ${markdown}`;
         data: {
           ...agent4DataObj,
           provisionalDraft,
+          selectedKeyConcepts,
           provisionalGeneratedAt: (/* @__PURE__ */ new Date()).toISOString()
         }
       });
@@ -6813,8 +6785,8 @@ _Full specification includes: Background, Summary, Detailed Description, and Ram
           claimsForDiagrams = String(parsedDraft.claims);
         }
       }
-      if (selectedClaimType === "broad" && agent5DataObj?.broadClaims) {
-        const claimsArr = extractClaimsFromBroadData(agent5DataObj.broadClaims);
+      if (selectedClaimType === "broad" && agent5DataObj?.broadKeyConcepts) {
+        const claimsArr = extractClaimsFromBroadData(agent5DataObj.broadKeyConcepts);
         if (claimsArr.length > 0) {
           claimsForDiagrams = claimsArr.map((c, i) => `${i + 1}. ${c}`).join("\n\n");
         }
@@ -6885,7 +6857,7 @@ _Full specification includes: Background, Summary, Detailed Description, and Ram
         agentNumber: 5,
         data: {
           ...agent5DataObj,
-          // Preserve existing fields (broadClaims, selectedClaimType, etc.)
+          // Preserve existing fields (broadKeyConcepts, selectedClaimType, etc.)
           provisionalDraft,
           diagrams,
           diagramsGeneratedAt: (/* @__PURE__ */ new Date()).toISOString()
@@ -6940,7 +6912,7 @@ _${diagrams.length} diagram(s) ready for patent application_`;
       const agent4Data = await storage.getAgentData(req.params.id, 4);
       const agent4DataObj = agent4Data?.data;
       const provisionalDraft = agent4DataObj?.provisionalDraft;
-      const specificClaims = agent4DataObj?.selectedClaims || [];
+      const specificKeyConcepts = agent4DataObj?.selectedKeyConcepts || [];
       if (!provisionalDraft) {
         return res.status(400).json({ message: "Provisional draft not found. Please generate the draft first." });
       }
@@ -6948,16 +6920,16 @@ _${diagrams.length} diagram(s) ready for patent application_`;
       const formatSpecificClaims = (claims) => {
         if (!claims || claims.length === 0) return "";
         return claims.map((claim, index) => {
-          const claimText = typeof claim === "string" ? claim : claim.text || "";
-          const claimNumber = claim.number || index + 1;
-          const trimmed = claimText.trim();
+          const keyConceptText = typeof claim === "string" ? claim : claim.text || "";
+          const keyConceptNumber = claim.number || index + 1;
+          const trimmed = keyConceptText.trim();
           if (/^(Claim\s+\d+[:.:]|^\d+[.)])/i.test(trimmed)) {
             return trimmed;
           }
-          return `${claimNumber}. ${trimmed}`;
+          return `${keyConceptNumber}. ${trimmed}`;
         }).join("\n\n");
       };
-      console.log(`Using ${specificClaims.length} Specific Claims for diagrams (not Broad Claims from provisional)`);
+      console.log(`Using ${specificKeyConcepts.length} Specific Claims for diagrams (not Broad Claims from provisional)`);
       const formattedDocument = [
         `TITLE: ${parsedDraft.title || "Provisional Patent Application"}`,
         "",
@@ -6974,7 +6946,7 @@ _${diagrams.length} diagram(s) ready for patent application_`;
         parsedDraft.ramifications_and_scope || "",
         "",
         "--- CLAIMS ---",
-        formatSpecificClaims(specificClaims),
+        formatSpecificClaims(specificKeyConcepts),
         // Use Specific Claims for diagrams
         "",
         "--- ABSTRACT ---",
@@ -7093,8 +7065,10 @@ _${diagrams.length} diagram(s) ready for patent application_`;
       }
       const parsedDraft = parseProvisionalDraft(provisionalDraft);
       if (section === "claims") {
-        const claimsArray = content.split(/\n\n+/).map((c) => c.trim()).filter((c) => c.length > 0);
-        parsedDraft.claims = claimsArray;
+        const keyConceptsArray = content.split(/\n\n+/).map((c) => c.trim()).filter((c) => c.length > 0);
+        parsedDraft.claims = keyConceptsArray;
+        parsedDraft.keyConcepts = keyConceptsArray;
+        parsedDraft.keyConcepts_count = keyConceptsArray.length;
       } else {
         parsedDraft[section] = content;
       }
@@ -7111,20 +7085,43 @@ _${diagrams.length} diagram(s) ready for patent application_`;
       const agent5Obj = agent5Data?.data;
       let provisionalDraft = agent5Obj?.provisionalDraft;
       if (!provisionalDraft) {
-        const agent4Data = await storage.getAgentData(req.params.id, 4);
-        const agent4Obj = agent4Data?.data;
-        provisionalDraft = agent4Obj?.provisionalDraft;
+        const agent4Data2 = await storage.getAgentData(req.params.id, 4);
+        const agent4Obj2 = agent4Data2?.data;
+        provisionalDraft = agent4Obj2?.provisionalDraft;
       }
       if (!provisionalDraft) {
         return res.status(404).json({ message: "No provisional draft found" });
       }
       const parsedDraft = parseProvisionalDraft(provisionalDraft);
-      let claimsContent = Array.isArray(parsedDraft.claims) ? parsedDraft.claims.join("\n\n") : parsedDraft.claims || "";
+      const agent4Data = await storage.getAgentData(req.params.id, 4);
+      const agent4Obj = agent4Data?.data;
+      const selectedKeyConcepts = agent4Obj?.selectedKeyConcepts || agent4Obj?.selectedClaims || [];
+      let keyConceptsContent = "";
+      if (Array.isArray(selectedKeyConcepts) && selectedKeyConcepts.length > 0) {
+        const groupedByVariation = {};
+        selectedKeyConcepts.forEach((concept) => {
+          const variationId = concept.variationId || "default";
+          if (!groupedByVariation[variationId]) {
+            groupedByVariation[variationId] = [];
+          }
+          groupedByVariation[variationId].push(concept);
+        });
+        const formattedConcepts = [];
+        let groupNumber = 1;
+        Object.keys(groupedByVariation).forEach((variationId) => {
+          const groupConcepts = groupedByVariation[variationId];
+          groupConcepts.forEach((concept, conceptIndex) => {
+            formattedConcepts.push(`Group ${groupNumber} / Key Concept ${conceptIndex + 1}: ${concept.text || ""}`);
+          });
+          groupNumber++;
+        });
+        keyConceptsContent = formattedConcepts.join("\n\n");
+      }
       const selectedClaimType = agent5Obj?.selectedClaimType || "specific";
-      if (selectedClaimType === "broad" && agent5Obj?.broadClaims) {
-        const claimsArr = extractClaimsFromBroadData(agent5Obj.broadClaims);
+      if (selectedClaimType === "broad" && agent5Obj?.broadKeyConcepts) {
+        const claimsArr = extractClaimsFromBroadData(agent5Obj.broadKeyConcepts);
         if (claimsArr.length > 0) {
-          claimsContent = claimsArr.map((c, i) => `Claim ${i + 1}: ${c}`).join("\n\n");
+          keyConceptsContent = claimsArr.map((c, i) => `${i + 1}. ${c}`).join("\n\n");
         }
       }
       const sections = [
@@ -7134,7 +7131,7 @@ _${diagrams.length} diagram(s) ready for patent application_`;
         { key: "detailed_description", label: "Detailed Description", content: parsedDraft.detailed_description || "" },
         { key: "ramifications_and_scope", label: "Ramifications & Scope", content: parsedDraft.ramifications_and_scope || "" },
         { key: "abstract", label: "Abstract", content: parsedDraft.abstract || "" },
-        { key: "claims", label: "Claims", content: claimsContent }
+        { key: "claims", label: "Key Concepts", content: keyConceptsContent }
       ];
       res.json(sections);
     } catch (error) {
@@ -7153,15 +7150,15 @@ _${diagrams.length} diagram(s) ready for patent application_`;
   });
   app2.post("/api/projects/:id/pannu/generate-questions", isAuthenticated, async (req, res) => {
     try {
-      const { conceptId, claimText, strategyContext } = req.body;
-      if (!conceptId || !claimText) {
-        return res.status(400).json({ message: "Missing required fields: conceptId, claimText" });
+      const { conceptId, keyConceptText, strategyContext } = req.body;
+      if (!conceptId || !keyConceptText) {
+        return res.status(400).json({ message: "Missing required fields: conceptId, keyConceptText" });
       }
       const existingRecords = await storage.getPannuRecords(req.params.id);
       let pannuRecord = existingRecords.find((r) => r.conceptId === conceptId);
       if (pannuRecord) {
         await storage.updatePannuRecord(pannuRecord.id, {
-          claimText,
+          claimText: keyConceptText,
           strategyContext: strategyContext || null,
           questions: null,
           answers: null,
@@ -7173,12 +7170,12 @@ _${diagrams.length} diagram(s) ready for patent application_`;
         pannuRecord = await storage.createPannuRecord({
           projectId: req.params.id,
           conceptId,
-          claimText,
+          claimText: keyConceptText,
           strategyContext: strategyContext || null
         });
       }
       const webhookPayload = {
-        claim_text: claimText,
+        claim_text: keyConceptText,
         concept_id: conceptId,
         strategy_context: strategyContext || ""
       };
@@ -7227,12 +7224,12 @@ _${diagrams.length} diagram(s) ready for patent application_`;
   });
   app2.post("/api/projects/:id/pannu/validate-answers", isAuthenticated, async (req, res) => {
     try {
-      const { pannuRecordId, conceptId, claimText, answers } = req.body;
-      if (!conceptId || !claimText || !answers) {
-        return res.status(400).json({ message: "Missing required fields: conceptId, claimText, answers" });
+      const { pannuRecordId, conceptId, keyConceptText, answers } = req.body;
+      if (!conceptId || !keyConceptText || !answers) {
+        return res.status(400).json({ message: "Missing required fields: conceptId, keyConceptText, answers" });
       }
       const webhookPayload = {
-        claim_text: claimText,
+        claim_text: keyConceptText,
         concept_id: conceptId,
         human_answers: answers
       };
@@ -7261,7 +7258,7 @@ _${diagrams.length} diagram(s) ready for patent application_`;
           await storage.createPannuRecord({
             projectId: req.params.id,
             conceptId,
-            claimText,
+            claimText: keyConceptText,
             answers,
             certificationStatus,
             confidenceScore: String(confidenceScore),
@@ -7283,9 +7280,9 @@ _${diagrams.length} diagram(s) ready for patent application_`;
   });
   app2.post("/api/projects/:id/pannu/ai-suggestion", isAuthenticated, async (req, res) => {
     try {
-      const { claimText, question, factor } = req.body;
+      const { keyConceptText, question, factor } = req.body;
       const webhookPayload = {
-        claimText,
+        keyConceptText,
         question,
         factor
       };
@@ -7340,11 +7337,11 @@ _${diagrams.length} diagram(s) ready for patent application_`;
         priorArtResults: agent3Obj?.priorArtResults ? "Prior art research completed" : "Not yet completed",
         // Module 4 data
         whiteSpaceAnalysis: agent4Obj?.nuggetAnalyses ? "White space analysis completed" : "Not yet completed",
-        claimsGenerated: agent4Obj?.selectedClaims?.length || 0,
+        claimsGenerated: agent4Obj?.selectedKeyConcepts?.length || 0,
         provisionalDraftStatus: agent4Obj?.provisionalDraft ? "Draft generated" : "Not yet generated",
         // Module 5 data
         hasProvisionalDraft: !!agent5Obj?.provisionalDraft,
-        specificClaims: agent5Obj?.specificClaims || [],
+        specificKeyConcepts: agent5Obj?.specificKeyConcepts || [],
         broaderClaims: agent5Obj?.broaderClaims || [],
         hasDiagrams: !!(agent5Obj?.diagrams?.length > 0),
         diagramCount: agent5Obj?.diagrams?.length || 0
@@ -7369,28 +7366,28 @@ _${diagrams.length} diagram(s) ready for patent application_`;
       res.status(500).json({ message: error.message || "Failed to get response from Q&A Assistant" });
     }
   });
-  const extractClaimsFromBroadData = (broadClaims) => {
-    if (!broadClaims) return [];
-    if (broadClaims.claims && Array.isArray(broadClaims.claims) && broadClaims.claims.length > 0 && broadClaims.claims[0]?.text) {
-      return broadClaims.claims.sort((a, b) => (a.number || 0) - (b.number || 0)).map((c) => c.text);
+  const extractClaimsFromBroadData = (broadKeyConcepts) => {
+    if (!broadKeyConcepts) return [];
+    if (broadKeyConcepts.claims && Array.isArray(broadKeyConcepts.claims) && broadKeyConcepts.claims.length > 0 && broadKeyConcepts.claims[0]?.text) {
+      return broadKeyConcepts.claims.sort((a, b) => (a.number || 0) - (b.number || 0)).map((c) => c.text);
     }
-    if (broadClaims.output && typeof broadClaims.output === "string") {
-      return extractClaimsFromBroadText(broadClaims.output);
+    if (broadKeyConcepts.output && typeof broadKeyConcepts.output === "string") {
+      return extractClaimsFromBroadText(broadKeyConcepts.output);
     }
-    if (broadClaims.claims_only && typeof broadClaims.claims_only === "string") {
-      return extractClaimsFromBroadText(broadClaims.claims_only);
+    if (broadKeyConcepts.claims_only && typeof broadKeyConcepts.claims_only === "string") {
+      return extractClaimsFromBroadText(broadKeyConcepts.claims_only);
     }
-    if (typeof broadClaims === "string") {
-      return extractClaimsFromBroadText(broadClaims);
+    if (typeof broadKeyConcepts === "string") {
+      return extractClaimsFromBroadText(broadKeyConcepts);
     }
-    if (Array.isArray(broadClaims)) {
-      if (broadClaims.length > 0 && typeof broadClaims[0] === "object" && broadClaims[0]?.text) {
-        return broadClaims.sort((a, b) => (a.number || 0) - (b.number || 0)).map((c) => c.text);
+    if (Array.isArray(broadKeyConcepts)) {
+      if (broadKeyConcepts.length > 0 && typeof broadKeyConcepts[0] === "object" && broadKeyConcepts[0]?.text) {
+        return broadKeyConcepts.sort((a, b) => (a.number || 0) - (b.number || 0)).map((c) => c.text);
       }
-      return broadClaims.map((c) => typeof c === "string" ? c : c.text || JSON.stringify(c));
+      return broadKeyConcepts.map((c) => typeof c === "string" ? c : c.text || JSON.stringify(c));
     }
-    if (broadClaims.claims) {
-      return extractClaimsFromBroadData(broadClaims.claims);
+    if (broadKeyConcepts.claims) {
+      return extractClaimsFromBroadData(broadKeyConcepts.claims);
     }
     return [];
   };
@@ -7438,6 +7435,10 @@ _${diagrams.length} diagram(s) ready for patent application_`;
   const parseProvisionalDraft = (rawDraft) => {
     if (!rawDraft) return {};
     if (rawDraft.title && rawDraft.background) {
+      if (rawDraft.keyConcepts && !rawDraft.claims) {
+        rawDraft.claims = rawDraft.keyConcepts;
+        rawDraft.claims_count = rawDraft.keyConcepts_count;
+      }
       return rawDraft;
     }
     if (Array.isArray(rawDraft) && rawDraft[0]?.title) {
@@ -7457,9 +7458,9 @@ _${diagrams.length} diagram(s) ready for patent application_`;
     const extractClaims = () => {
       const claimsMatch = textBlob.match(/<CLAIMS>([\s\S]*?)<\/CLAIMS>/i);
       if (claimsMatch) {
-        let claimsText = claimsMatch[1];
-        claimsText = claimsText.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "	").replace(/\\"/g, '"').replace(/\\\\/g, "\\").replace(/^"|"$/g, "");
-        const claims2 = claimsText.split(/\n\n+/).map((c) => c.trim()).filter((c) => c.length > 0);
+        let keyConceptsText = claimsMatch[1];
+        keyConceptsText = keyConceptsText.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "	").replace(/\\"/g, '"').replace(/\\\\/g, "\\").replace(/^"|"$/g, "");
+        const claims2 = keyConceptsText.split(/\n\n+/).map((c) => c.trim()).filter((c) => c.length > 0);
         return claims2;
       }
       return [];
@@ -7630,8 +7631,8 @@ _${diagrams.length} diagram(s) ready for patent application_`;
       const agent5DataObj = agent5DataForPdf?.data;
       const selectedClaimType = agent5DataObj?.selectedClaimType || "specific";
       let claimsToUse = [];
-      if (selectedClaimType === "broad" && agent5DataObj?.broadClaims) {
-        claimsToUse = extractClaimsFromBroadData(agent5DataObj.broadClaims);
+      if (selectedClaimType === "broad" && agent5DataObj?.broadKeyConcepts) {
+        claimsToUse = extractClaimsFromBroadData(agent5DataObj.broadKeyConcepts);
         if (!claimsToUse || claimsToUse.length === 0) {
           claimsToUse = parsedDraft.claims || [];
         }
@@ -7768,26 +7769,36 @@ _${diagrams.length} diagram(s) ready for patent application_`;
         }
         doc.moveDown(0.5);
       }
-      if (draft.claims && Array.isArray(draft.claims) && draft.claims.length > 0) {
+      const selectedKeyConcepts = agent4cData.data?.selectedKeyConcepts || agent4cData.data?.selectedClaims || [];
+      if (Array.isArray(selectedKeyConcepts) && selectedKeyConcepts.length > 0) {
         doc.addPage();
-        doc.fontSize(14).font("Helvetica-Bold").text("CLAIMS");
+        doc.fontSize(14).font("Helvetica-Bold").text("KEY CONCEPTS");
         doc.moveDown(0.5);
-        doc.font("Helvetica-Oblique").fontSize(11).text("What is claimed is:", { lineGap: 4 });
-        doc.moveDown(0.5);
-        for (let index = 0; index < draft.claims.length; index++) {
-          const claim = draft.claims[index];
-          const claimNumber = index + 1;
-          let cleanedClaim = claim.trim().replace(/^(?:\*\*)?Claim\s*\d+[:.]\*?\*?\s*/i, "").replace(/^\d+\.\s*/, "").trim();
-          const isDependent = /system of claim|method of claim|medium of claim/i.test(cleanedClaim);
-          const indent = isDependent ? 20 : 0;
-          const numberedClaim = `${claimNumber}. (Original) ${cleanedClaim}`;
-          doc.font("Helvetica").fontSize(11).text(numberedClaim, {
-            lineGap: 4,
-            indent,
-            align: "left"
+        const groupedByVariation = {};
+        selectedKeyConcepts.forEach((concept) => {
+          const variationId = concept.variationId || "default";
+          if (!groupedByVariation[variationId]) {
+            groupedByVariation[variationId] = [];
+          }
+          groupedByVariation[variationId].push(concept);
+        });
+        let groupNumber = 1;
+        Object.keys(groupedByVariation).forEach((variationId) => {
+          const groupConcepts = groupedByVariation[variationId];
+          doc.moveDown(0.3);
+          doc.font("Helvetica-Bold").fontSize(12).text(`Group ${groupNumber}`, { lineGap: 4 });
+          doc.moveDown(0.3);
+          groupConcepts.forEach((concept, conceptIndex) => {
+            const cleanedText = sanitizeForPDF(String(concept.text || "")).trim();
+            const label = `Key Concept ${conceptIndex + 1}: `;
+            doc.font("Helvetica").fontSize(11).text(label + cleanedText, {
+              lineGap: 4,
+              align: "left"
+            });
+            doc.moveDown(0.5);
           });
-          doc.moveDown(0.5);
-        }
+          groupNumber++;
+        });
         doc.moveDown(0.5);
       }
       if (draft.abstract) {
@@ -7829,8 +7840,8 @@ _${diagrams.length} diagram(s) ready for patent application_`;
       const agent5DocxObj = agent5DataForDocx?.data;
       const selectedClaimType = agent5DocxObj?.selectedClaimType || "specific";
       let claimsToUse = [];
-      if (selectedClaimType === "broad" && agent5DocxObj?.broadClaims) {
-        claimsToUse = extractClaimsFromBroadData(agent5DocxObj.broadClaims);
+      if (selectedClaimType === "broad" && agent5DocxObj?.broadKeyConcepts) {
+        claimsToUse = extractClaimsFromBroadData(agent5DocxObj.broadKeyConcepts);
         if (!claimsToUse || claimsToUse.length === 0) {
           claimsToUse = parsedDraft.claims || [];
         }
@@ -8153,36 +8164,46 @@ _${diagrams.length} diagram(s) ready for patent application_`;
           ...markdownToParagraphs(draft.ramifications_and_scope, 240)
         );
       }
-      if (draft.claims && Array.isArray(draft.claims) && draft.claims.length > 0) {
+      const selectedKeyConceptsDocx = agent4cData.data?.selectedKeyConcepts || agent4cData.data?.selectedClaims || [];
+      if (Array.isArray(selectedKeyConceptsDocx) && selectedKeyConceptsDocx.length > 0) {
         paragraphs.push(
           new Paragraph({
             children: [new PageBreak()]
           }),
           new Paragraph({
-            text: "CLAIMS",
+            text: "KEY CONCEPTS",
             heading: HeadingLevel.HEADING_1,
             spacing: { before: 400, after: 240, line: lineSpacing }
           })
         );
-        paragraphs.push(
-          new Paragraph({
-            children: [new TextRun({ text: "What is claimed is:", size: bodyFontSize, italics: true })],
-            spacing: { after: 240, line: lineSpacing }
-          })
-        );
-        draft.claims.forEach((claim, index) => {
-          const claimNumber = index + 1;
-          let cleanedClaim = claim.trim().replace(/^(?:\*\*)?Claim\s*\d+[:.]\*?\*?\s*/i, "").replace(/^\d+\.\s*/, "").replace(/\*\*/g, "").trim();
-          const isDependent = /system of claim|method of claim|medium of claim/i.test(cleanedClaim);
-          const numberedClaim = `${claimNumber}. (Original) ${cleanedClaim}`;
+        const groupedByVariationDocx = {};
+        selectedKeyConceptsDocx.forEach((concept) => {
+          const variationId = concept.variationId || "default";
+          if (!groupedByVariationDocx[variationId]) {
+            groupedByVariationDocx[variationId] = [];
+          }
+          groupedByVariationDocx[variationId].push(concept);
+        });
+        let groupNumberDocx = 1;
+        Object.keys(groupedByVariationDocx).forEach((variationId) => {
+          const groupConcepts = groupedByVariationDocx[variationId];
           paragraphs.push(
             new Paragraph({
-              children: [new TextRun({ text: numberedClaim, size: bodyFontSize })],
-              spacing: { after: 240, line: lineSpacing },
-              indent: isDependent ? { left: 360 } : void 0
-              // Indent dependent claims
+              children: [new TextRun({ text: `Group ${groupNumberDocx}`, size: bodyFontSize, bold: true })],
+              spacing: { before: 240, after: 120, line: lineSpacing }
             })
           );
+          groupConcepts.forEach((concept, conceptIndex) => {
+            const cleanedText = processTextForDocx(String(concept.text || "")).trim();
+            const label = `Key Concept ${conceptIndex + 1}: `;
+            paragraphs.push(
+              new Paragraph({
+                children: [new TextRun({ text: label + cleanedText, size: bodyFontSize })],
+                spacing: { after: 240, line: lineSpacing }
+              })
+            );
+          });
+          groupNumberDocx++;
         });
       }
       if (draft.abstract) {

@@ -399,7 +399,7 @@ export default function PriorArtCheck() {
                       <CardHeader className="pb-2">
                         <CardTitle className="text-sm flex items-center gap-2">
                           <Target className="h-4 w-4 text-primary" />
-                          Claims Focus
+                          Key Concepts Focus
                         </CardTitle>
                       </CardHeader>
                       <CardContent>
@@ -663,10 +663,10 @@ export default function PriorArtCheck() {
                           <CardHeader className="pb-2">
                             <CardTitle className="text-base flex items-center gap-2">
                               <Target className="h-4 w-4 text-primary" />
-                              Claims Focus
+                              Key Concepts Focus
                             </CardTitle>
                             <CardDescription className="text-xs">
-                              Areas to emphasize in your patent claims
+                              Areas to emphasize in your patent key concepts
                             </CardDescription>
                           </CardHeader>
                           <CardContent>

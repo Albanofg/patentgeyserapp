@@ -81,14 +81,14 @@ export default function Agent4() {
       await queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 4] });
       
       toast({
-        title: "Claims generated!",
-        description: "Your patent claims are ready to review.",
+        title: "Key concepts generated!",
+        description: "Your patent key concepts are ready to review.",
       });
       setLocation(`/project/${projectId}/agent/4b`);
     },
     onError: (error: Error) => {
       toast({
-        title: "Claims generation failed",
+        title: "Key concept generation failed",
         description: error.message,
       });
     },
@@ -152,7 +152,7 @@ export default function Agent4() {
         project={project}
         agentNumber={4}
         agentName="White Space Strategy"
-        agentDescription="White space analysis and claims drafting strategy"
+        agentDescription="White space analysis and key concepts drafting strategy"
       />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
@@ -334,7 +334,7 @@ export default function Agent4() {
 
                           {concept.strategy.claimDraftingGuidance && (
                             <div>
-                              <h5 className="text-xs font-medium text-muted-foreground mb-1">Claim Drafting Guidance</h5>
+                              <h5 className="text-xs font-medium text-muted-foreground mb-1">Key Concept Drafting Guidance</h5>
                               <p className="text-sm text-muted-foreground">{concept.strategy.claimDraftingGuidance}</p>
                             </div>
                           )}
@@ -492,10 +492,10 @@ export default function Agent4() {
                 {proceedToClaimsMutation.isPending ? (
                   <>
                     <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-                    Generating Claim Ideas...
+                    Generating Key Concept Ideas...
                   </>
                 ) : (
-                  "Generate Patent Claim Ideas"
+                  "Generate Patent Key Concept Ideas"
                 )}
               </Button>
             </div>

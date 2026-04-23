@@ -11,15 +11,11 @@ import { AgentHeader } from "@/components/agent-header";
 import { Loader2, FileText, Check, CheckCircle2, ChevronDown, ChevronUp, ArrowRight } from "lucide-react";
 import type { Project } from "@shared/schema";
 
-type ClaimItem = {
+type KeyConceptItem = {
   id: string;
-  variationIndex: number;
   variationId: string;
-  type: 'independent' | 'dependent';
   text: string;
-  number: number; // Original claim number from webhook (1, 2, 3, etc.)
-  parentClaim?: number | null; // Which claim this depends on
-  strategySummary?: string;
+  number: number;
 };
 
 export default function Agent4b() {
@@ -60,7 +56,7 @@ export default function Agent4b() {
       
       toast({
         title: "Complete previous stages first",
-        description: "Please generate claims from the white space analysis first.",
+        description: "Please generate key concepts from the white space analysis first.",
       });
       setLocation(targetPage);
     }
@@ -69,8 +65,8 @@ export default function Agent4b() {
   // Load existing selections
   useEffect(() => {
     const agent4DataObj = agent4Data?.data as any;
-    if (agent4DataObj?.selectedClaims && Array.isArray(agent4DataObj.selectedClaims)) {
-      const selectedIds = new Set<string>(agent4DataObj.selectedClaims.map((c: ClaimItem) => c.id));
+    if (agent4DataObj?.selectedKeyConcepts && Array.isArray(agent4DataObj.selectedKeyConcepts)) {
+      const selectedIds = new Set<string>(agent4DataObj.selectedKeyConcepts.map((c: ClaimItem) => c.id));
       setSelectedClaimIds(selectedIds);
     }
     
@@ -80,72 +76,57 @@ export default function Agent4b() {
     }
   }, [agent4Data]);
 
-  // Build flat list of all claims from all variations
-  // Uses the full claims array which preserves original claim numbers from webhook
-  const buildClaimsList = (): ClaimItem[] => {
+  // Build flat list of all key concepts from all variations
+  const buildConceptsList = (): KeyConceptItem[] => {
     const agent4DataObj = agent4Data?.data as any;
     const variations = agent4DataObj?.claimVariations || [];
-    
-    const claimItems: ClaimItem[] = [];
-    
-    variations.forEach((variation: any, varIndex: number) => {
-      // Prefer the full claims array which has number, type, text, parentClaim
+
+    const conceptItems: KeyConceptItem[] = [];
+
+    variations.forEach((variation: any) => {
       if (variation.claims && Array.isArray(variation.claims) && variation.claims.length > 0) {
-        // Sort claims by their original number to maintain proper order
-        const sortedClaims = [...variation.claims].sort((a: any, b: any) => 
+        const sortedClaims = [...variation.claims].sort((a: any, b: any) =>
           (a.number || 0) - (b.number || 0)
         );
-        
+
         sortedClaims.forEach((claim: any) => {
-          claimItems.push({
-            id: `${variation.id}-claim-${claim.number}`,
-            variationIndex: varIndex,
+          conceptItems.push({
+            id: `${variation.id}-concept-${claim.number}`,
             variationId: variation.id,
-            type: claim.type === 'independent' ? 'independent' : 'dependent',
             text: claim.text,
-            number: claim.number, // Preserve original claim number (1, 2, 3, etc.)
-            parentClaim: claim.parentClaim || claim.dependsOn || null,
-            strategySummary: claim.type === 'independent' ? variation.strategySummary : undefined,
+            number: claim.number,
           });
         });
       } else {
-        // Fallback to old format (independentClaim + dependentClaims strings)
-        // Generate sequential numbers for backward compatibility
-        let claimNumber = 1;
-        
+        // Fallback: combine independent + dependent claims as a flat list
+        let conceptNumber = 1;
+
         if (variation.independentClaim) {
-          claimItems.push({
-            id: `${variation.id}-independent`,
-            variationIndex: varIndex,
+          conceptItems.push({
+            id: `${variation.id}-concept-${conceptNumber}`,
             variationId: variation.id,
-            type: 'independent',
             text: variation.independentClaim,
-            number: claimNumber++,
-            parentClaim: null,
-            strategySummary: variation.strategySummary,
+            number: conceptNumber++,
           });
         }
-        
+
         if (variation.dependentClaims && Array.isArray(variation.dependentClaims)) {
-          variation.dependentClaims.forEach((depClaim: string) => {
-            claimItems.push({
-              id: `${variation.id}-dependent-${claimNumber}`,
-              variationIndex: varIndex,
+          variation.dependentClaims.forEach((text: string) => {
+            conceptItems.push({
+              id: `${variation.id}-concept-${conceptNumber}`,
               variationId: variation.id,
-              type: 'dependent',
-              text: depClaim,
-              number: claimNumber++,
-              parentClaim: 1, // Assume depends on independent claim
+              text,
+              number: conceptNumber++,
             });
           });
         }
       }
     });
-    
-    return claimItems;
+
+    return conceptItems;
   };
 
-  const allClaims = buildClaimsList();
+  const allConcepts = buildConceptsList();
 
   const toggleClaim = (claimId: string) => {
     const newSelection = new Set(selectedClaimIds);
@@ -168,14 +149,14 @@ export default function Agent4b() {
   };
 
   const selectAllFromVariation = (variationId: string) => {
-    const variationClaims = allClaims.filter(c => c.variationId === variationId);
+    const variationClaims = allConcepts.filter(c => c.variationId === variationId);
     const newSelection = new Set(selectedClaimIds);
     variationClaims.forEach(c => newSelection.add(c.id));
     setSelectedClaimIds(newSelection);
   };
 
   const deselectAllFromVariation = (variationId: string) => {
-    const variationClaims = allClaims.filter(c => c.variationId === variationId);
+    const variationClaims = allConcepts.filter(c => c.variationId === variationId);
     const newSelection = new Set(selectedClaimIds);
     variationClaims.forEach(c => newSelection.delete(c.id));
     setSelectedClaimIds(newSelection);
@@ -183,16 +164,16 @@ export default function Agent4b() {
 
   const saveSelectionMutation = useMutation({
     mutationFn: async () => {
-      const selectedClaims = allClaims.filter(c => selectedClaimIds.has(c.id));
+      const selectedKeyConcepts = allConcepts.filter(c => selectedClaimIds.has(c.id));
       await apiRequest("POST", `/api/projects/${projectId}/agent/4b/select-claims`, {
-        selectedClaims,
+        selectedKeyConcepts,
       });
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 4] });
       toast({
-        title: "Claim ideas saved!",
-        description: `${selectedClaimIds.size} claim ideas selected.`,
+        title: "Key concept ideas saved!",
+        description: `${selectedClaimIds.size} key concept ideas selected.`,
       });
     },
     onError: (error: Error) => {
@@ -207,15 +188,15 @@ export default function Agent4b() {
   const proceedMutation = useMutation({
     mutationFn: async () => {
       // Save selections only - Pannu validation happens next
-      const selectedClaims = allClaims.filter(c => selectedClaimIds.has(c.id));
+      const selectedKeyConcepts = allConcepts.filter(c => selectedClaimIds.has(c.id));
       await apiRequest("POST", `/api/projects/${projectId}/agent/4b/select-claims`, {
-        selectedClaims,
+        selectedKeyConcepts,
       });
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId] });
       toast({
-        title: "Claim ideas saved!",
+        title: "Key concept ideas saved!",
         description: "Next: Learn about Proof of Human Conception for inventorship validation.",
       });
       setLocation(`/project/${projectId}/agent/4-pannu-intro`);
@@ -249,7 +230,7 @@ export default function Agent4b() {
   
   const claimsByVariation: ClaimsByVariation[] = claimVariations.map((variation: any) => ({
     variation,
-    claims: allClaims.filter(c => c.variationId === variation.id),
+    claims: allConcepts.filter(c => c.variationId === variation.id),
   }));
 
   return (
@@ -257,8 +238,8 @@ export default function Agent4b() {
       <AgentHeader
         project={project}
         agentNumber={4}
-        agentName="Provisional Draft - Claim Ideas Selection"
-        agentDescription="Review and select the claim ideas you want to include in your provisional patent application"
+        agentName="Provisional Draft - Key Concept Ideas Selection"
+        agentDescription="Review and select the key concept ideas you want to include in your provisional patent application"
       />
 
       <main className="container mx-auto px-4 py-8 max-w-6xl">
@@ -267,7 +248,7 @@ export default function Agent4b() {
             <CardContent className="flex flex-col items-center justify-center py-12">
               <FileText className="h-12 w-12 text-muted-foreground mb-4" />
               <p className="text-muted-foreground text-center mb-6">
-                Claim ideas have not been generated yet. Please go back to Strategy and generate claim ideas.
+                Key concept ideas have not been generated yet. Please go back to Strategy and generate key concept ideas.
               </p>
               <Button
                 variant="default"
@@ -285,17 +266,17 @@ export default function Agent4b() {
               <CardHeader className="pb-3">
                 <CardTitle className="text-lg">Selection Summary</CardTitle>
                 <CardDescription>
-                  Review and select claim proposals for your application summary.
+                  Review and select key concept proposals for your application summary.
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="default" className="text-sm sm:text-base px-3 py-1" data-testid="badge-selected-count">
-                      {selectedClaimIds.size} {selectedClaimIds.size === 1 ? 'claim idea' : 'claim ideas'} selected
+                      {selectedClaimIds.size} {selectedClaimIds.size === 1 ? 'key concept idea' : 'key concept ideas'} selected
                     </Badge>
                     <span className="text-sm text-muted-foreground whitespace-nowrap">
-                      from {claimVariations.length} {claimVariations.length === 1 ? 'set' : 'sets'}
+                      from {claimVariations.length} {claimVariations.length === 1 ? 'group' : 'groups'}
                     </span>
                   </div>
                   <Button
@@ -337,7 +318,7 @@ export default function Agent4b() {
                         <div className="flex items-start justify-between gap-2">
                           <div className="flex flex-wrap items-center gap-2">
                             <CardTitle className="text-base whitespace-nowrap">
-                              Claim Set {index + 1}
+                              Key Concept Group {index + 1}
                             </CardTitle>
                             <Badge variant="secondary" className="text-xs" data-testid={`badge-variation-${index}-count`}>
                               {selectedCount}/{claims.length}
@@ -399,7 +380,7 @@ export default function Agent4b() {
                                   variant={claim.type === 'independent' ? 'default' : 'secondary'}
                                   className="text-[10px] sm:text-xs"
                                 >
-                                  Claim {claim.number} ({claim.type === 'independent' ? 'Independent' : 'Dependent'})
+                                  Key Concept {claim.number}
                                 </Badge>
                                 <p className="text-xs sm:text-sm leading-relaxed whitespace-pre-wrap">
                                   {claim.text}

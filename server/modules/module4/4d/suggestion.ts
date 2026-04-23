@@ -1,7 +1,7 @@
 import { callAgent, loadAgentConfig, loadPrompt } from "../../../ai/client";
 
 interface SuggestionPayload {
-  claimText: string;
+  keyConceptText: string;
   question: string;
   factor: "conception" | "quality" | "known_concepts" | string;
 }
@@ -27,7 +27,7 @@ export async function runPannuSuggestion(payload: SuggestionPayload) {
     const userMessage =
       `You are helping evaluate a patent claim under the Pannu test.\n\n` +
       `Factor: ${contextDescription}\n\n` +
-      `Claim Text:\n${payload.claimText || ""}\n\n` +
+      `Claim Text:\n${payload.keyConceptText || ""}\n\n` +
       `Question to Answer:\n${payload.question || ""}\n\n` +
       `Please provide a professional, thoughtful response that directly addresses this specific Pannu factor. Your response should be clear, concise, and helpful for patent documentation purposes.`;
 

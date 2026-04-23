@@ -17,7 +17,7 @@ interface QAPayload {
     claimsGenerated: number;
     provisionalDraftStatus: string;
     hasProvisionalDraft: boolean;
-    specificClaims: any[];
+    specificKeyConcepts: any[];
     broaderClaims: any[];
     hasDiagrams: boolean;
     diagramCount: number;
@@ -55,11 +55,11 @@ function buildContext(payload: QAPayload): string {
   if (statusParts.length) sections.push(`## STATUS\n${statusParts.join("\n")}`);
 
   // Claims (truncated for token efficiency)
-  if (projectContext.specificClaims?.length) {
-    const claimsPreview = projectContext.specificClaims.slice(0, 3).join("\n\n");
-    const moreCount = projectContext.specificClaims.length - 3;
+  if (projectContext.specificKeyConcepts?.length) {
+    const claimsPreview = projectContext.specificKeyConcepts.slice(0, 3).join("\n\n");
+    const moreCount = projectContext.specificKeyConcepts.length - 3;
     sections.push(
-      `## SPECIFIC CLAIMS (${projectContext.specificClaims.length} total)\n${claimsPreview}${moreCount > 0 ? `\n\n[...and ${moreCount} more claims]` : ""}`
+      `## SPECIFIC CLAIMS (${projectContext.specificKeyConcepts.length} total)\n${claimsPreview}${moreCount > 0 ? `\n\n[...and ${moreCount} more claims]` : ""}`
     );
   }
 

@@ -37,9 +37,9 @@ const agentStages = [
     { id: '2b', name: "Extract & Select", description: "Ideas for research" },
   ]},
   { number: 3, name: "Prior Art", icon: Search, description: "Research Existing Patents" },
-  { number: 4, name: "Provisional", icon: TrendingUp, description: "Strategy & Claims", substages: [
+  { number: 4, name: "Provisional", icon: TrendingUp, description: "Strategy & Key Concepts", substages: [
     { id: '4a', name: "White Space Strategy", description: "White space analysis" },
-    { id: '4b', name: "Specific Claim Ideas", description: "Draft claim ideas" },
+    { id: '4b', name: "Key Concepts", description: "Draft key concept ideas" },
     { id: '4-pannu', name: "Proof of Human Conception", description: "Inventorship validation" },
   ]},
   { number: 5, name: "The Showcase", icon: Image, description: "Download Your Patent", substages: [
@@ -59,7 +59,7 @@ function getLocationDescription(path: string): string {
   if (path.includes("/agent/1")) return "Module 1: Intake & Screening (Advocate/Examiner Debate, Idea Extraction)";
   if (path.includes("/agent/2")) return "Module 2: Concept Refinement (Expand & Select Ideas)";
   if (path.includes("/agent/3")) return "Module 3: Prior Art Research (Patent Landscape Analysis)";
-  if (path.includes("/agent/4")) return "Module 4: White Space Analysis & Claims Generation";
+  if (path.includes("/agent/4")) return "Module 4: White Space Analysis & Key Concepts Generation";
   if (path.includes("/agent/5")) return "Module 5: The Showcase (Final Review, Diagrams, Export)";
   return "Patent Geyser Application";
 }
@@ -112,7 +112,7 @@ export function AppSidebar({ projectId }: AppSidebarProps) {
   });
 
   const agent5Obj = (agent5Data as any)?.data || {};
-  const practitionerPrereqsMet = Array.isArray(agent5Obj?.diagrams) && agent5Obj.diagrams.length > 0 && !!agent5Obj?.broadClaims;
+  const practitionerPrereqsMet = Array.isArray(agent5Obj?.diagrams) && agent5Obj.diagrams.length > 0;
 
   const logoutMutation = useMutation({
     mutationFn: async () => {
@@ -353,7 +353,7 @@ export function AppSidebar({ projectId }: AppSidebarProps) {
                                 <TooltipContent side="right">
                                   <div className="text-xs">
                                     {prereqsLocked
-                                      ? "Generate drawings and broad claims first"
+                                      ? "Generate drawings first"
                                       : "Complete earlier stages to unlock"}
                                   </div>
                                 </TooltipContent>

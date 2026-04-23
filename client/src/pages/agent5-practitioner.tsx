@@ -244,8 +244,7 @@ export default function Agent5Practitioner() {
 
   const agent5Obj = (agent5Data as any)?.data || {};
   const hasDiagrams = Array.isArray(agent5Obj?.diagrams) && agent5Obj.diagrams.length > 0;
-  const hasBroadClaims = !!agent5Obj?.broadClaims;
-  const prereqsMet = hasDiagrams && hasBroadClaims;
+  const prereqsMet = hasDiagrams;
 
   const practitioners: Practitioner[] = Array.isArray(agent5Obj?.practitionerMatchResults)
     ? agent5Obj.practitionerMatchResults
@@ -290,7 +289,7 @@ export default function Agent5Practitioner() {
               <div className="flex items-center gap-2 text-sm">
                 <AlertCircle className="h-4 w-4 text-amber-500" />
                 <span className="text-muted-foreground">
-                  Generate drawings and broad claims first.{" "}
+                  Generate drawings first.{" "}
                   <button
                     className="underline text-foreground"
                     onClick={() => setLocation(`/project/${projectId}/agent/5`)}

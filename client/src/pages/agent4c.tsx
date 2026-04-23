@@ -50,7 +50,7 @@ export default function Agent4c() {
       
       toast({
         title: "Complete previous stages first",
-        description: "Please complete Strategy and Claims before viewing the draft.",
+        description: "Please complete Strategy and Key Concepts before viewing the draft.",
       });
       setLocation(targetPage);
     }
@@ -91,7 +91,7 @@ export default function Agent4c() {
   const agent4DataObj = agent4Data?.data as any;
   
   const expandedConcept = agent2DataObj?.provisionalDraft || agent2DataObj?.draftSpecification || "";
-  const selectedClaims = agent4DataObj?.selectedClaims || [];
+  const selectedKeyConcepts = agent4DataObj?.selectedKeyConcepts || [];
   
   const normalizeStrategicDirective = (md: string): string => {
     if (!md) return md;
@@ -102,28 +102,34 @@ export default function Agent4c() {
   const strategicDirectiveRaw = analysisResults.strategicDirective || "";
   const strategicDirective = normalizeStrategicDirective(strategicDirectiveRaw);
   
-  // Format selected claims for display using their original claim numbers
+  // Format selected key concepts grouped by variation
   const formatClaims = () => {
-    if (!selectedClaims || selectedClaims.length === 0) return "";
-    
-    // Sort claims by their original number (independent claims first, then dependent)
-    const sortedClaims = [...selectedClaims].sort((a: any, b: any) => {
-      // First sort by type (independent before dependent)
-      if (a.type === 'independent' && b.type !== 'independent') return -1;
-      if (a.type !== 'independent' && b.type === 'independent') return 1;
-      // Then sort by original claim number
-      return (a.number || 0) - (b.number || 0);
+    if (!selectedKeyConcepts || selectedKeyConcepts.length === 0) return "";
+
+    // Group by variationId to maintain group structure
+    const groupedByVariation: Record<string, any[]> = {};
+    selectedKeyConcepts.forEach((concept: any) => {
+      const variationId = concept.variationId || 'default';
+      if (!groupedByVariation[variationId]) {
+        groupedByVariation[variationId] = [];
+      }
+      groupedByVariation[variationId].push(concept);
     });
-    
-    // Format using original claim numbers - do not renumber!
-    const formattedClaims: string[] = sortedClaims.map((claim: any) => {
-      const claimNum = claim.number || '?';
-      return `Claim ${claimNum}: ${claim.text}`;
+
+    const formattedConcepts: string[] = [];
+    let groupNumber = 1;
+
+    Object.keys(groupedByVariation).forEach((variationId) => {
+      const groupConcepts = groupedByVariation[variationId];
+      groupConcepts.forEach((concept: any, conceptIndex: number) => {
+        formattedConcepts.push(`Group ${groupNumber} / Key Concept ${conceptIndex + 1}: ${concept.text}`);
+      });
+      groupNumber++;
     });
-    
-    return formattedClaims.join('\n\n');
+
+    return formattedConcepts.join('\n\n');
   };
-  
+
   const formattedClaims = formatClaims();
 
   return (
@@ -173,9 +179,9 @@ export default function Agent4c() {
             {formattedClaims && (
               <Card>
                 <CardHeader>
-                  <CardTitle>Patent Claims</CardTitle>
+                  <CardTitle>Patent Key Concepts</CardTitle>
                   <CardDescription>
-                    {selectedClaims.length} {selectedClaims.length === 1 ? 'claim' : 'claims'} selected - Claim language defining the technical scope of the invention
+                    {selectedKeyConcepts.length} {selectedKeyConcepts.length === 1 ? 'key concept' : 'key concepts'} selected - Key concept language defining the technical scope of the invention
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -192,14 +198,14 @@ export default function Agent4c() {
                 <CardContent className="flex flex-col items-center justify-center py-12">
                   <FileText className="h-12 w-12 text-muted-foreground mb-4" />
                   <p className="text-muted-foreground text-center mb-6">
-                    No claims have been selected yet. Please go back to Claims Selection and choose your claims.
+                    No key concepts have been selected yet. Please go back to Key Concepts Selection and choose your key concepts.
                   </p>
                   <Button
                     variant="default"
                     onClick={() => setLocation(`/project/${projectId}/agent/4b`)}
                     data-testid="button-back-to-claims"
                   >
-                    ← Back to Claims Selection
+                    ← Back to Key Concepts Selection
                   </Button>
                 </CardContent>
               </Card>
@@ -228,7 +234,7 @@ export default function Agent4c() {
                 onClick={() => setLocation(`/project/${projectId}/agent/4b`)}
                 data-testid="button-back"
               >
-                ← Back to Claims
+                ← Back to Key Concepts
               </Button>
               <Button
                 size="lg"

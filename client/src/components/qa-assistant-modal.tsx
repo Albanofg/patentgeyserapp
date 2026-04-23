@@ -121,7 +121,7 @@ export function QAAssistantModal({ projectId, open, onOpenChange, currentLocatio
               <Bot className="h-12 w-12 mb-4 opacity-50" />
               <p className="text-lg font-medium">How can I help you?</p>
               <p className="text-sm mt-2">
-                Ask me questions about your patent application, claims, or the workflow process.
+                Ask me questions about your patent application, key concepts, or the workflow process.
               </p>
             </div>
           ) : (

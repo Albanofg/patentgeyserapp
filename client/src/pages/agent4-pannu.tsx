@@ -109,7 +109,7 @@ export default function Agent4Pannu() {
     if (currentStage < 4 || (currentStage === 4 && currentSubstage === '4a')) {
       toast({
         title: "Complete previous stages first",
-        description: "Please select claims first.",
+        description: "Please select key concepts first.",
       });
       setLocation(`/project/${projectId}/agent/4b`);
     }
@@ -118,9 +118,9 @@ export default function Agent4Pannu() {
   // Build claims list from selected claims
   const getClaimsForValidation = (): ClaimForValidation[] => {
     const agent4DataObj = agent4Data?.data as any;
-    const selectedClaims = agent4DataObj?.selectedClaims || [];
+    const selectedKeyConcepts = agent4DataObj?.selectedKeyConcepts || [];
     
-    return selectedClaims
+    return selectedKeyConcepts
       .filter((claim: any) => claim.type === 'independent')
       .map((claim: any, index: number) => ({
         id: claim.id,
@@ -132,7 +132,7 @@ export default function Agent4Pannu() {
       }));
   };
 
-  const claimsForValidation = getClaimsForValidation();
+  const keyConceptsForValidation = getClaimsForValidation();
 
   // Initialize validation states from existing records (only on first load)
   const [initializedFromDb, setInitializedFromDb] = useState(false);
@@ -165,17 +165,17 @@ export default function Agent4Pannu() {
 
   // Auto-expand first pending claim
   useEffect(() => {
-    if (claimsForValidation.length > 0 && expandedClaims.size === 0) {
-      const firstPending = claimsForValidation.find(c => 
+    if (keyConceptsForValidation.length > 0 && expandedClaims.size === 0) {
+      const firstPending = keyConceptsForValidation.find(c => 
         !validationStates[c.conceptId] || validationStates[c.conceptId].status === 'pending'
       );
       if (firstPending) {
         setExpandedClaims(new Set([firstPending.id]));
       } else {
-        setExpandedClaims(new Set([claimsForValidation[0].id]));
+        setExpandedClaims(new Set([keyConceptsForValidation[0].id]));
       }
     }
-  }, [claimsForValidation, validationStates]);
+  }, [keyConceptsForValidation, validationStates]);
 
   const generateQuestionsMutation = useMutation({
     mutationFn: async (claim: ClaimForValidation) => {
@@ -479,8 +479,8 @@ export default function Agent4Pannu() {
     );
   }
 
-  const allCertified = claimsForValidation.length > 0 && 
-    claimsForValidation.every(c => validationStates[c.conceptId]?.status === 'certified');
+  const allCertified = keyConceptsForValidation.length > 0 && 
+    keyConceptsForValidation.every(c => validationStates[c.conceptId]?.status === 'certified');
 
   const getStatusBadge = (status: ValidationState['status'], certificationStatus?: string) => {
     if (status === 'certified' && certificationStatus === 'Skipped') {
@@ -522,23 +522,23 @@ export default function Agent4Pannu() {
         project={project}
         agentNumber={4}
         agentName="Proof of Human Conception - Inventorship Validation"
-        agentDescription="Validate your contribution to each claim under USPTO's inventorship criteria"
+        agentDescription="Validate your contribution to each key concept under USPTO's inventorship criteria"
       />
 
       <main className="container mx-auto px-4 py-8 max-w-4xl">
-        {claimsForValidation.length === 0 ? (
+        {keyConceptsForValidation.length === 0 ? (
           <Card className="border-muted">
             <CardContent className="flex flex-col items-center justify-center py-12">
               <Shield className="h-12 w-12 text-muted-foreground mb-4" />
               <p className="text-muted-foreground text-center mb-6">
-                No claims selected for validation. Please go back and select claims.
+                No key concepts selected for validation. Please go back and select key concepts.
               </p>
               <Button
                 variant="default"
                 onClick={() => setLocation(`/project/${projectId}/agent/4b`)}
                 data-testid="button-back-to-claims"
               >
-                Back to Claims Selection
+                Back to Key Concepts Selection
               </Button>
             </CardContent>
           </Card>
@@ -552,19 +552,19 @@ export default function Agent4Pannu() {
                   <CardTitle className="text-lg">Proof of Human Conception</CardTitle>
                 </div>
                 <CardDescription>
-                  Answer questions for each independent claim to certify your inventorship under USPTO guidelines.
+                  Answer questions for each primary key concept to certify your inventorship under USPTO guidelines.
                   You must demonstrate significant contribution to conception, quality, and novel concepts.
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="flex items-center gap-4">
                   <Badge variant="secondary" data-testid="badge-progress">
-                    {Object.values(validationStates).filter(s => s.status === 'certified').length} / {claimsForValidation.length} Certified
+                    {Object.values(validationStates).filter(s => s.status === 'certified').length} / {keyConceptsForValidation.length} Certified
                   </Badge>
                   {allCertified && (
                     <Badge variant="default" className="bg-green-600">
                       <CheckCircle className="h-3 w-3 mr-1" />
-                      All Claims Certified
+                      All Key Concepts Certified
                     </Badge>
                   )}
                 </div>
@@ -573,7 +573,7 @@ export default function Agent4Pannu() {
 
             {/* Claims List */}
             <div className="space-y-4">
-              {claimsForValidation.map((claim, index) => {
+              {keyConceptsForValidation.map((claim, index) => {
                 const state = validationStates[claim.conceptId] || { status: 'pending' };
                 const isExpanded = expandedClaims.has(claim.id);
                 const claimAnswers = currentAnswers[claim.conceptId] || {};
@@ -585,7 +585,7 @@ export default function Agent4Pannu() {
                         <div className="flex-1">
                           <div className="flex items-center gap-2 mb-2">
                             <CardTitle className="text-base">
-                              Claim {claim.number}
+                              Key Concept {claim.number}
                             </CardTitle>
                             {getStatusBadge(state.status, state.certificationStatus)}
                           </div>
@@ -639,7 +639,7 @@ export default function Agent4Pannu() {
                               <span className="font-medium text-yellow-700 dark:text-yellow-400">Questions failed to load</span>
                             </div>
                             <p className="text-sm text-yellow-700 dark:text-yellow-400 mb-3">
-                              The validation questions could not be generated. You can retry or skip this claim.
+                              The validation questions could not be generated. You can retry or skip this key concept.
                             </p>
                             <div className="flex gap-2">
                               <Button
@@ -678,7 +678,7 @@ export default function Agent4Pannu() {
                                 }}
                                 data-testid={`button-skip-${index}`}
                               >
-                                Skip This Claim
+                                Skip This Key Concept
                               </Button>
                             </div>
                           </div>

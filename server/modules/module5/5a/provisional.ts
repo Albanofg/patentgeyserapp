@@ -1,10 +1,10 @@
 import { callAgent, loadAgentConfig, loadPrompt } from "../../../ai/client";
 
-interface SelectedClaim {
-  type?: string; // "independent claim" or "dependent claim N"
+interface SelectedKeyConcept {
+  type?: string; // "independent" or "dependent N"
   text?: string;
   number?: number;
-  parentClaim?: number | null;
+  parentConcept?: number | null;
 }
 
 export interface ProvisionalPayload {
@@ -13,10 +13,10 @@ export interface ProvisionalPayload {
   coreIdea?: string;
   mainIdea?: string;
   expandedConcept?: string;
-  selectedClaims?: SelectedClaim[];
+  selectedKeyConcepts?: SelectedKeyConcept[];
 }
 
-interface ClaimGroup {
+interface KeyConceptGroup {
   independent: string;
   dependents: string[];
 }
@@ -26,9 +26,9 @@ interface ParsedInput {
   category: string;
   coreIdea: string;
   expandedConcept: string;
-  claimGroups: ClaimGroup[];
-  claimsText: string;
-  totalClaims: number;
+  keyConceptGroups: KeyConceptGroup[];
+  keyConceptsText: string;
+  totalKeyConcepts: number;
 }
 
 interface Sections {
@@ -51,31 +51,31 @@ function parsePayload(payload: ProvisionalPayload): ParsedInput {
   const coreIdea = payload.coreIdea || payload.mainIdea || "";
   const expandedConcept = payload.expandedConcept || "";
 
-  const claimGroups: ClaimGroup[] = [];
+  const keyConceptGroups: KeyConceptGroup[] = [];
   let currentIndependent: string | null = null;
   let dependents: string[] = [];
 
-  if (Array.isArray(payload.selectedClaims)) {
-    for (const claim of payload.selectedClaims) {
-      if (claim.type === "independent claim") {
+  if (Array.isArray(payload.selectedKeyConcepts)) {
+    for (const concept of payload.selectedKeyConcepts) {
+      if (concept.type === "independent") {
         if (currentIndependent != null) {
-          claimGroups.push({ independent: currentIndependent, dependents: dependents.slice() });
+          keyConceptGroups.push({ independent: currentIndependent, dependents: dependents.slice() });
         }
-        currentIndependent = claim.text || "";
+        currentIndependent = concept.text || "";
         dependents = [];
       } else {
-        dependents.push(claim.text || "");
+        dependents.push(concept.text || "");
       }
     }
     if (currentIndependent != null) {
-      claimGroups.push({ independent: currentIndependent, dependents: dependents.slice() });
+      keyConceptGroups.push({ independent: currentIndependent, dependents: dependents.slice() });
     }
   }
 
-  const claimsText = claimGroups
+  const keyConceptsText = keyConceptGroups
     .map(
       (g, i) =>
-        `Independent Claim ${i + 1}:\n${g.independent}\n\nDependent Claims:\n${g.dependents.join("\n\n")}`,
+        `Primary Concept ${i + 1}:\n${g.independent}\n\nSupporting Concepts:\n${g.dependents.join("\n\n")}`,
     )
     .join("\n\n---\n\n");
 
@@ -84,9 +84,9 @@ function parsePayload(payload: ProvisionalPayload): ParsedInput {
     category,
     coreIdea,
     expandedConcept,
-    claimGroups,
-    claimsText,
-    totalClaims: payload.selectedClaims?.length || 0,
+    keyConceptGroups,
+    keyConceptsText,
+    totalKeyConcepts: payload.selectedKeyConcepts?.length || 0,
   };
 }
 
@@ -105,7 +105,7 @@ function titleUserPrompt(p: ParsedInput): string {
     `**CATEGORY:** ${p.category}\n\n` +
     `**CORE INNOVATION:**\n${p.coreIdea}\n\n` +
     `**EXPANDED CONCEPT:**\n${p.expandedConcept}\n\n` +
-    `**INDEPENDENT CLAIMS:**\n${p.claimsText}\n\n` +
+    `**KEY CONCEPTS:**\n${p.keyConceptsText}\n\n` +
     `---\n\n` +
     `**YOUR MISSION: PATENT TITLE**\n\n` +
     `Draft the title for a provisional patent application that will appear on the USPTO filing.\n\n` +
@@ -129,7 +129,7 @@ function backgroundUserPrompt(p: ParsedInput, s: Sections): string {
     `**CATEGORY:** ${p.category}\n\n` +
     `**CORE INNOVATION:**\n${p.coreIdea}\n\n` +
     `**EXPANDED CONCEPT:**\n${p.expandedConcept}\n\n` +
-    `**INDEPENDENT CLAIMS:**\n${p.claimsText}\n\n` +
+    `**KEY CONCEPTS:**\n${p.keyConceptsText}\n\n` +
     `---\n\n` +
     `**YOUR MISSION: BACKGROUND SECTION**\n\n` +
     `The background section establishes why this invention is necessary by documenting the deficiencies in existing solutions. Patent examiners use this section to understand the problem space and evaluate novelty.\n\n` +
@@ -174,7 +174,7 @@ function summaryUserPrompt(p: ParsedInput, s: Sections): string {
     `**PATENT TITLE:**\n${s.title}\n\n` +
     `**BACKGROUND SECTION (ALREADY WRITTEN):**\n${s.background}\n\n` +
     `**CORE INNOVATION:**\n${p.coreIdea}\n\n` +
-    `**INDEPENDENT CLAIMS:**\n${p.claimsText}\n\n` +
+    `**KEY CONCEPTS:**\n${p.keyConceptsText}\n\n` +
     `---\n\n` +
     `**YOUR MISSION: SUMMARY SECTION**\n\n` +
     `The summary presents the solution to the problems documented in the background. This is where you explain what the invention IS and how it addresses the deficiencies in prior art.\n\n` +
@@ -528,7 +528,7 @@ function ramificationsUserPrompt(p: ParsedInput, s: Sections): string {
   return (
     `**DETAILED DESCRIPTION (ALREADY WRITTEN):**\n${s.detailed_description}\n\n` +
     `**CORE INNOVATION:**\n${p.coreIdea}\n\n` +
-    `**INDEPENDENT CLAIMS:**\n${p.claimsText}\n\n` +
+    `**KEY CONCEPTS:**\n${p.keyConceptsText}\n\n` +
     `---\n\n` +
     `**YOUR MISSION: RAMIFICATIONS AND SCOPE SECTION**\n\n` +
     `The detailed description showed one way to build the invention. This section demonstrates the breadth of the invention by showing the full range of variations, alternatives, and applications. This maximizes patent scope and defensibility.\n\n` +
@@ -591,7 +591,7 @@ function abstractUserPrompt(p: ParsedInput, s: Sections): string {
   return (
     `**PATENT TITLE:**\n${s.title}\n\n` +
     `**SUMMARY:**\n${s.summary}\n\n` +
-    `**INDEPENDENT CLAIMS:**\n${p.claimsText}\n\n\n\n` +
+    `**KEY CONCEPTS:**\n${p.keyConceptsText}\n\n\n\n` +
     `---\n\n` +
     `**YOUR MISSION: PATENT ABSTRACT**\n\n` +
     `Write the abstract for this provisional patent application. The abstract is the first thing anyone reads and must provide a complete but concise overview.\n\n` +
@@ -637,7 +637,7 @@ function abstractFixerUserPrompt(args: {
     `**Title:** ${s.title}\n\n` +
     `**Core Innovation:** ${p.coreIdea}\n\n` +
     `**Technical Summary:** ${s.summary}\n\n` +
-    `**Legal Claims:** ${p.claimsText}\n\n` +
+    `**Key Concepts:** ${p.keyConceptsText}\n\n` +
     `---\n\n` +
     `**YOUR TASK:**\n\n` +
     `The abstract above is ${wordCount} words. USPTO maximum is 150 words.\n\n` +
@@ -669,7 +669,7 @@ function buildFormattedDocument(args: {
   summary: string;
   detailedDescription: string;
   ramifications: string;
-  claims: string[];
+  keyConcepts: string[];
 }): string {
   const sep = "═══════════════════════════════════════════════════════════════════";
   return [
@@ -703,8 +703,8 @@ function buildFormattedDocument(args: {
     "",
     sep,
     "",
-    "CLAIMS:",
-    args.claims.join("\n\n"),
+    "KEY CONCEPTS:",
+    args.keyConcepts.join("\n\n"),
   ].join("\n");
 }
 
@@ -788,14 +788,14 @@ export async function runProvisional(payload: ProvisionalPayload) {
     sections.abstract = abstract;
 
     // Final Assembly
-    const claimsArray: string[] = [];
-    let claimNumber = 1;
-    for (const group of parsed.claimGroups) {
-      claimsArray.push(`Claim ${claimNumber}: ${group.independent}`);
-      claimNumber++;
+    const keyConceptsArray: string[] = [];
+    let keyConceptNumber = 1;
+    for (const group of parsed.keyConceptGroups) {
+      keyConceptsArray.push(`${keyConceptNumber}. ${group.independent}`);
+      keyConceptNumber++;
       for (const dep of group.dependents) {
-        claimsArray.push(`Claim ${claimNumber}: ${dep}`);
-        claimNumber++;
+        keyConceptsArray.push(`${keyConceptNumber}. ${dep}`);
+        keyConceptNumber++;
       }
     }
 
@@ -816,11 +816,11 @@ export async function runProvisional(payload: ProvisionalPayload) {
       summary: sections.summary || "",
       detailedDescription: sections.detailed_description || "",
       ramifications: sections.ramifications_and_scope || "",
-      claims: claimsArray,
+      keyConcepts: keyConceptsArray,
     });
 
     console.log(
-      `>>> [M5-5a PROVISIONAL] <<< done — ${claimsArray.length} claims, ${totalWords} total words (abstract ${wordCounts.abstract})`,
+      `>>> [M5-5a PROVISIONAL] <<< done — ${keyConceptsArray.length} key concepts, ${totalWords} total words (abstract ${wordCounts.abstract})`,
     );
 
     return {
@@ -829,19 +829,19 @@ export async function runProvisional(payload: ProvisionalPayload) {
       category: parsed.category,
       coreIdea: parsed.coreIdea,
       expandedConcept: parsed.expandedConcept,
-      claimGroups: parsed.claimGroups,
+      keyConceptGroups: parsed.keyConceptGroups,
       title: sections.title || "",
       abstract: sections.abstract || "",
       background: sections.background || "",
       summary: sections.summary || "",
       detailed_description: sections.detailed_description || "",
       ramifications_and_scope: sections.ramifications_and_scope || "",
-      claims: claimsArray,
-      claims_count: claimsArray.length,
+      keyConcepts: keyConceptsArray,
+      keyConcepts_count: keyConceptsArray.length,
       word_counts: wordCounts,
       total_words: totalWords,
       formatted_document: formattedDocument,
-      broad_claims_glossary: [] as string[],
+      broad_concepts_glossary: [] as string[],
       timestamp: new Date().toISOString(),
     };
   } catch (error: any) {

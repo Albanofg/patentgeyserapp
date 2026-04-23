@@ -355,7 +355,7 @@ export default function Agent3() {
                         <div>
                           <h4 className="font-semibold mb-2">Continue Forward</h4>
                           <p className="text-sm text-muted-foreground mb-4">
-                            Proceed to white space analysis to identify unique aspects and strengthen claims
+                            Proceed to white space analysis to identify unique aspects and strengthen key concepts
                           </p>
                         </div>
                         <Button

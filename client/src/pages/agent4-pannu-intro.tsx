@@ -253,9 +253,9 @@ export default function Agent4PannuIntro() {
                   <div className="flex items-start gap-3">
                     <Badge variant="outline" className="mt-0.5">1</Badge>
                     <div>
-                      <p className="text-sm font-medium">Answer Questions for Each Claim</p>
+                      <p className="text-sm font-medium">Answer Questions for Each Key Concept</p>
                       <p className="text-sm text-muted-foreground">
-                        For each independent claim in your patent, you'll answer three specific questions 
+                        For each primary key concept in your patent, you'll answer three specific questions
                         about your contribution - one for each Pannu factor.
                       </p>
                     </div>
@@ -266,7 +266,7 @@ export default function Agent4PannuIntro() {
                       <p className="text-sm font-medium">Use AI Assistance (Optional)</p>
                       <p className="text-sm text-muted-foreground">
                         If you need help formulating your answers, you can click "Ask AI" to get 
-                        suggestions based on your claim and the specific question.
+                        suggestions based on your key concept and the specific question.
                       </p>
                     </div>
                   </div>
@@ -334,7 +334,7 @@ export default function Agent4PannuIntro() {
               onClick={() => setLocation(`/project/${projectId}/agent/4b`)}
               data-testid="button-back"
             >
-              Back to Claims
+              Back to Key Concepts
             </Button>
 
             <div className="flex items-center gap-3">

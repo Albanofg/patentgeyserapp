@@ -53,7 +53,7 @@ interface PerConceptContext {
   differentiationLogic: string;
 }
 
-interface ParsedClaim {
+interface ParsedKeyConcept {
   number: number;
   type: "independent" | "dependent";
   claimType: string;
@@ -62,7 +62,7 @@ interface ParsedClaim {
   text: string;
 }
 
-interface ParsedClaimSet {
+interface ParsedKeyConceptSet {
   concept_id: string;
   concept_text: string;
   category: string;
@@ -71,11 +71,11 @@ interface ParsedClaimSet {
   complexity_level: "simple" | "moderate" | "complex";
   claim_type: string;
   inventive_concept: string;
-  claims: ParsedClaim[];
+  claims: ParsedKeyConcept[];
   claims_count: number;
-  independent_claims: ParsedClaim[];
+  independent_claims: ParsedKeyConcept[];
   independent_claims_count: number;
-  dependent_claims: ParsedClaim[];
+  dependent_claims: ParsedKeyConcept[];
   dependent_claims_count: number;
   formatting_violations: Array<{ claim: number; issue: string }>;
   has_violations: boolean;
@@ -170,12 +170,11 @@ function buildUserMessage(args: {
     `**Invention Category:** ${category}\n\n` +
     `**Core Innovation:**\n${mainIdea}\n\n` +
     `**Technical Specification:**\n${expandedConcept}\n\n` +
-    `**Specific Concept for This Claim Set:**\n${conceptText}\n\n` +
+    `**Specific Concept to Document:**\n${conceptText}\n\n` +
     priorArtAware +
     differentiation +
     `\n---\n\n` +
-    `**YOUR MISSION:**\n\n` +
-    `Draft a comprehensive, technically detailed claim set that fully captures the innovation described above. Generate only claims that add meaningful strategic value - no padding, no redundancy. Follow the system instructions exactly for formatting, technical depth, and output structure.`
+    `Document the invention above following your system instructions exactly. Produce one plain sentence describing what the invention is, then a numbered **Key Concepts** list where each item is a self-contained paragraph covering one novel technical element. No preamble, no closing.`
   );
 }
 
@@ -185,96 +184,76 @@ function parseClaimsOutput(
   conceptText: string,
   category: string,
   index: number,
-): ParsedClaimSet {
-  const output = rawOutput || "";
+): ParsedKeyConceptSet {
+  const output = (rawOutput || "").trim();
 
-  // Complexity Assessment
-  const complexityMatch = output.match(/\*\*Complexity Assessment\*\*\s*\n+([^\n*]+)/i);
-  const complexityAssessment = complexityMatch ? complexityMatch[1].trim() : "";
-  let complexityLevel: "simple" | "moderate" | "complex" = "moderate";
-  const cLow = complexityAssessment.toLowerCase();
-  if (cLow.includes("simple")) complexityLevel = "simple";
-  else if (cLow.includes("complex")) complexityLevel = "complex";
+  // Split the output around the **Key Concepts** heading.
+  // Before the heading: one intro sentence ("what the invention is").
+  // After the heading: a numbered list of paragraphs, one per concept.
+  const headingMatch = output.match(/\*\*\s*Key\s+Concepts\s*\*\*/i);
 
-  // Claim Type
-  const claimTypeMatch = output.match(/\*\*Claim Type:\s*(SYSTEM|METHOD)\*\*/i);
-  const claimType = claimTypeMatch ? claimTypeMatch[1].toLowerCase() : "system";
-
-  // Inventive Concept
-  const inventiveConceptMatch = output.match(/\*\*Inventive Concept\*\*\s*\n+([^\n*]+)/i);
-  const inventiveConcept = inventiveConceptMatch ? inventiveConceptMatch[1].trim() : "";
-
-  // Claims
-  const claims: ParsedClaim[] = [];
-  const claimSections = output.split(/(?=\*\*Claim\s+\d+\s*\([^)]+\)\*\*)/i);
-
-  for (const section of claimSections) {
-    const headerMatch = section.match(/\*\*Claim\s+(\d+)\s*\(([^)]+)\)\*\*/i);
-    if (!headerMatch) continue;
-
-    const claimNumber = parseInt(headerMatch[1], 10);
-    const dependencyInfo = headerMatch[2].trim();
-
-    const textMatch = section.match(/\*\*Claim\s+\d+\s*\([^)]+\)\*\*\s*\n?([\s\S]*?)(?=\*\*|$)/i);
-    const claimText = textMatch
-      ? textMatch[1].trim().replace(/\n+/g, " ").replace(/\s+/g, " ")
-      : "";
-
-    const isIndependent = dependencyInfo.toLowerCase().includes("independent");
-    let parentClaim: number | null = null;
-    if (!isIndependent) {
-      const parentMatch = dependencyInfo.match(/(?:depends?\s+on|dependent\s+on)\s+claim\s+(\d+)/i);
-      if (parentMatch) parentClaim = parseInt(parentMatch[1], 10);
-      else {
-        const fallbackMatch = dependencyInfo.match(/claim\s+(\d+)/i);
-        parentClaim = fallbackMatch ? parseInt(fallbackMatch[1], 10) : 1;
-      }
-    }
-
-    claims.push({
-      number: claimNumber,
-      type: isIndependent ? "independent" : "dependent",
-      claimType,
-      parentClaim,
-      dependsOn: parentClaim,
-      text: claimText,
-    });
+  let inventionSentence = "";
+  let listBody = output;
+  if (headingMatch && headingMatch.index !== undefined) {
+    inventionSentence = output.slice(0, headingMatch.index).trim();
+    listBody = output.slice(headingMatch.index + headingMatch[0].length).trim();
   }
 
-  // Violations
-  const violations: Array<{ claim: number; issue: string }> = [];
-  if (claims.length < 5) violations.push({ claim: 0, issue: `Too few claims: ${claims.length} (minimum 5)` });
-  if (claims.length > 10) violations.push({ claim: 0, issue: `Too many claims: ${claims.length} (maximum 10)` });
-  claims.forEach((claim) => {
-    const tl = claim.text.toLowerCase();
-    if (tl.includes("any preceding claim") || tl.includes("any of the preceding") || tl.includes("any one of claims") || tl.includes("any of claims")) {
-      violations.push({ claim: claim.number, issue: 'Uses prohibited "any preceding claim" language' });
-    }
-    if (tl.match(/system,?\s*method,?\s*(or|and)\s*medium/i) || tl.match(/method,?\s*system,?\s*(or|and)/i)) {
-      violations.push({ claim: claim.number, issue: "Uses mixed claim types (system, method, or medium)" });
-    }
-    if (claim.text.match(/claims?\s+\d+\s*[-–—]\s*\d+/i) || claim.text.match(/claims?\s+\d+\s*(?:to|through)\s+\d+/i)) {
-      violations.push({ claim: claim.number, issue: "Uses claim range reference instead of specific claim" });
-    }
-    if (claim.type === "dependent") {
-      const claimRefs = claim.text.match(/(?:the\s+)?(?:system|method)\s+of\s+claim\s+(\d+)/gi) || [];
-      if (claimRefs.length === 0) violations.push({ claim: claim.number, issue: "Dependent claim does not reference a parent claim" });
-      else if (claimRefs.length > 1) violations.push({ claim: claim.number, issue: "Dependent claim references multiple claims" });
-    }
-  });
+  // Strip a leading stray heading line that some models emit.
+  inventionSentence = inventionSentence
+    .replace(/^\*\*[^*]+\*\*\s*\n?/g, "")
+    .replace(/^#+\s.*\n?/g, "")
+    .trim();
 
-  const independentClaims = claims.filter((c) => c.type === "independent");
-  const dependentClaims = claims.filter((c) => c.type === "dependent");
+  // Parse numbered list items. Split the body on a newline that is immediately
+  // followed by an item marker (digits, then "." or ")", then a space).
+  const parseNumberedList = (body: string): ParsedKeyConcept[] => {
+    const out: ParsedKeyConcept[] = [];
+    if (!body) return out;
+    const chunks = body.split(/\n(?=\s*\d+[.)]\s+)/);
+    for (const chunk of chunks) {
+      const m = chunk.match(/^\s*(\d+)[.)]\s+([\s\S]*)$/);
+      if (!m) continue;
+      const number = parseInt(m[1], 10);
+      const text = m[2].replace(/\s+/g, " ").trim();
+      if (!text) continue;
+      out.push({
+        number,
+        type: "independent",
+        claimType: "key-concept",
+        parentClaim: null,
+        dependsOn: null,
+        text,
+      });
+    }
+    return out;
+  };
+
+  let claims = parseNumberedList(listBody);
+
+  // Fallback: if the heading was missing and no items came out of the body slice,
+  // try the whole output. Capture pre-list text as the invention sentence.
+  if (claims.length === 0) {
+    claims = parseNumberedList(output);
+    if (claims.length > 0 && !inventionSentence) {
+      const firstNumMatch = output.match(/\n\s*\d+[.)]\s+/) || output.match(/^\s*\d+[.)]\s+/);
+      if (firstNumMatch && firstNumMatch.index !== undefined) {
+        inventionSentence = output.slice(0, firstNumMatch.index).trim();
+      }
+    }
+  }
+
+  const violations: Array<{ claim: number; issue: string }> = [];
+  if (claims.length === 0) {
+    violations.push({ claim: 0, issue: "No key concepts parsed from model output" });
+  }
+
+  const independentClaims = claims;
+  const dependentClaims: ParsedKeyConcept[] = [];
 
   const dependencyTree: Record<string, { claim: number; children: number[] }> = {};
   claims.forEach((c) => {
-    if (c.type === "independent") dependencyTree[c.number] = { claim: c.number, children: [] };
-  });
-  dependentClaims.forEach((c) => {
-    const parent = c.parentClaim;
-    if (parent == null) return;
-    if (!dependencyTree[parent]) dependencyTree[parent] = { claim: parent, children: [] };
-    dependencyTree[parent].children.push(c.number);
+    dependencyTree[c.number] = { claim: c.number, children: [] };
   });
 
   return {
@@ -282,16 +261,16 @@ function parseClaimsOutput(
     concept_text: conceptText,
     category,
     index,
-    complexity_assessment: complexityAssessment,
-    complexity_level: complexityLevel,
-    claim_type: claimType,
-    inventive_concept: inventiveConcept,
+    complexity_assessment: "",
+    complexity_level: "moderate",
+    claim_type: "key-concept",
+    inventive_concept: inventionSentence,
     claims,
     claims_count: claims.length,
     independent_claims: independentClaims,
     independent_claims_count: independentClaims.length,
     dependent_claims: dependentClaims,
-    dependent_claims_count: dependentClaims.length,
+    dependent_claims_count: 0,
     formatting_violations: violations,
     has_violations: violations.length > 0,
     is_valid: violations.length === 0,
@@ -303,7 +282,7 @@ function parseClaimsOutput(
 }
 
 export async function runClaims(payload: ClaimsPayload) {
-  console.log(">>> [M4-4b CLAIMS] <<< generating claim sets for", payload.selectedIdeas?.length, "concepts");
+  console.log(">>> [M4-4b CLAIMS] <<< generating key concepts for", payload.selectedIdeas?.length, "concepts");
 
   try {
     if (!Array.isArray(payload.selectedIdeas) || payload.selectedIdeas.length === 0) {
@@ -347,7 +326,7 @@ export async function runClaims(payload: ClaimsPayload) {
     );
 
     console.log(
-      `>>> [M4-4b CLAIMS] <<< done — ${results.length} concepts, ${results.reduce((s, r) => s + r.claims_count, 0)} total claims`,
+      `>>> [M4-4b CLAIMS] <<< done — ${results.length} concepts, ${results.reduce((s, r) => s + r.claims_count, 0)} total key concepts`,
     );
 
     return {

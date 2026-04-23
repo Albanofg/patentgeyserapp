@@ -4,8 +4,6 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Badge } from "@/components/ui/badge";
 import ReactMarkdown from "react-markdown";
 import {
   AlertDialog,
@@ -20,7 +18,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { AgentHeader } from "@/components/agent-header";
 const MDEditor = lazy(() => import('@uiw/react-md-editor'));
-import { Loader2, Download, FileText, Image as ImageIcon, CheckCircle2, Save, RefreshCw, ExternalLink, Sparkles, Pencil, Users, ArrowRight } from "lucide-react";
+import { Loader2, Download, FileText, Image as ImageIcon, CheckCircle2, Save, RefreshCw, ExternalLink, Pencil, Users, ArrowRight } from "lucide-react";
 import type { Project } from "@shared/schema";
 
 export default function Agent5() {
@@ -30,7 +28,6 @@ export default function Agent5() {
   const projectId = params?.id;
   const [showRegenerateDialog, setShowRegenerateDialog] = useState(false);
   const [showDownloadWarning, setShowDownloadWarning] = useState(false);
-  const [activeMainTab, setActiveMainTab] = useState('specification');
   const [activeSpecSection, setActiveSpecSection] = useState('title');
   const [editingSection, setEditingSection] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
@@ -242,71 +239,6 @@ export default function Agent5() {
     },
   });
 
-  const generateBroaderClaimsMutation = useMutation({
-    mutationFn: async () => {
-      return await apiRequest("POST", `/api/projects/${projectId}/generate-broader-claims`, {});
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 5] });
-      await queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 4] });
-      toast({
-        title: "Broader claim ideas generated!",
-        description: "View them in the 'Broad Claim Ideas' tab to compare and select.",
-      });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Couldn't generate broader claim ideas",
-        description: "Please try again in a moment.",
-      });
-    },
-  });
-
-  const selectClaimTypeMutation = useMutation({
-    mutationFn: async (claimType: 'specific' | 'broad') => {
-      return await apiRequest("POST", `/api/projects/${projectId}/select-claim-type`, { claimType });
-    },
-    onMutate: async (claimType) => {
-      // Cancel any outgoing refetches
-      await queryClient.cancelQueries({ queryKey: ["/api/projects", projectId, "agent", 5] });
-      
-      // Snapshot the previous value
-      const previousData = queryClient.getQueryData(["/api/projects", projectId, "agent", 5]);
-      
-      // Optimistically update to the new value
-      queryClient.setQueryData(["/api/projects", projectId, "agent", 5], (old: any) => {
-        if (!old) return old;
-        return {
-          ...old,
-          data: {
-            ...old.data,
-            selectedClaimType: claimType
-          }
-        };
-      });
-      
-      return { previousData };
-    },
-    onSuccess: async (_, claimType) => {
-      await queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 5] });
-      await queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "specification-sections"] });
-      toast({
-        title: claimType === 'broad' ? "Broader claim ideas selected!" : "Specific claim ideas selected!",
-        description: "Your selection will be used in the final draft.",
-      });
-    },
-    onError: (error: Error, _, context) => {
-      // Rollback to previous value on error
-      if (context?.previousData) {
-        queryClient.setQueryData(["/api/projects", projectId, "agent", 5], context.previousData);
-      }
-      toast({
-        title: "Couldn't save selection",
-        description: "Please try again in a moment.",
-      });
-    },
-  });
-
   if (projectLoading || !project) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -470,23 +402,8 @@ export default function Agent5() {
     }).filter(c => c.length > 0);
   };
 
-  const specificClaimsFormatted = parseClaimsForDisplay(agent5Obj?.specificClaims || agent4Obj?.selectedClaims);
-  const broadClaimsFormatted = parseClaimsForDisplay(agent5Obj?.broadClaims);
-
-  // Final cleanup helper to remove any remaining asterisks used as bullets
-  const cleanClaimText = (text: string): string => {
-    if (!text) return text;
-    return text
-      // Remove any asterisks followed by whitespace
-      .replace(/\*\s+/g, ' ')
-      // Remove asterisks preceded by punctuation
-      .replace(/([;:,.])\s*\*/g, '$1 ')
-      // Remove standalone asterisks surrounded by spaces
-      .replace(/\s\*\s/g, ' ')
-      // Normalize whitespace
-      .replace(/\s{2,}/g, ' ')
-      .trim();
-  };
+  const specificKeyConceptsFormatted = parseClaimsForDisplay(agent5Obj?.specificKeyConcepts || agent4Obj?.selectedKeyConcepts);
+  const hasKeyConcepts = specificKeyConceptsFormatted.length > 0 || (Array.isArray(agent4Obj?.selectedKeyConcepts) && agent4Obj.selectedKeyConcepts.length > 0);
 
   // Function to download diagram image
   const downloadDiagram = async (imageUrl: string, title: string, chartNumber: number) => {
@@ -530,28 +447,9 @@ export default function Agent5() {
             </div>
             <h2 className="text-2xl sm:text-3xl font-bold">Provisional Draft Ready for Review!</h2>
             <p className="text-muted-foreground text-sm sm:text-base max-w-2xl mx-auto px-2">
-              Download your draft to review it completely. Use the tabs below to compare and select between claim ideas and export your draft for practitioner review.
+              Download your draft to review it and export for practitioner review.
             </p>
             <div className="flex flex-col sm:flex-row flex-wrap gap-3 sm:gap-4 justify-center pt-4 px-2">
-              <Button
-                size="lg"
-                className="w-full sm:w-auto text-base"
-                data-testid="button-generate-broader-claims"
-                onClick={() => generateBroaderClaimsMutation.mutate()}
-                disabled={generateBroaderClaimsMutation.isPending}
-              >
-                {generateBroaderClaimsMutation.isPending ? (
-                  <>
-                    <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-                    Generating Claim Ideas...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="h-5 w-5 mr-2" />
-                    {agent5Obj?.broadClaims ? 'Re-Generate Broad Claim Ideas' : 'Generate Broad Claim Ideas'}
-                  </>
-                )}
-              </Button>
               <Button
                 size="lg"
                 className="w-full sm:w-auto text-base"
@@ -576,15 +474,22 @@ export default function Agent5() {
                 className="w-full sm:w-auto text-base"
                 data-testid="button-download-draft"
                 onClick={() => {
+                  if (!hasKeyConcepts) {
+                    toast({
+                      title: "Create your key concepts first",
+                      description: "You must select key concepts before downloading the final application.",
+                    });
+                    setLocation(`/project/${projectId}/agent/4b`);
+                    return;
+                  }
                   const missingDiagrams = diagrams.length === 0;
-                  const missingBroadClaims = !agent5Obj?.broadClaims;
-                  if (missingDiagrams || missingBroadClaims) {
+                  if (missingDiagrams) {
                     setShowDownloadWarning(true);
                   } else {
                     exportDOCXMutation.mutate();
                   }
                 }}
-                disabled={exportDOCXMutation.isPending}
+                disabled={exportDOCXMutation.isPending || !hasKeyConcepts}
               >
                 {exportDOCXMutation.isPending ? (
                   <>
@@ -608,45 +513,11 @@ export default function Agent5() {
                 <CardTitle className="text-lg sm:text-2xl">Provisional Draft</CardTitle>
               </div>
               <CardDescription className="text-sm">
-                Review your patent application summary and claim ideas
-                {agent5Obj?.selectedClaimType && (
-                  <Badge variant="outline" className="ml-2">
-                    {agent5Obj.selectedClaimType === 'broad' ? 'Broader Claim Ideas Selected' : 'Specific Claim Ideas Selected'}
-                  </Badge>
-                )}
+                Review your patent application summary and key concept ideas
               </CardDescription>
             </CardHeader>
             <CardContent className="px-4 sm:px-6">
-              <Tabs value={activeMainTab} onValueChange={setActiveMainTab} className="w-full">
-                <div className="block sm:hidden mb-4">
-                  <select
-                    data-testid="select-main-tab-mobile"
-                    value={activeMainTab}
-                    onChange={(e) => setActiveMainTab(e.target.value)}
-                    className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm"
-                  >
-                    <option value="specification">Specification</option>
-                    <option value="specific">
-                      Specific Claim Ideas {agent5Obj?.selectedClaimType === 'specific' ? '\u2713' : ''}
-                    </option>
-                    <option value="broad">
-                      Broad Claim Ideas {agent5Obj?.selectedClaimType === 'broad' ? '\u2713' : ''}
-                    </option>
-                  </select>
-                </div>
-                <TabsList className="hidden sm:grid w-full grid-cols-3 mb-4">
-                  <TabsTrigger value="specification" data-testid="tab-specification">Specification</TabsTrigger>
-                  <TabsTrigger value="specific" data-testid="tab-specific-claims">
-                    Specific Claim Ideas
-                    {agent5Obj?.selectedClaimType === 'specific' && <span className="ml-1 text-primary">&#10003;</span>}
-                  </TabsTrigger>
-                  <TabsTrigger value="broad" data-testid="tab-broad-claims">
-                    Broad Claim Ideas
-                    {agent5Obj?.selectedClaimType === 'broad' && <span className="ml-1 text-primary">&#10003;</span>}
-                  </TabsTrigger>
-                </TabsList>
-
-                <TabsContent value="specification" className="space-y-4">
+              <div className="space-y-4">
                   <div className="flex justify-end">
                     <Button
                       variant="secondary"
@@ -693,7 +564,7 @@ export default function Agent5() {
                             <option value="detailed_description">4. Detailed Description</option>
                             <option value="ramifications_and_scope">5. Ramifications & Scope</option>
                             <option value="abstract">6. Abstract</option>
-                            <option value="claims">7. Claims</option>
+                            <option value="claims">7. Key Concepts</option>
                           </select>
                         </div>
                         <div className="hidden md:flex md:flex-col gap-1">
@@ -704,7 +575,7 @@ export default function Agent5() {
                             { key: 'detailed_description', label: '4. Detailed Description' },
                             { key: 'ramifications_and_scope', label: '5. Ramifications & Scope' },
                             { key: 'abstract', label: '6. Abstract' },
-                            { key: 'claims', label: '7. Claims' },
+                            { key: 'claims', label: '7. Key Concepts' },
                           ].map((tab) => (
                             <button
                               key={tab.key}
@@ -803,137 +674,7 @@ export default function Agent5() {
                       </div>
                     </div>
                   )}
-                </TabsContent>
-
-                <TabsContent value="specific" className="space-y-4">
-                  <div className="flex justify-end">
-                    <Button
-                      variant={agent5Obj?.selectedClaimType === 'specific' ? 'default' : 'secondary'}
-                      size="sm"
-                      onClick={() => selectClaimTypeMutation.mutate('specific')}
-                      disabled={selectClaimTypeMutation.isPending || agent5Obj?.selectedClaimType === 'specific'}
-                      data-testid="button-select-specific-claims"
-                    >
-                      {selectClaimTypeMutation.isPending ? (
-                        <>
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          Selecting...
-                        </>
-                      ) : agent5Obj?.selectedClaimType === 'specific' ? (
-                        <>
-                          <CheckCircle2 className="h-4 w-4 mr-2" />
-                          Selected
-                        </>
-                      ) : (
-                        'Select These Claim Ideas'
-                      )}
-                    </Button>
-                  </div>
-                  <div className="bg-muted p-3 sm:p-6 rounded-lg max-h-[400px] sm:max-h-[600px] overflow-y-auto">
-                    {specificClaimsFormatted.length > 0 ? (
-                      <div className="space-y-4">
-                        {specificClaimsFormatted.map((claim, index) => (
-                          <div key={index} className="border-b border-border pb-3 last:border-0 last:pb-0">
-                            <p className="text-xs sm:text-sm leading-relaxed">
-                              <span className="font-semibold text-primary">Claim Idea {index + 1}:</span> {cleanClaimText(claim)}
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-muted-foreground text-sm">No specific claim ideas available.</p>
-                    )}
-                  </div>
-                </TabsContent>
-
-                <TabsContent value="broad" className="space-y-4">
-                  {agent5Obj?.broadClaims ? (
-                    <>
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => generateBroaderClaimsMutation.mutate()}
-                          disabled={generateBroaderClaimsMutation.isPending}
-                          data-testid="button-regenerate-broad-claims"
-                        >
-                          {generateBroaderClaimsMutation.isPending ? (
-                            <>
-                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                              Re-Generating...
-                            </>
-                          ) : (
-                            <>
-                              <RefreshCw className="h-4 w-4 mr-2" />
-                              Re-Generate Broad Claim Ideas
-                            </>
-                          )}
-                        </Button>
-                        <Button
-                          variant={agent5Obj?.selectedClaimType === 'broad' ? 'default' : 'secondary'}
-                          size="sm"
-                          onClick={() => selectClaimTypeMutation.mutate('broad')}
-                          disabled={selectClaimTypeMutation.isPending || agent5Obj?.selectedClaimType === 'broad'}
-                          data-testid="button-select-broad-claims"
-                        >
-                          {selectClaimTypeMutation.isPending ? (
-                            <>
-                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                              Selecting...
-                            </>
-                          ) : agent5Obj?.selectedClaimType === 'broad' ? (
-                            <>
-                              <CheckCircle2 className="h-4 w-4 mr-2" />
-                              Selected
-                            </>
-                          ) : (
-                            'Select These Claim Ideas'
-                          )}
-                        </Button>
-                      </div>
-                      <div className="bg-muted p-3 sm:p-6 rounded-lg max-h-[400px] sm:max-h-[600px] overflow-y-auto">
-                        {broadClaimsFormatted.length > 0 ? (
-                          <div className="space-y-4">
-                            {broadClaimsFormatted.map((claim, index) => (
-                              <div key={index} className="border-b border-border pb-3 last:border-0 last:pb-0">
-                                <p className="text-xs sm:text-sm leading-relaxed">
-                                  <span className="font-semibold text-primary">Claim Idea {index + 1}:</span> {cleanClaimText(claim)}
-                                </p>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="text-muted-foreground text-sm">Claim ideas could not be parsed. Raw data available.</p>
-                        )}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="bg-muted p-6 rounded-lg text-center">
-                      <Sparkles className="h-10 w-10 text-muted-foreground mx-auto mb-4" />
-                      <p className="text-muted-foreground text-sm mb-4">
-                        Broader claim ideas haven't been generated yet. Generate them to explore a broader technical scope for your draft.
-                      </p>
-                      <Button
-                        onClick={() => generateBroaderClaimsMutation.mutate()}
-                        disabled={generateBroaderClaimsMutation.isPending}
-                        data-testid="button-generate-broader-claims-tab"
-                      >
-                        {generateBroaderClaimsMutation.isPending ? (
-                          <>
-                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                            Generating Broader Claim Ideas...
-                          </>
-                        ) : (
-                          <>
-                            <Sparkles className="h-4 w-4 mr-2" />
-                            Generate Broader Claim Ideas
-                          </>
-                        )}
-                      </Button>
-                    </div>
-                  )}
-                </TabsContent>
-              </Tabs>
+              </div>
             </CardContent>
           </Card>
 
@@ -1080,9 +821,9 @@ export default function Agent5() {
               <div>
                 <div className="font-medium text-sm">Find a Patent Practitioner</div>
                 <div className="text-xs text-muted-foreground">
-                  {diagrams.length > 0 && agent5Obj?.broadClaims
+                  {diagrams.length > 0
                     ? "Match your invention with registered patent practitioners"
-                    : "Generate drawings and broad claims first to unlock"}
+                    : "Generate drawings first to unlock"}
                 </div>
               </div>
             </div>
@@ -1125,9 +866,6 @@ export default function Agent5() {
                 <ul className="list-disc pl-5 space-y-1">
                   {diagrams.length === 0 && (
                     <li data-testid="text-missing-diagrams">Technical diagrams</li>
-                  )}
-                  {!agent5Obj?.broadClaims && (
-                    <li data-testid="text-missing-broad-claims">Broad claim ideas</li>
                   )}
                 </ul>
                 <span className="block">We recommend generating these before downloading for a more complete draft. You can still download now if you prefer.</span>
