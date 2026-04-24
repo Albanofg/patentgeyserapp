@@ -27,8 +27,21 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { FileText, Plus, Loader2, Trash2, Edit } from "lucide-react";
-import type { Project, User } from "@shared/schema";
+import type { Project } from "@shared/schema";
 import logoUrl from "@/assets/geyser-logo.png";
+
+interface AuthUser {
+  id: string;
+  email: string;
+  kind: "legacy" | "paid";
+  credits?: number;
+  creditsUsed?: number;
+  creditsRemaining?: number;
+  embedUrl?: string | null;
+  twoFactorEnabled: boolean;
+  twoFactorVerified: boolean;
+  subscriptionStatus: string;
+}
 
 export default function Dashboard() {
   const [, setLocation] = useLocation();
@@ -39,11 +52,21 @@ export default function Dashboard() {
   const [createNameError, setCreateNameError] = useState("");
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [editedName, setEditedName] = useState("");
+  const [limitInfo, setLimitInfo] = useState<null | {
+    credits: number;
+    creditsUsed: number;
+    embedUrl: string | null;
+  }>(null);
+  const [buyDialogOpen, setBuyDialogOpen] = useState(false);
 
-  const { data: user, isLoading: userLoading } = useQuery<User>({
+  const { data: user, isLoading: userLoading } = useQuery<AuthUser>({
     queryKey: ["/api/auth/user"],
     retry: false,
   });
+
+  const isPaid = user?.kind === "paid";
+  const creditsRemaining = user?.creditsRemaining ?? 0;
+  const outOfCredits = isPaid && creditsRemaining <= 0;
 
   const { data: projects, isLoading: projectsLoading } = useQuery<Project[]>({
     queryKey: ["/api/projects"],
@@ -65,6 +88,7 @@ export default function Dashboard() {
     },
     onSuccess: (newProject) => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
       toast({
         title: "Project created!",
         description: "Starting your patent application journey.",
@@ -74,11 +98,21 @@ export default function Dashboard() {
       setCreateNameError("");
       setLocation(`/project/${newProject.id}/agent/1`);
     },
-    onError: (error: Error) => {
+    onError: (error: any) => {
+      if (error?.body?.code === "PROJECT_LIMIT_REACHED") {
+        setLimitInfo({
+          credits: error.body.credits,
+          creditsUsed: error.body.creditsUsed,
+          embedUrl: error.body.embedUrl || null,
+        });
+        setShowCreateDialog(false);
+        setNewProjectName("");
+        setCreateNameError("");
+        return;
+      }
       toast({
         title: "Failed to create project",
         description: error.message,
-        // Softer UX - no red banner
       });
     },
   });
@@ -181,15 +215,37 @@ export default function Dashboard() {
               </p>
             </div>
           </div>
-          <Button
-            data-testid="button-create-project"
-            size="default"
-            className="w-full sm:w-auto"
-            onClick={() => setShowCreateDialog(true)}
-          >
-            <Plus className="h-5 w-5 mr-2" />
-            New Project
-          </Button>
+          <div className="flex items-center gap-3 w-full sm:w-auto">
+            {isPaid && (
+              <span
+                className="text-sm text-muted-foreground whitespace-nowrap"
+                data-testid="text-credits-remaining"
+              >
+                {creditsRemaining} project credit{creditsRemaining === 1 ? "" : "s"}
+              </span>
+            )}
+            {outOfCredits ? (
+              <Button
+                data-testid="button-buy-credits"
+                size="default"
+                className="w-full sm:w-auto"
+                onClick={() => setBuyDialogOpen(true)}
+              >
+                <Plus className="h-5 w-5 mr-2" />
+                Buy more credits
+              </Button>
+            ) : (
+              <Button
+                data-testid="button-create-project"
+                size="default"
+                className="w-full sm:w-auto"
+                onClick={() => setShowCreateDialog(true)}
+              >
+                <Plus className="h-5 w-5 mr-2" />
+                New Project
+              </Button>
+            )}
+          </div>
         </div>
 
         {projectsLoading ? (
@@ -366,6 +422,48 @@ export default function Dashboard() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* Buy Credits Dialog (embedded GHL order form) */}
+        {(() => {
+          const open = buyDialogOpen || !!limitInfo;
+          const embedUrl = limitInfo?.embedUrl ?? user?.embedUrl ?? null;
+          const close = () => { setBuyDialogOpen(false); setLimitInfo(null); };
+          return (
+            <Dialog open={open} onOpenChange={(v) => !v && close()}>
+              <DialogContent
+                data-testid="dialog-buy-credits"
+                className="max-w-5xl w-[95vw] sm:w-[90vw] max-h-[92vh] flex flex-col p-0 gap-0 overflow-hidden"
+              >
+                <DialogHeader className="p-6 pb-3 shrink-0">
+                  <DialogTitle>{limitInfo ? "You're out of credits" : "Buy project credits"}</DialogTitle>
+                  <DialogDescription>
+                    {limitInfo
+                      ? `You've used ${limitInfo.creditsUsed} of ${limitInfo.credits} credit${limitInfo.credits === 1 ? "" : "s"}. Purchase more to create another project.`
+                      : "Each credit lets you create one project. Single or 5-pack bundle available."}
+                  </DialogDescription>
+                </DialogHeader>
+                {/* Fixed beige background so the GHL form (designed for a light neutral) renders
+                    correctly in both light and dark app themes. */}
+                <div className="flex-1 overflow-auto bg-[#f5efe4] p-4">
+                  {embedUrl ? (
+                    <iframe
+                      src={embedUrl}
+                      title="Payment Form Patent Credits"
+                      className="w-full min-h-[70vh] border-none bg-transparent block"
+                    />
+                  ) : (
+                    <p className="text-sm text-neutral-700">
+                      Order form not yet configured. Please contact support.
+                    </p>
+                  )}
+                </div>
+                <DialogFooter className="p-4 shrink-0 border-t">
+                  <Button variant="outline" onClick={close}>Close</Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          );
+        })()}
 
         {/* Edit Project Dialog */}
         <Dialog open={!!editingProject} onOpenChange={(open) => {

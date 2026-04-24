@@ -1,4 +1,16 @@
 import { useState } from "react";
+
+function matchLabel(distanceScore: string | number | undefined): { label: string; variant: "default" | "secondary" | "outline" | "destructive" } | null {
+  if (distanceScore === undefined || distanceScore === null || distanceScore === "") return null;
+  const d = typeof distanceScore === "number" ? distanceScore : parseFloat(distanceScore);
+  if (Number.isNaN(d)) return null;
+  const similarity = 1 - d;
+  if (similarity >= 0.8) return { label: "High match", variant: "destructive" };
+  if (similarity >= 0.55) return { label: "Moderate match", variant: "default" };
+  if (similarity >= 0.3) return { label: "Some overlap", variant: "secondary" };
+  return { label: "Low match", variant: "outline" };
+}
+
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -304,6 +316,55 @@ export default function PriorArtCheck() {
                 </CardContent>
               </Card>
 
+              {(keyDifferentiators.length > 0 || claimsFocus.length > 0) && (
+                <div className="space-y-4">
+                  <h3 className="font-semibold">Strategic Analysis</h3>
+
+                  {keyDifferentiators.length > 0 && (
+                    <Card data-testid="card-key-differentiators">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm flex items-center gap-2">
+                          <Lightbulb className="h-4 w-4 text-primary" />
+                          Key Differentiators
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <ul className="space-y-2">
+                          {keyDifferentiators.map((item, idx) => (
+                            <li key={idx} className="text-sm flex items-start gap-2">
+                              <ChevronRight className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {claimsFocus.length > 0 && (
+                    <Card data-testid="card-claims-focus">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm flex items-center gap-2">
+                          <Target className="h-4 w-4 text-primary" />
+                          Key Concepts Focus
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <ul className="space-y-2">
+                          {claimsFocus.map((item, idx) => (
+                            <li key={idx} className="text-sm flex items-start gap-2">
+                              <ChevronRight className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </CardContent>
+                    </Card>
+                  )}
+                  <Separator />
+                </div>
+              )}
+
               <div>
                 <h3 className="font-semibold mb-3">
                   Prior Art Results ({results.length})
@@ -326,7 +387,7 @@ export default function PriorArtCheck() {
                       const patentNumber = patent.patent_number || patent.publication_number;
                       const patentUrl = getPatentUrl(rawUrl, patentNumber);
                       const patentTitle = patent.title || patent.patent_title || `Patent ${index + 1}`;
-                      
+
                       return (
                         <Card key={index} data-testid={`patent-result-${index}`}>
                           <CardContent className="p-4">
@@ -342,13 +403,16 @@ export default function PriorArtCheck() {
                               </p>
                             )}
                             <div className="flex flex-wrap items-center gap-2 mt-3">
-                              {patent.distance_score && (
-                                <Badge variant="outline" className="text-xs">
-                                  {Math.round((1 - parseFloat(patent.distance_score)) * 100)}% similar
-                                </Badge>
-                              )}
+                              {(() => {
+                                const m = matchLabel(patent.distance_score);
+                                return m ? (
+                                  <Badge variant={m.variant} className="text-xs">
+                                    {m.label}
+                                  </Badge>
+                                ) : null;
+                              })()}
                               {patentUrl && patentUrl !== '#' && (
-                                <a 
+                                <a
                                   href={patentUrl}
                                   target="_blank"
                                   rel="noopener noreferrer"
@@ -367,55 +431,6 @@ export default function PriorArtCheck() {
                   </div>
                 )}
               </div>
-
-              {(keyDifferentiators.length > 0 || claimsFocus.length > 0) && (
-                <div className="space-y-4 pt-4">
-                  <Separator />
-                  <h3 className="font-semibold">Strategic Analysis</h3>
-                  
-                  {keyDifferentiators.length > 0 && (
-                    <Card data-testid="card-key-differentiators">
-                      <CardHeader className="pb-2">
-                        <CardTitle className="text-sm flex items-center gap-2">
-                          <Lightbulb className="h-4 w-4 text-primary" />
-                          Key Differentiators
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent>
-                        <ul className="space-y-2">
-                          {keyDifferentiators.map((item, idx) => (
-                            <li key={idx} className="text-sm flex items-start gap-2">
-                              <ChevronRight className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
-                              <span>{item}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </CardContent>
-                    </Card>
-                  )}
-                  
-                  {claimsFocus.length > 0 && (
-                    <Card data-testid="card-claims-focus">
-                      <CardHeader className="pb-2">
-                        <CardTitle className="text-sm flex items-center gap-2">
-                          <Target className="h-4 w-4 text-primary" />
-                          Key Concepts Focus
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent>
-                        <ul className="space-y-2">
-                          {claimsFocus.map((item, idx) => (
-                            <li key={idx} className="text-sm flex items-start gap-2">
-                              <ChevronRight className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
-                              <span>{item}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </CardContent>
-                    </Card>
-                  )}
-                </div>
-              )}
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
@@ -564,6 +579,64 @@ export default function PriorArtCheck() {
 
                 <Separator className="my-6" />
 
+                {(keyDifferentiators.length > 0 || claimsFocus.length > 0) && (
+                  <>
+                    <h2 className="text-lg font-semibold mb-4">Strategic Analysis</h2>
+
+                    <div className="grid gap-4 md:grid-cols-2">
+                      {keyDifferentiators.length > 0 && (
+                        <Card data-testid="card-key-differentiators">
+                          <CardHeader className="pb-2">
+                            <CardTitle className="text-base flex items-center gap-2">
+                              <Lightbulb className="h-4 w-4 text-primary" />
+                              Key Differentiators
+                            </CardTitle>
+                            <CardDescription className="text-xs">
+                              What makes your invention unique
+                            </CardDescription>
+                          </CardHeader>
+                          <CardContent>
+                            <ul className="space-y-2">
+                              {keyDifferentiators.map((item, idx) => (
+                                <li key={idx} className="text-sm flex items-start gap-2">
+                                  <ChevronRight className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
+                                  <span>{item}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </CardContent>
+                        </Card>
+                      )}
+
+                      {claimsFocus.length > 0 && (
+                        <Card data-testid="card-claims-focus">
+                          <CardHeader className="pb-2">
+                            <CardTitle className="text-base flex items-center gap-2">
+                              <Target className="h-4 w-4 text-primary" />
+                              Key Concepts Focus
+                            </CardTitle>
+                            <CardDescription className="text-xs">
+                              Areas to emphasize in your patent key concepts
+                            </CardDescription>
+                          </CardHeader>
+                          <CardContent>
+                            <ul className="space-y-2">
+                              {claimsFocus.map((item, idx) => (
+                                <li key={idx} className="text-sm flex items-start gap-2">
+                                  <ChevronRight className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
+                                  <span>{item}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </CardContent>
+                        </Card>
+                      )}
+                    </div>
+
+                    <Separator className="my-6" />
+                  </>
+                )}
+
                 <h2 className="text-lg font-semibold mb-4">
                   Prior Art Results ({results.length})
                 </h2>
@@ -602,11 +675,14 @@ export default function PriorArtCheck() {
                               </p>
                             )}
                             <div className="flex items-center gap-2 mt-3">
-                              {patent.distance_score && (
-                                <Badge variant="outline">
-                                  {Math.round((1 - parseFloat(patent.distance_score)) * 100)}% similar
-                                </Badge>
-                              )}
+                              {(() => {
+                                const m = matchLabel(patent.distance_score);
+                                return m ? (
+                                  <Badge variant={m.variant}>
+                                    {m.label}
+                                  </Badge>
+                                ) : null;
+                              })()}
                               {patentUrl && patentUrl !== '#' && (
                                 <a 
                                   href={patentUrl}
@@ -627,63 +703,6 @@ export default function PriorArtCheck() {
                   </div>
                 )}
 
-                {(keyDifferentiators.length > 0 || claimsFocus.length > 0) && (
-                  <>
-                    <Separator className="my-6" />
-                    
-                    <h2 className="text-lg font-semibold mb-4">Strategic Analysis</h2>
-                    
-                    <div className="grid gap-4 md:grid-cols-2">
-                      {keyDifferentiators.length > 0 && (
-                        <Card data-testid="card-key-differentiators">
-                          <CardHeader className="pb-2">
-                            <CardTitle className="text-base flex items-center gap-2">
-                              <Lightbulb className="h-4 w-4 text-primary" />
-                              Key Differentiators
-                            </CardTitle>
-                            <CardDescription className="text-xs">
-                              What makes your invention unique
-                            </CardDescription>
-                          </CardHeader>
-                          <CardContent>
-                            <ul className="space-y-2">
-                              {keyDifferentiators.map((item, idx) => (
-                                <li key={idx} className="text-sm flex items-start gap-2">
-                                  <ChevronRight className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
-                                  <span>{item}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          </CardContent>
-                        </Card>
-                      )}
-                      
-                      {claimsFocus.length > 0 && (
-                        <Card data-testid="card-claims-focus">
-                          <CardHeader className="pb-2">
-                            <CardTitle className="text-base flex items-center gap-2">
-                              <Target className="h-4 w-4 text-primary" />
-                              Key Concepts Focus
-                            </CardTitle>
-                            <CardDescription className="text-xs">
-                              Areas to emphasize in your patent key concepts
-                            </CardDescription>
-                          </CardHeader>
-                          <CardContent>
-                            <ul className="space-y-2">
-                              {claimsFocus.map((item, idx) => (
-                                <li key={idx} className="text-sm flex items-start gap-2">
-                                  <ChevronRight className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
-                                  <span>{item}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          </CardContent>
-                        </Card>
-                      )}
-                    </div>
-                  </>
-                )}
               </div>
             </ScrollArea>
           ) : (

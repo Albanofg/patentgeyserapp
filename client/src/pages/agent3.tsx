@@ -1,4 +1,13 @@
 import { useState, useEffect } from "react";
+
+function similarityLabel(score: number | undefined): { label: string; variant: "default" | "secondary" | "outline" | "destructive" } | null {
+  if (score === undefined || score === null || Number.isNaN(score)) return null;
+  if (score >= 0.8) return { label: "High match", variant: "destructive" };
+  if (score >= 0.55) return { label: "Moderate match", variant: "default" };
+  if (score >= 0.3) return { label: "Some overlap", variant: "secondary" };
+  return { label: "Low match", variant: "outline" };
+}
+
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -289,11 +298,12 @@ export default function Agent3() {
                                   </p>
                                 )}
                               </div>
-                              {item.relevanceScore !== undefined && (
-                                <Badge variant="secondary">
-                                  {Math.round(item.relevanceScore * 100)}% match
-                                </Badge>
-                              )}
+                              {(() => {
+                                const m = similarityLabel(item.relevanceScore);
+                                return m ? (
+                                  <Badge variant={m.variant}>{m.label}</Badge>
+                                ) : null;
+                              })()}
                             </div>
                             {item.summary && (
                               <p className="text-sm text-muted-foreground">{item.summary}</p>

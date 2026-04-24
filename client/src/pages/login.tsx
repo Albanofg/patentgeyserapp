@@ -143,13 +143,14 @@ export default function Login() {
             </button>
             <div className="text-sm text-muted-foreground">
               Don't have an account yet?{" "}
-              <a
-                href="https://patentgeyser.com/pricing"
-                data-testid="link-purchase"
+              <button
+                type="button"
+                data-testid="link-register"
+                onClick={() => setLocation("/auth/register")}
                 className="text-primary hover:underline font-medium"
               >
-                Purchase here
-              </a>
+                Create one
+              </button>
             </div>
           </div>
         </CardContent>

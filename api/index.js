@@ -24,10 +24,13 @@ __export(schema_exports, {
   ideaSnapshotsRelations: () => ideaSnapshotsRelations,
   insertAgentDataSchema: () => insertAgentDataSchema,
   insertIdeaSnapshotSchema: () => insertIdeaSnapshotSchema,
+  insertPaidUserSchema: () => insertPaidUserSchema,
   insertPannuRecordSchema: () => insertPannuRecordSchema,
   insertPriorArtSearchSchema: () => insertPriorArtSearchSchema,
   insertProjectSchema: () => insertProjectSchema,
   insertUserSchema: () => insertUserSchema,
+  paidUsers: () => paidUsers,
+  paidUsersRelations: () => paidUsersRelations,
   pannuRecords: () => pannuRecords,
   pannuRecordsRelations: () => pannuRecordsRelations,
   priorArtSearches: () => priorArtSearches,
@@ -61,9 +64,26 @@ var users = pgTable("users", {
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow()
 });
+var paidUsers = pgTable("paid_users", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  email: text("email").notNull().unique(),
+  password: text("password").notNull(),
+  twoFactorEnabled: boolean("two_factor_enabled").default(false),
+  twoFactorMethod: text("two_factor_method"),
+  totpSecret: text("totp_secret"),
+  pendingTwoFactorCode: text("pending_two_factor_code"),
+  pendingTwoFactorExpiry: timestamp("pending_two_factor_expiry"),
+  twoFactorVerifiedAt: timestamp("two_factor_verified_at"),
+  lastLoginAt: timestamp("last_login_at"),
+  // Credits = projects user can still create. New signups start at 0; purchases add to this.
+  projectLimit: integer("project_limit").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow()
+});
 var projects = pgTable("projects", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
+  paidUserId: varchar("paid_user_id").references(() => paidUsers.id, { onDelete: "cascade" }),
   title: text("title").notNull(),
   category: text("category").notNull(),
   // Software, SaaS, or Blockchain
@@ -109,12 +129,11 @@ var ideaSnapshots = pgTable("idea_snapshots", {
 });
 var priorArtSearches = pgTable("prior_art_searches", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
+  paidUserId: varchar("paid_user_id").references(() => paidUsers.id, { onDelete: "cascade" }),
   searchText: text("search_text").notNull(),
   results: jsonb("results"),
-  // Array of prior art results
   analysis: jsonb("analysis"),
-  // Analysis with key_differentiators, claims_focus, etc.
   createdAt: timestamp("created_at").defaultNow()
 });
 var pannuRecords = pgTable("pannu_records", {
@@ -142,10 +161,17 @@ var pannuRecords = pgTable("pannu_records", {
 var usersRelations = relations(users, ({ many }) => ({
   projects: many(projects)
 }));
+var paidUsersRelations = relations(paidUsers, ({ many }) => ({
+  projects: many(projects)
+}));
 var projectsRelations = relations(projects, ({ one, many }) => ({
   user: one(users, {
     fields: [projects.userId],
     references: [users.id]
+  }),
+  paidUser: one(paidUsers, {
+    fields: [projects.paidUserId],
+    references: [paidUsers.id]
   }),
   agentData: many(agentData),
   ideaSnapshots: many(ideaSnapshots),
@@ -180,7 +206,16 @@ var insertUserSchema = createInsertSchema(users).omit({
   createdAt: true,
   updatedAt: true
 });
+var insertPaidUserSchema = createInsertSchema(paidUsers).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  projectLimit: true
+  // server-controlled
+});
 var insertProjectSchema = createInsertSchema(projects, {
+  userId: z.string().nullable().optional(),
+  paidUserId: z.string().nullable().optional(),
   sourceCodeFiles: z.array(z.object({
     id: z.string(),
     fileName: z.string(),
@@ -207,7 +242,10 @@ var insertIdeaSnapshotSchema = createInsertSchema(ideaSnapshots).omit({
   id: true,
   createdAt: true
 });
-var insertPriorArtSearchSchema = createInsertSchema(priorArtSearches).omit({
+var insertPriorArtSearchSchema = createInsertSchema(priorArtSearches, {
+  userId: z.string().nullable().optional(),
+  paidUserId: z.string().nullable().optional()
+}).omit({
   id: true,
   createdAt: true
 });
@@ -270,6 +308,56 @@ var DatabaseStorage = class {
     const [user] = await db.update(users).set({ password: hashedPassword, updatedAt: /* @__PURE__ */ new Date() }).where(eq(users.id, userId)).returning();
     return user || void 0;
   }
+  // Paid user operations
+  async getPaidUser(id) {
+    const [user] = await db.select().from(paidUsers).where(eq(paidUsers.id, id));
+    return user || void 0;
+  }
+  async getPaidUserByEmail(email) {
+    const normalized = email.toLowerCase().trim();
+    const [user] = await db.select().from(paidUsers).where(eq(paidUsers.email, normalized));
+    return user || void 0;
+  }
+  async createPaidUser(insert) {
+    const [user] = await db.insert(paidUsers).values({ ...insert, email: insert.email.toLowerCase().trim() }).returning();
+    return user;
+  }
+  async updatePaidUser2FA(userId, data) {
+    const [user] = await db.update(paidUsers).set({ ...data, updatedAt: /* @__PURE__ */ new Date() }).where(eq(paidUsers.id, userId)).returning();
+    return user || void 0;
+  }
+  async updatePaidUserPassword(userId, hashedPassword) {
+    const [user] = await db.update(paidUsers).set({ password: hashedPassword, updatedAt: /* @__PURE__ */ new Date() }).where(eq(paidUsers.id, userId)).returning();
+    return user || void 0;
+  }
+  async setPaidUserProjectLimit(userId, projectLimit) {
+    const [user] = await db.update(paidUsers).set({ projectLimit, updatedAt: /* @__PURE__ */ new Date() }).where(eq(paidUsers.id, userId)).returning();
+    return user || void 0;
+  }
+  async incrementPaidUserProjectLimit(userId, delta) {
+    const [user] = await db.update(paidUsers).set({ projectLimit: sql2`${paidUsers.projectLimit} + ${delta}`, updatedAt: /* @__PURE__ */ new Date() }).where(eq(paidUsers.id, userId)).returning();
+    return user || void 0;
+  }
+  async updatePaidUserLastLogin(userId) {
+    await db.update(paidUsers).set({ lastLoginAt: /* @__PURE__ */ new Date() }).where(eq(paidUsers.id, userId));
+  }
+  async getPaidUsersAdminView() {
+    const result = await pool.query(`
+      SELECT
+        pu.id,
+        pu.email,
+        pu.project_limit AS "projectLimit",
+        pu.two_factor_enabled AS "twoFactorEnabled",
+        COUNT(p.id)::int AS "projectCount",
+        pu.last_login_at AS "lastLoginAt",
+        pu.created_at AS "createdAt"
+      FROM paid_users pu
+      LEFT JOIN projects p ON p.paid_user_id = pu.id
+      GROUP BY pu.id, pu.email, pu.project_limit, pu.two_factor_enabled, pu.last_login_at, pu.created_at
+      ORDER BY pu.created_at DESC NULLS LAST
+    `);
+    return result.rows;
+  }
   // Project operations
   async getProject(id) {
     const [project] = await db.select().from(projects).where(eq(projects.id, id));
@@ -281,6 +369,16 @@ var DatabaseStorage = class {
   async createProject(insertProject) {
     const [project] = await db.insert(projects).values(insertProject).returning();
     return project;
+  }
+  async getProjectsByOwner(owner) {
+    if (owner.kind === "legacy") {
+      return await db.select().from(projects).where(eq(projects.userId, owner.userId)).orderBy(desc(projects.updatedAt));
+    }
+    return await db.select().from(projects).where(eq(projects.paidUserId, owner.paidUserId)).orderBy(desc(projects.updatedAt));
+  }
+  async countProjectsByPaidUserId(paidUserId) {
+    const [row] = await db.select({ count: sql2`count(*)::int` }).from(projects).where(eq(projects.paidUserId, paidUserId));
+    return row?.count ?? 0;
   }
   async updateProject(id, data) {
     const [project] = await db.update(projects).set({ ...data, updatedAt: /* @__PURE__ */ new Date() }).where(eq(projects.id, id)).returning();
@@ -356,8 +454,9 @@ var DatabaseStorage = class {
     return (latest?.version || 0) + 1;
   }
   // Prior art search operations
-  async getPriorArtSearches(userId) {
-    return await db.select().from(priorArtSearches).where(eq(priorArtSearches.userId, userId)).orderBy(desc(priorArtSearches.createdAt));
+  async getPriorArtSearches(owner) {
+    const col = owner.kind === "paid" ? priorArtSearches.paidUserId : priorArtSearches.userId;
+    return await db.select().from(priorArtSearches).where(eq(col, owner.userId)).orderBy(desc(priorArtSearches.createdAt));
   }
   async createPriorArtSearch(insertSearch) {
     const [search] = await db.insert(priorArtSearches).values(insertSearch).returning();
@@ -3262,6 +3361,33 @@ var isAuthenticated = (req, res, next) => {
   }
   return res.status(401).json({ message: "Unauthorized" });
 };
+async function loadAuthUser(req) {
+  const session2 = req.session;
+  const userId = session2?.userId;
+  if (!userId) return null;
+  const kind = session2.userKind === "paid" ? "paid" : "legacy";
+  if (kind === "paid") {
+    const user2 = await storage.getPaidUser(userId);
+    if (!user2) return null;
+    return { id: user2.id, email: user2.email, kind: "paid" };
+  }
+  const user = await storage.getUser(userId);
+  if (!user) return null;
+  return { id: user.id, email: user.email, kind: "legacy" };
+}
+var withAuthUser = async (req, res, next) => {
+  const user = await loadAuthUser(req);
+  if (!user) return res.status(401).json({ message: "Unauthorized" });
+  req.authUser = user;
+  next();
+};
+function sessionOwnsProject(req, project) {
+  const session2 = req.session;
+  const sid = session2?.userId;
+  if (!sid) return false;
+  const kind = session2.userKind === "paid" ? "paid" : "legacy";
+  return kind === "paid" ? project.paidUserId === sid : project.userId === sid;
+}
 var ADMIN_EMAILS = /* @__PURE__ */ new Set([
   (process.env.ADMIN_EMAIL || "albano@bookingboostpro.com").toLowerCase().trim(),
   "tim.bratton@gmail.com"
@@ -3420,10 +3546,7 @@ async function registerRoutes(app2) {
   app2.post("/api/auth/register", async (req, res) => {
     try {
       const { email, password } = insertUserSchema.parse(req.body);
-      const allowed = await storage.isEmailWhitelisted(email);
-      if (!allowed) {
-        return res.status(403).json({ message: "This email address is not authorized to create an account." });
-      }
+      const kind = req.body?.kind === "legacy" ? "legacy" : "paid";
       const passwordRequirements = [
         { test: password.length >= 8, message: "Password must be at least 8 characters" },
         { test: /[A-Z]/.test(password), message: "Password must contain at least one uppercase letter" },
@@ -3435,23 +3558,37 @@ async function registerRoutes(app2) {
       if (failedRequirement) {
         return res.status(400).json({ message: failedRequirement.message });
       }
-      const existingUser = await storage.getUserByEmail(email);
-      if (existingUser) {
+      const existingLegacy = await storage.getUserByEmail(email);
+      const existingPaid = await storage.getPaidUserByEmail(email);
+      if (existingLegacy || existingPaid) {
         return res.status(400).json({ message: "User already exists" });
       }
       const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
-      const user = await storage.createUser({
-        email,
-        password: hashedPassword
-      });
-      req.session.userId = user.id;
+      let newId;
+      if (kind === "paid") {
+        const user = await storage.createPaidUser({ email, password: hashedPassword });
+        newId = user.id;
+      } else {
+        const user = await storage.createUser({ email, password: hashedPassword });
+        newId = user.id;
+      }
+      try {
+        const already = await storage.isEmailWhitelisted(email);
+        if (!already) {
+          await storage.addEmailToWhitelist(email, `auto-added on ${kind} signup`);
+        }
+      } catch (e) {
+        console.error("Auto-whitelist failed (non-fatal):", e);
+      }
+      req.session.userId = newId;
+      req.session.userKind = kind;
       await new Promise((resolve, reject) => {
         req.session.save((err) => {
           if (err) reject(err);
           else resolve();
         });
       });
-      res.json({ id: user.id, email: user.email });
+      res.json({ id: newId, email, kind });
     } catch (error) {
       console.error("Registration error:", error);
       res.status(400).json({ message: error.message || "Registration failed" });
@@ -3460,21 +3597,20 @@ async function registerRoutes(app2) {
   app2.post("/api/auth/login", async (req, res) => {
     try {
       const { email, password } = req.body;
-      const allowed = await storage.isEmailWhitelisted(email);
-      if (!allowed) {
-        return res.status(403).json({ message: "This email address is not authorized to access this application." });
-      }
-      const user = await storage.getUserByEmail(email);
-      if (!user) {
+      const paidUser = await storage.getPaidUserByEmail(email);
+      const legacyUser = paidUser ? void 0 : await storage.getUserByEmail(email);
+      const matched = paidUser ? { kind: "paid", record: paidUser } : legacyUser ? { kind: "legacy", record: legacyUser } : null;
+      if (!matched) {
         return res.status(401).json({ message: "Invalid credentials" });
       }
-      const isValid = await bcrypt.compare(password, user.password);
+      const isValid = await bcrypt.compare(password, matched.record.password);
       if (!isValid) {
         return res.status(401).json({ message: "Invalid credentials" });
       }
       const whitelistEntry = await storage.getWhitelistEntry(email);
       const whitelistStatus = whitelistEntry?.status || "active";
-      req.session.userId = user.id;
+      req.session.userId = matched.record.id;
+      req.session.userKind = matched.kind;
       req.session.whitelistStatus = whitelistStatus;
       await new Promise((resolve, reject) => {
         req.session.save((err) => {
@@ -3482,14 +3618,20 @@ async function registerRoutes(app2) {
           else resolve();
         });
       });
-      if (!user.twoFactorEnabled) {
-        storage.updateLastLogin(user.id).catch(() => {
-        });
+      if (!matched.record.twoFactorEnabled) {
+        if (matched.kind === "paid") {
+          storage.updatePaidUserLastLogin(matched.record.id).catch(() => {
+          });
+        } else {
+          storage.updateLastLogin(matched.record.id).catch(() => {
+          });
+        }
       }
       res.json({
-        id: user.id,
-        email: user.email,
-        requires2FA: user.twoFactorEnabled || false
+        id: matched.record.id,
+        email: matched.record.email,
+        kind: matched.kind,
+        requires2FA: matched.record.twoFactorEnabled || false
       });
     } catch (error) {
       console.error("Login error:", error);
@@ -3510,6 +3652,30 @@ async function registerRoutes(app2) {
       res.json(users2);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch users" });
+    }
+  });
+  app2.get("/api/admin/paid-users", isAdmin, async (req, res) => {
+    try {
+      const list = await storage.getPaidUsersAdminView();
+      res.json(list);
+    } catch (error) {
+      console.error("List paid users error:", error);
+      res.status(500).json({ message: "Failed to fetch paid users" });
+    }
+  });
+  app2.patch("/api/admin/paid-users/:id/project-limit", isAdmin, async (req, res) => {
+    try {
+      const { projectLimit } = req.body;
+      const parsed = Number(projectLimit);
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1e4) {
+        return res.status(400).json({ message: "projectLimit must be an integer between 0 and 10000" });
+      }
+      const user = await storage.setPaidUserProjectLimit(req.params.id, parsed);
+      if (!user) return res.status(404).json({ message: "Paid user not found" });
+      res.json({ id: user.id, projectLimit: user.projectLimit });
+    } catch (error) {
+      console.error("Set project limit error:", error);
+      res.status(500).json({ message: "Failed to update project limit" });
     }
   });
   app2.get("/api/admin/whitelist", isAdmin, async (req, res) => {
@@ -3623,16 +3789,40 @@ async function registerRoutes(app2) {
   });
   app2.get("/api/auth/user", isAuthenticated, async (req, res) => {
     try {
-      const userId = req.session.userId;
-      const user = await storage.getUser(userId);
-      if (!user) {
-        return res.status(404).json({ message: "User not found" });
+      const session2 = req.session;
+      const userId = session2.userId;
+      const kind = session2.userKind === "paid" ? "paid" : "legacy";
+      const twoFactorVerified = session2.twoFactorVerified || false;
+      const subscriptionStatus = session2.whitelistStatus || "active";
+      if (kind === "paid") {
+        const user2 = await storage.getPaidUser(userId);
+        if (!user2) return res.status(404).json({ message: "User not found" });
+        const projectsUsed = await storage.countProjectsByPaidUserId(user2.id);
+        return res.json({
+          id: user2.id,
+          email: user2.email,
+          kind: "paid",
+          credits: user2.projectLimit,
+          creditsUsed: projectsUsed,
+          creditsRemaining: Math.max(0, user2.projectLimit - projectsUsed),
+          embedUrls: {
+            slot1: process.env.GHL_EMBED_URL_SLOT_1 || null,
+            slot5: process.env.GHL_EMBED_URL_SLOT_5 || null
+          },
+          twoFactorEnabled: user2.twoFactorEnabled || false,
+          twoFactorMethod: user2.twoFactorMethod || null,
+          twoFactorVerified,
+          subscriptionStatus
+        });
       }
-      const twoFactorVerified = req.session.twoFactorVerified || false;
-      const subscriptionStatus = req.session.whitelistStatus || "active";
-      res.json({
+      const user = await storage.getUser(userId);
+      if (!user) return res.status(404).json({ message: "User not found" });
+      return res.json({
         id: user.id,
         email: user.email,
+        kind: "legacy",
+        projectLimit: null,
+        projectsUsed: null,
         twoFactorEnabled: user.twoFactorEnabled || false,
         twoFactorMethod: user.twoFactorMethod || null,
         twoFactorVerified,
@@ -4083,19 +4273,23 @@ async function registerRoutes(app2) {
       res.status(500).json({ message: "Failed to reset password" });
     }
   });
-  app2.get("/api/prior-art-searches", isAuthenticated, async (req, res) => {
+  app2.get("/api/prior-art-searches", isAuthenticated, withAuthUser, async (req, res) => {
     try {
-      const userId = req.session.userId;
-      const searches = await storage.getPriorArtSearches(userId);
+      const authUser = req.authUser;
+      const searches = await storage.getPriorArtSearches({
+        kind: authUser.kind,
+        userId: authUser.id
+      });
       res.json(searches);
     } catch (error) {
       console.error("Get prior art searches error:", error);
       res.status(500).json({ message: "Failed to fetch search history" });
     }
   });
-  app2.post("/api/prior-art-check", isAuthenticated, async (req, res) => {
+  app2.post("/api/prior-art-check", isAuthenticated, withAuthUser, async (req, res) => {
     try {
-      const userId = req.session.userId;
+      const authUser = req.authUser;
+      const userId = authUser.id;
       const { searchText } = req.body;
       if (!searchText || typeof searchText !== "string" || searchText.trim().length < 10) {
         return res.status(400).json({ message: "Please provide at least 10 characters describing your idea" });
@@ -4127,7 +4321,8 @@ async function registerRoutes(app2) {
         console.log(`Analysis includes ${analysis.key_differentiators?.length || 0} key differentiators, ${analysis.claims_focus?.length || 0} claims focus items`);
       }
       const savedSearch = await storage.createPriorArtSearch({
-        userId,
+        userId: authUser.kind === "legacy" ? userId : null,
+        paidUserId: authUser.kind === "paid" ? userId : null,
         searchText: searchText.trim(),
         results,
         analysis
@@ -4151,11 +4346,11 @@ async function registerRoutes(app2) {
       res.status(500).json({ message: "Failed to delete search" });
     }
   });
-  app2.get("/api/projects", isAuthenticated, async (req, res) => {
+  app2.get("/api/projects", isAuthenticated, withAuthUser, async (req, res) => {
     try {
-      const userId = req.session.userId;
-      const userProjects = await storage.getProjectsByUserId(userId);
-      res.json(userProjects);
+      const authUser = req.authUser;
+      const list = authUser.kind === "paid" ? await storage.getProjectsByOwner({ kind: "paid", paidUserId: authUser.id }) : await storage.getProjectsByOwner({ kind: "legacy", userId: authUser.id });
+      res.json(list);
     } catch (error) {
       console.error("Get projects error:", error);
       res.status(500).json({ message: "Failed to fetch projects" });
@@ -4168,7 +4363,7 @@ async function registerRoutes(app2) {
         return res.status(404).json({ message: "Project not found" });
       }
       const userId = req.session.userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
       res.json(project);
@@ -4177,13 +4372,30 @@ async function registerRoutes(app2) {
       res.status(500).json({ message: "Failed to fetch project" });
     }
   });
-  app2.post("/api/projects", isAuthenticated, async (req, res) => {
+  app2.post("/api/projects", isAuthenticated, withAuthUser, async (req, res) => {
     try {
-      const userId = req.session.userId;
-      const projectData = insertProjectSchema.parse({
-        ...req.body,
-        userId
-      });
+      const authUser = req.authUser;
+      if (authUser.kind === "paid") {
+        const paidUser = await storage.getPaidUser(authUser.id);
+        if (!paidUser) return res.status(401).json({ message: "Unauthorized" });
+        const used = await storage.countProjectsByPaidUserId(paidUser.id);
+        if (used >= paidUser.projectLimit) {
+          return res.status(402).json({
+            code: "PROJECT_LIMIT_REACHED",
+            message: "You're out of credits. Purchase more to create another project.",
+            credits: paidUser.projectLimit,
+            creditsUsed: used,
+            creditsRemaining: Math.max(0, paidUser.projectLimit - used),
+            embedUrls: {
+              slot1: process.env.GHL_EMBED_URL_SLOT_1 || null,
+              slot5: process.env.GHL_EMBED_URL_SLOT_5 || null
+            }
+          });
+        }
+      }
+      const { userId: _u, paidUserId: _p, ...clientFields } = req.body || {};
+      const ownerFields = authUser.kind === "paid" ? { paidUserId: authUser.id, userId: null } : { userId: authUser.id, paidUserId: null };
+      const projectData = insertProjectSchema.parse({ ...clientFields, ...ownerFields });
       const project = await storage.createProject(projectData);
       res.json(project);
     } catch (error) {
@@ -4198,7 +4410,7 @@ async function registerRoutes(app2) {
         return res.status(404).json({ message: "Project not found" });
       }
       const userId = req.session.userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
       const updated = await storage.updateProject(req.params.id, {
@@ -4218,7 +4430,7 @@ async function registerRoutes(app2) {
         return res.status(404).json({ message: "Project not found" });
       }
       const userId = req.session.userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
       const updateSchema = z2.object({
@@ -4246,7 +4458,7 @@ async function registerRoutes(app2) {
         return res.status(404).json({ message: "Project not found" });
       }
       const userId = req.session.userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
       await storage.deleteProject(req.params.id);
@@ -4263,7 +4475,7 @@ async function registerRoutes(app2) {
         return res.status(404).json({ message: "Project not found" });
       }
       const userId = req.session.userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
       const snapshots = await storage.getIdeaSnapshots(req.params.id);
@@ -4285,7 +4497,7 @@ async function registerRoutes(app2) {
         return res.status(404).json({ message: "Project not found" });
       }
       const userId = req.session.userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
       const { snapshotType, title, content, command, qualityScore, metadata } = req.body;
@@ -4316,7 +4528,7 @@ async function registerRoutes(app2) {
         return res.status(404).json({ message: "Project not found" });
       }
       const userId = req.session.userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
       const existingSnapshots = await storage.getIdeaSnapshots(req.params.id);
@@ -4522,7 +4734,7 @@ ${d.title || d.description || d.text?.substring(0, 200) || "Technical Diagram"}`
         return res.status(404).json({ message: "Project not found" });
       }
       const userId = req.session.userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
       res.json({
@@ -4541,7 +4753,7 @@ ${d.title || d.description || d.text?.substring(0, 200) || "Technical Diagram"}`
         return res.status(404).json({ message: "Project not found" });
       }
       const userId = req.session.userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
       const { sourceCode, fileName, codeDescription } = req.body;
@@ -4577,7 +4789,7 @@ ${d.title || d.description || d.text?.substring(0, 200) || "Technical Diagram"}`
         return res.status(404).json({ message: "Project not found" });
       }
       const userId = req.session.userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
       const existingFiles = project.sourceCodeFiles || [];
@@ -4601,7 +4813,7 @@ ${d.title || d.description || d.text?.substring(0, 200) || "Technical Diagram"}`
         return res.status(404).json({ message: "Project not found" });
       }
       const userId = req.session.userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
       await storage.updateProject(req.params.id, {

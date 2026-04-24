@@ -1,5 +1,5 @@
 // Storage layer implementation using DatabaseStorage as per javascript_database blueprint
-import { users, projects, agentData, pannuRecords, ideaSnapshots, priorArtSearches, emailWhitelist, type User, type InsertUser, type Project, type InsertProject, type AgentData, type InsertAgentData, type PannuRecord, type InsertPannuRecord, type IdeaSnapshot, type InsertIdeaSnapshot, type PriorArtSearch, type InsertPriorArtSearch, type EmailWhitelistEntry } from "@shared/schema";
+import { users, paidUsers, projects, agentData, pannuRecords, ideaSnapshots, priorArtSearches, emailWhitelist, type User, type InsertUser, type PaidUser, type InsertPaidUser, type Project, type InsertProject, type AgentData, type InsertAgentData, type PannuRecord, type InsertPannuRecord, type IdeaSnapshot, type InsertIdeaSnapshot, type PriorArtSearch, type InsertPriorArtSearch, type EmailWhitelistEntry } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, and, desc, sql } from "drizzle-orm";
 
@@ -20,10 +20,31 @@ export interface IStorage {
   createUser(user: InsertUser): Promise<User>;
   updateUser2FA(userId: string, data: Update2FAData): Promise<User | undefined>;
   updateUserPassword(userId: string, hashedPassword: string): Promise<User | undefined>;
-  
+
+  // Paid user operations (PatentGeyser GHL customers)
+  getPaidUser(id: string): Promise<PaidUser | undefined>;
+  getPaidUserByEmail(email: string): Promise<PaidUser | undefined>;
+  createPaidUser(user: InsertPaidUser): Promise<PaidUser>;
+  updatePaidUser2FA(userId: string, data: Update2FAData): Promise<PaidUser | undefined>;
+  updatePaidUserPassword(userId: string, hashedPassword: string): Promise<PaidUser | undefined>;
+  setPaidUserProjectLimit(userId: string, projectLimit: number): Promise<PaidUser | undefined>;
+  incrementPaidUserProjectLimit(userId: string, delta: number): Promise<PaidUser | undefined>;
+  updatePaidUserLastLogin(userId: string): Promise<void>;
+  getPaidUsersAdminView(): Promise<Array<{
+    id: string;
+    email: string;
+    projectLimit: number;
+    projectCount: number;
+    twoFactorEnabled: boolean;
+    lastLoginAt: string | null;
+    createdAt: string | null;
+  }>>;
+
   // Project operations
   getProject(id: string): Promise<Project | undefined>;
   getProjectsByUserId(userId: string): Promise<Project[]>;
+  getProjectsByOwner(owner: { kind: "legacy"; userId: string } | { kind: "paid"; paidUserId: string }): Promise<Project[]>;
+  countProjectsByPaidUserId(paidUserId: string): Promise<number>;
   createProject(project: InsertProject): Promise<Project>;
   updateProject(id: string, data: Partial<InsertProject>): Promise<Project | undefined>;
   deleteProject(id: string): Promise<void>;
@@ -48,7 +69,7 @@ export interface IStorage {
   getNextSnapshotVersion(projectId: string): Promise<number>;
   
   // Prior art search operations
-  getPriorArtSearches(userId: string): Promise<PriorArtSearch[]>;
+  getPriorArtSearches(owner: { kind: "legacy" | "paid"; userId: string }): Promise<PriorArtSearch[]>;
   createPriorArtSearch(search: InsertPriorArtSearch): Promise<PriorArtSearch>;
   deletePriorArtSearch(id: string): Promise<void>;
 
@@ -112,6 +133,92 @@ export class DatabaseStorage implements IStorage {
     return user || undefined;
   }
 
+  // Paid user operations
+  async getPaidUser(id: string): Promise<PaidUser | undefined> {
+    const [user] = await db.select().from(paidUsers).where(eq(paidUsers.id, id));
+    return user || undefined;
+  }
+
+  async getPaidUserByEmail(email: string): Promise<PaidUser | undefined> {
+    const normalized = email.toLowerCase().trim();
+    const [user] = await db.select().from(paidUsers).where(eq(paidUsers.email, normalized));
+    return user || undefined;
+  }
+
+  async createPaidUser(insert: InsertPaidUser): Promise<PaidUser> {
+    const [user] = await db
+      .insert(paidUsers)
+      .values({ ...insert, email: insert.email.toLowerCase().trim() })
+      .returning();
+    return user;
+  }
+
+  async updatePaidUser2FA(userId: string, data: Update2FAData): Promise<PaidUser | undefined> {
+    const [user] = await db
+      .update(paidUsers)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(paidUsers.id, userId))
+      .returning();
+    return user || undefined;
+  }
+
+  async updatePaidUserPassword(userId: string, hashedPassword: string): Promise<PaidUser | undefined> {
+    const [user] = await db
+      .update(paidUsers)
+      .set({ password: hashedPassword, updatedAt: new Date() })
+      .where(eq(paidUsers.id, userId))
+      .returning();
+    return user || undefined;
+  }
+
+  async setPaidUserProjectLimit(userId: string, projectLimit: number): Promise<PaidUser | undefined> {
+    const [user] = await db
+      .update(paidUsers)
+      .set({ projectLimit, updatedAt: new Date() })
+      .where(eq(paidUsers.id, userId))
+      .returning();
+    return user || undefined;
+  }
+
+  async incrementPaidUserProjectLimit(userId: string, delta: number): Promise<PaidUser | undefined> {
+    const [user] = await db
+      .update(paidUsers)
+      .set({ projectLimit: sql`${paidUsers.projectLimit} + ${delta}`, updatedAt: new Date() })
+      .where(eq(paidUsers.id, userId))
+      .returning();
+    return user || undefined;
+  }
+
+  async updatePaidUserLastLogin(userId: string): Promise<void> {
+    await db.update(paidUsers).set({ lastLoginAt: new Date() }).where(eq(paidUsers.id, userId));
+  }
+
+  async getPaidUsersAdminView(): Promise<Array<{
+    id: string;
+    email: string;
+    projectLimit: number;
+    projectCount: number;
+    twoFactorEnabled: boolean;
+    lastLoginAt: string | null;
+    createdAt: string | null;
+  }>> {
+    const result = await pool.query(`
+      SELECT
+        pu.id,
+        pu.email,
+        pu.project_limit AS "projectLimit",
+        pu.two_factor_enabled AS "twoFactorEnabled",
+        COUNT(p.id)::int AS "projectCount",
+        pu.last_login_at AS "lastLoginAt",
+        pu.created_at AS "createdAt"
+      FROM paid_users pu
+      LEFT JOIN projects p ON p.paid_user_id = pu.id
+      GROUP BY pu.id, pu.email, pu.project_limit, pu.two_factor_enabled, pu.last_login_at, pu.created_at
+      ORDER BY pu.created_at DESC NULLS LAST
+    `);
+    return result.rows;
+  }
+
   // Project operations
   async getProject(id: string): Promise<Project | undefined> {
     const [project] = await db.select().from(projects).where(eq(projects.id, id));
@@ -132,6 +239,31 @@ export class DatabaseStorage implements IStorage {
       .values(insertProject)
       .returning();
     return project;
+  }
+
+  async getProjectsByOwner(
+    owner: { kind: "legacy"; userId: string } | { kind: "paid"; paidUserId: string }
+  ): Promise<Project[]> {
+    if (owner.kind === "legacy") {
+      return await db
+        .select()
+        .from(projects)
+        .where(eq(projects.userId, owner.userId))
+        .orderBy(desc(projects.updatedAt));
+    }
+    return await db
+      .select()
+      .from(projects)
+      .where(eq(projects.paidUserId, owner.paidUserId))
+      .orderBy(desc(projects.updatedAt));
+  }
+
+  async countProjectsByPaidUserId(paidUserId: string): Promise<number> {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(projects)
+      .where(eq(projects.paidUserId, paidUserId));
+    return row?.count ?? 0;
   }
 
   async updateProject(id: string, data: Partial<InsertProject>): Promise<Project | undefined> {
@@ -279,11 +411,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Prior art search operations
-  async getPriorArtSearches(userId: string): Promise<PriorArtSearch[]> {
+  async getPriorArtSearches(owner: { kind: "legacy" | "paid"; userId: string }): Promise<PriorArtSearch[]> {
+    const col = owner.kind === "paid" ? priorArtSearches.paidUserId : priorArtSearches.userId;
     return await db
       .select()
       .from(priorArtSearches)
-      .where(eq(priorArtSearches.userId, userId))
+      .where(eq(col, owner.userId))
       .orderBy(desc(priorArtSearches.createdAt));
   }
 

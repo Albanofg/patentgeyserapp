@@ -170,6 +170,50 @@ const isAuthenticated = (req: Request, res: Response, next: NextFunction) => {
   return res.status(401).json({ message: "Unauthorized" });
 };
 
+// Phase 1 paid-projects: session may carry a userKind discriminator.
+type UserKind = "legacy" | "paid";
+
+interface AuthUser {
+  id: string;
+  email: string;
+  kind: UserKind;
+}
+
+async function loadAuthUser(req: Request): Promise<AuthUser | null> {
+  const session = req.session as any;
+  const userId: string | undefined = session?.userId;
+  if (!userId) return null;
+  const kind: UserKind = session.userKind === "paid" ? "paid" : "legacy";
+  if (kind === "paid") {
+    const user = await storage.getPaidUser(userId);
+    if (!user) return null;
+    return { id: user.id, email: user.email, kind: "paid" };
+  }
+  const user = await storage.getUser(userId);
+  if (!user) return null;
+  return { id: user.id, email: user.email, kind: "legacy" };
+}
+
+const withAuthUser = async (req: Request, res: Response, next: NextFunction) => {
+  const user = await loadAuthUser(req);
+  if (!user) return res.status(401).json({ message: "Unauthorized" });
+  (req as any).authUser = user;
+  next();
+};
+
+// Checks that the current session owns the given project, whether they are a
+// legacy user (project.userId) or a paid user (project.paidUserId).
+function sessionOwnsProject(
+  req: Request,
+  project: { userId: string | null; paidUserId: string | null }
+): boolean {
+  const session = req.session as any;
+  const sid: string | undefined = session?.userId;
+  if (!sid) return false;
+  const kind: UserKind = session.userKind === "paid" ? "paid" : "legacy";
+  return kind === "paid" ? project.paidUserId === sid : project.userId === sid;
+}
+
 const ADMIN_EMAILS = new Set([
   (process.env.ADMIN_EMAIL || "albano@bookingboostpro.com").toLowerCase().trim(),
   "tim.bratton@gmail.com",
@@ -382,14 +426,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/auth/register", async (req, res) => {
     try {
       const { email, password } = insertUserSchema.parse(req.body);
+      // Default new signups to "paid" (PatentGeyser consumer). Legacy creation is admin-only.
+      const kind: UserKind = req.body?.kind === "legacy" ? "legacy" : "paid";
 
-      // Check whitelist before anything else
-      const allowed = await storage.isEmailWhitelisted(email);
-      if (!allowed) {
-        return res.status(403).json({ message: "This email address is not authorized to create an account." });
-      }
-
-      // Validate password complexity
       const passwordRequirements = [
         { test: password.length >= 8, message: "Password must be at least 8 characters" },
         { test: /[A-Z]/.test(password), message: "Password must contain at least one uppercase letter" },
@@ -397,29 +436,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
         { test: /\d/.test(password), message: "Password must contain at least one number" },
         { test: /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password), message: "Password must contain at least one special character" },
       ];
-      
       const failedRequirement = passwordRequirements.find(req => !req.test);
       if (failedRequirement) {
         return res.status(400).json({ message: failedRequirement.message });
       }
-      
-      // Check if user already exists
-      const existingUser = await storage.getUserByEmail(email);
-      if (existingUser) {
+
+      // Cross-table uniqueness: an email exists in at most one of users / paid_users.
+      const existingLegacy = await storage.getUserByEmail(email);
+      const existingPaid = await storage.getPaidUserByEmail(email);
+      if (existingLegacy || existingPaid) {
         return res.status(400).json({ message: "User already exists" });
       }
 
-      // Hash password
       const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
-      
-      // Create user
-      const user = await storage.createUser({
-        email,
-        password: hashedPassword,
-      });
+      let newId: string;
+      if (kind === "paid") {
+        const user = await storage.createPaidUser({ email, password: hashedPassword });
+        newId = user.id;
+      } else {
+        const user = await storage.createUser({ email, password: hashedPassword });
+        newId = user.id;
+      }
 
-      // Set session and save explicitly
-      (req.session as any).userId = user.id;
+      // Auto-whitelist: register open to everyone now, but preserve the whitelist as a
+      // future gate we can re-enable without locking existing users out.
+      try {
+        const already = await storage.isEmailWhitelisted(email);
+        if (!already) {
+          await storage.addEmailToWhitelist(email, `auto-added on ${kind} signup`);
+        }
+      } catch (e) {
+        console.error("Auto-whitelist failed (non-fatal):", e);
+      }
+
+      (req.session as any).userId = newId;
+      (req.session as any).userKind = kind;
       await new Promise<void>((resolve, reject) => {
         req.session.save((err) => {
           if (err) reject(err);
@@ -427,7 +478,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       });
 
-      res.json({ id: user.id, email: user.email });
+      res.json({ id: newId, email, kind });
     } catch (error: any) {
       console.error("Registration error:", error);
       res.status(400).json({ message: error.message || "Registration failed" });
@@ -439,28 +490,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { email, password } = req.body;
 
-      // Check whitelist before attempting login
-      const allowed = await storage.isEmailWhitelisted(email);
-      if (!allowed) {
-        return res.status(403).json({ message: "This email address is not authorized to access this application." });
-      }
-      
-      const user = await storage.getUserByEmail(email);
-      if (!user) {
+      // Whitelist gate is currently disabled (freemium). Kept in DB so we can re-enable later.
+      // Try paid_users first (PatentGeyser customers), fall back to shared users table.
+      const paidUser = await storage.getPaidUserByEmail(email);
+      const legacyUser = paidUser ? undefined : await storage.getUserByEmail(email);
+      const matched = paidUser
+        ? { kind: "paid" as const, record: paidUser }
+        : legacyUser
+          ? { kind: "legacy" as const, record: legacyUser }
+          : null;
+
+      if (!matched) {
         return res.status(401).json({ message: "Invalid credentials" });
       }
 
-      const isValid = await bcrypt.compare(password, user.password);
+      const isValid = await bcrypt.compare(password, matched.record.password);
       if (!isValid) {
         return res.status(401).json({ message: "Invalid credentials" });
       }
 
-      // Look up whitelist status and store in session
       const whitelistEntry = await storage.getWhitelistEntry(email);
       const whitelistStatus = whitelistEntry?.status || "active";
 
-      // Set session and save explicitly
-      (req.session as any).userId = user.id;
+      (req.session as any).userId = matched.record.id;
+      (req.session as any).userKind = matched.kind;
       (req.session as any).whitelistStatus = whitelistStatus;
       await new Promise<void>((resolve, reject) => {
         req.session.save((err) => {
@@ -469,15 +522,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       });
 
-      // Record last login (fire-and-forget if no 2FA, or on 2FA completion)
-      if (!user.twoFactorEnabled) {
-        storage.updateLastLogin(user.id).catch(() => {});
+      if (!matched.record.twoFactorEnabled) {
+        if (matched.kind === "paid") {
+          storage.updatePaidUserLastLogin(matched.record.id).catch(() => {});
+        } else {
+          storage.updateLastLogin(matched.record.id).catch(() => {});
+        }
       }
 
-      res.json({ 
-        id: user.id, 
-        email: user.email,
-        requires2FA: user.twoFactorEnabled || false
+      res.json({
+        id: matched.record.id,
+        email: matched.record.email,
+        kind: matched.kind,
+        requires2FA: matched.record.twoFactorEnabled || false,
       });
     } catch (error: any) {
       console.error("Login error:", error);
@@ -505,6 +562,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(users);
     } catch (error: any) {
       res.status(500).json({ message: "Failed to fetch users" });
+    }
+  });
+
+  // List PatentGeyser paid users with their project usage.
+  app.get("/api/admin/paid-users", isAdmin, async (req, res) => {
+    try {
+      const list = await storage.getPaidUsersAdminView();
+      res.json(list);
+    } catch (error: any) {
+      console.error("List paid users error:", error);
+      res.status(500).json({ message: "Failed to fetch paid users" });
+    }
+  });
+
+  app.patch("/api/admin/paid-users/:id/project-limit", isAdmin, async (req, res) => {
+    try {
+      const { projectLimit } = req.body;
+      const parsed = Number(projectLimit);
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 10000) {
+        return res.status(400).json({ message: "projectLimit must be an integer between 0 and 10000" });
+      }
+      const user = await storage.setPaidUserProjectLimit(req.params.id, parsed);
+      if (!user) return res.status(404).json({ message: "Paid user not found" });
+      res.json({ id: user.id, projectLimit: user.projectLimit });
+    } catch (error: any) {
+      console.error("Set project limit error:", error);
+      res.status(500).json({ message: "Failed to update project limit" });
     }
   });
 
@@ -651,22 +735,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get current user
   app.get("/api/auth/user", isAuthenticated, async (req, res) => {
     try {
-      const userId = (req.session as any).userId;
-      const user = await storage.getUser(userId);
-      
-      if (!user) {
-        return res.status(404).json({ message: "User not found" });
+      const session = req.session as any;
+      const userId: string = session.userId;
+      const kind: UserKind = session.userKind === "paid" ? "paid" : "legacy";
+      const twoFactorVerified = session.twoFactorVerified || false;
+      const subscriptionStatus = session.whitelistStatus || "active";
+
+      if (kind === "paid") {
+        const user = await storage.getPaidUser(userId);
+        if (!user) return res.status(404).json({ message: "User not found" });
+        const projectsUsed = await storage.countProjectsByPaidUserId(user.id);
+        return res.json({
+          id: user.id,
+          email: user.email,
+          kind: "paid",
+          credits: user.projectLimit,
+          creditsUsed: projectsUsed,
+          creditsRemaining: Math.max(0, user.projectLimit - projectsUsed),
+          embedUrl: process.env.GHL_EMBED_URL || null,
+          twoFactorEnabled: user.twoFactorEnabled || false,
+          twoFactorMethod: user.twoFactorMethod || null,
+          twoFactorVerified,
+          subscriptionStatus,
+        });
       }
 
-      const twoFactorVerified = (req.session as any).twoFactorVerified || false;
-      const subscriptionStatus = (req.session as any).whitelistStatus || "active";
-      
-      res.json({ 
-        id: user.id, 
+      const user = await storage.getUser(userId);
+      if (!user) return res.status(404).json({ message: "User not found" });
+      return res.json({
+        id: user.id,
         email: user.email,
+        kind: "legacy",
+        projectLimit: null,
+        projectsUsed: null,
         twoFactorEnabled: user.twoFactorEnabled || false,
         twoFactorMethod: user.twoFactorMethod || null,
-        twoFactorVerified: twoFactorVerified,
+        twoFactorVerified,
         subscriptionStatus,
       });
     } catch (error: any) {
@@ -1282,10 +1386,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Uses env var declared at top of file
 
   // Get user's prior art search history
-  app.get("/api/prior-art-searches", isAuthenticated, async (req, res) => {
+  app.get("/api/prior-art-searches", isAuthenticated, withAuthUser, async (req, res) => {
     try {
-      const userId = (req.session as any).userId;
-      const searches = await storage.getPriorArtSearches(userId);
+      const authUser: AuthUser = (req as any).authUser;
+      const searches = await storage.getPriorArtSearches({
+        kind: authUser.kind,
+        userId: authUser.id,
+      });
       res.json(searches);
     } catch (error: any) {
       console.error("Get prior art searches error:", error);
@@ -1294,9 +1401,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Run a new prior art check
-  app.post("/api/prior-art-check", isAuthenticated, async (req, res) => {
+  app.post("/api/prior-art-check", isAuthenticated, withAuthUser, async (req, res) => {
     try {
-      const userId = (req.session as any).userId;
+      const authUser: AuthUser = (req as any).authUser;
+      const userId = authUser.id;
       const { searchText } = req.body;
 
       if (!searchText || typeof searchText !== 'string' || searchText.trim().length < 10) {
@@ -1344,12 +1452,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`Analysis includes ${analysis.key_differentiators?.length || 0} key differentiators, ${analysis.claims_focus?.length || 0} claims focus items`);
       }
 
-      // Store the search in database
+      // Store the search in database under the right owner column.
       const savedSearch = await storage.createPriorArtSearch({
-        userId,
+        userId: authUser.kind === "legacy" ? userId : null,
+        paidUserId: authUser.kind === "paid" ? userId : null,
         searchText: searchText.trim(),
         results,
-        analysis
+        analysis,
       });
 
       console.log(`Prior art check completed: ${results.length} results found`);
@@ -1380,11 +1489,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ============================================
 
   // Get all projects for current user
-  app.get("/api/projects", isAuthenticated, async (req, res) => {
+  app.get("/api/projects", isAuthenticated, withAuthUser, async (req, res) => {
     try {
-      const userId = (req.session as any).userId;
-      const userProjects = await storage.getProjectsByUserId(userId);
-      res.json(userProjects);
+      const authUser: AuthUser = (req as any).authUser;
+      const list = authUser.kind === "paid"
+        ? await storage.getProjectsByOwner({ kind: "paid", paidUserId: authUser.id })
+        : await storage.getProjectsByOwner({ kind: "legacy", userId: authUser.id });
+      res.json(list);
     } catch (error: any) {
       console.error("Get projects error:", error);
       res.status(500).json({ message: "Failed to fetch projects" });
@@ -1402,7 +1513,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Verify ownership
       const userId = (req.session as any).userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
 
@@ -1414,14 +1525,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Create new project
-  app.post("/api/projects", isAuthenticated, async (req, res) => {
+  app.post("/api/projects", isAuthenticated, withAuthUser, async (req, res) => {
     try {
-      const userId = (req.session as any).userId;
-      const projectData = insertProjectSchema.parse({
-        ...req.body,
-        userId,
-      });
+      const authUser: AuthUser = (req as any).authUser;
 
+      if (authUser.kind === "paid") {
+        const paidUser = await storage.getPaidUser(authUser.id);
+        if (!paidUser) return res.status(401).json({ message: "Unauthorized" });
+        const used = await storage.countProjectsByPaidUserId(paidUser.id);
+        if (used >= paidUser.projectLimit) {
+          return res.status(402).json({
+            code: "PROJECT_LIMIT_REACHED",
+            message: "You're out of credits. Purchase more to create another project.",
+            credits: paidUser.projectLimit,
+            creditsUsed: used,
+            creditsRemaining: Math.max(0, paidUser.projectLimit - used),
+            embedUrl: process.env.GHL_EMBED_URL || null,
+          });
+        }
+      }
+
+      const { userId: _u, paidUserId: _p, ...clientFields } = req.body || {};
+      const ownerFields = authUser.kind === "paid"
+        ? { paidUserId: authUser.id, userId: null }
+        : { userId: authUser.id, paidUserId: null };
+
+      const projectData = insertProjectSchema.parse({ ...clientFields, ...ownerFields });
       const project = await storage.createProject(projectData);
       res.json(project);
     } catch (error: any) {
@@ -1440,7 +1569,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const userId = (req.session as any).userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
 
@@ -1466,7 +1595,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const userId = (req.session as any).userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
 
@@ -1502,7 +1631,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const userId = (req.session as any).userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
 
@@ -1528,7 +1657,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const userId = (req.session as any).userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
 
@@ -1559,7 +1688,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const userId = (req.session as any).userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
 
@@ -1600,7 +1729,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const userId = (req.session as any).userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
 
@@ -1850,7 +1979,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const userId = (req.session as any).userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
 
@@ -1874,7 +2003,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const userId = (req.session as any).userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
 
@@ -1924,7 +2053,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const userId = (req.session as any).userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
 
@@ -1956,7 +2085,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const userId = (req.session as any).userId;
-      if (project.userId !== userId) {
+      if (!sessionOwnsProject(req, project)) {
         return res.status(403).json({ message: "Forbidden" });
       }
 

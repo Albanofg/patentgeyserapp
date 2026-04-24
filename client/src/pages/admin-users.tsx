@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -5,6 +6,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, Users, ShieldCheck, ShieldOff, FolderOpen, PauseCircle, PlayCircle, Mail, Clock } from "lucide-react";
+
+interface PaidAdminUser {
+  id: string;
+  email: string;
+  projectLimit: number;
+  projectCount: number;
+  twoFactorEnabled: boolean;
+  lastLoginAt: string | null;
+  createdAt: string | null;
+}
 
 interface ProjectStage {
   stage: number;
@@ -57,6 +68,26 @@ export default function AdminUsers() {
   const { data: users = [], isLoading, isError, refetch } = useQuery<AdminUser[]>({
     queryKey: ["/api/admin/users"],
     retry: false,
+  });
+
+  const { data: paidUsers = [], isLoading: paidLoading } = useQuery<PaidAdminUser[]>({
+    queryKey: ["/api/admin/paid-users"],
+    retry: false,
+  });
+
+  const [limitEdits, setLimitEdits] = useState<Record<string, string>>({});
+
+  const limitMutation = useMutation({
+    mutationFn: async ({ id, projectLimit }: { id: string; projectLimit: number }) => {
+      return await apiRequest("PATCH", `/api/admin/paid-users/${id}/project-limit`, { projectLimit });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/paid-users"] });
+      toast({ title: "Project limit updated" });
+    },
+    onError: () => {
+      toast({ title: "Update failed", variant: "destructive" });
+    },
   });
 
   const statusMutation = useMutation({
@@ -242,6 +273,74 @@ export default function AdminUsers() {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Paid Users (PatentGeyser)</CardTitle>
+          <CardDescription>Project creation limit per paid user. Bump this when a GHL purchase is confirmed.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {paidLoading ? (
+            <div className="flex items-center gap-2 text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Loading…</div>
+          ) : paidUsers.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No paid users yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left border-b">
+                    <th className="py-2 pr-4">Email</th>
+                    <th className="py-2 pr-4">Limit</th>
+                    <th className="py-2 pr-4">Used</th>
+                    <th className="py-2 pr-4">2FA</th>
+                    <th className="py-2 pr-4">Last login</th>
+                    <th className="py-2 pr-4">Created</th>
+                    <th className="py-2 pr-4"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paidUsers.map((u) => {
+                    const draft = limitEdits[u.id] ?? String(u.projectLimit);
+                    const dirty = draft !== String(u.projectLimit);
+                    return (
+                      <tr key={u.id} className="border-b last:border-0">
+                        <td className="py-2 pr-4">{u.email}</td>
+                        <td className="py-2 pr-4">
+                          <input
+                            type="number"
+                            min={0}
+                            className="w-16 border rounded px-1 py-0.5 text-right bg-background"
+                            value={draft}
+                            onChange={(e) => setLimitEdits((prev) => ({ ...prev, [u.id]: e.target.value }))}
+                          />
+                        </td>
+                        <td className="py-2 pr-4">{u.projectCount}</td>
+                        <td className="py-2 pr-4">{u.twoFactorEnabled ? "On" : "Off"}</td>
+                        <td className="py-2 pr-4">{timeAgo(u.lastLoginAt)}</td>
+                        <td className="py-2 pr-4">{timeAgo(u.createdAt)}</td>
+                        <td className="py-2 pr-4">
+                          <Button
+                            size="sm"
+                            disabled={!dirty || limitMutation.isPending}
+                            onClick={() => {
+                              const n = Number(draft);
+                              if (!Number.isInteger(n) || n < 0) {
+                                toast({ title: "Enter a non-negative integer", variant: "destructive" });
+                                return;
+                              }
+                              limitMutation.mutate({ id: u.id, projectLimit: n });
+                            }}
+                          >Save</Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
         </CardContent>

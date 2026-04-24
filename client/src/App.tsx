@@ -23,8 +23,11 @@ function Router() {
     return <ForgotPassword />;
   }
 
-  // Hidden admin-only registration page
-  if (location === "/auth/geyser-new-user") {
+  // Registration — public (freemium) and legacy hidden URL kept for admin use.
+  if (
+    location === "/auth/register" || location.startsWith("/auth/register?") ||
+    location === "/auth/geyser-new-user"
+  ) {
     return <Register />;
   }
 
