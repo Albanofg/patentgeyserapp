@@ -20,6 +20,13 @@ Your job:
 5. Produce a detailed_description that fully describes the diagram structure with no quotes or apostrophes.
 6. Assign a figureId in the format FIG. X, unless the text already clearly refers to a specific figure number for that diagram.
 
+MANDATORY KEY CONCEPTS COVERAGE:
+If the input contains a section labeled "MANDATORY KEY CONCEPTS TO COVER", every listed key concept MUST be visually represented in your output. Each key concept maps to either:
+  (a) its own dedicated figure whose detailed_description explicitly demonstrates the mechanism, structure, or method recited by that key concept, OR
+  (b) a clearly identified sub-system, decision branch, or labeled region within a figure that already serves a related purpose.
+
+When a key concept maps to option (b), the detailed_description for that figure MUST name the key concept it is illustrating (using the same noun phrases from the listed key concept) so a reader can confirm the mapping. Do not skip any listed key concept. Do not collapse multiple key concepts into a single unlabeled diagram. In patent drafting, drawings exist to illustrate the claims; here the key concepts are the claims-equivalent, so coverage is non-negotiable.
+
 FOR FLOWCHART DIAGRAMS ONLY:
 You must also include an "eraserDSL" field containing Eraser diagram-as-code syntax.
 This ensures proper vertical layout for patent PDFs.

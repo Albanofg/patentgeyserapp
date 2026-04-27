@@ -11,6 +11,10 @@ interface DiagramsPayload {
   patent_text?: string;
   patent_title?: string;
   codeFromTheUser?: Record<string, CodeSnippet>;
+  // User-selected key concepts (this app's claims-equivalent). Passed
+  // explicitly so the planner is required to cover each one with a figure,
+  // independent of how prominently they appear in the patent text blob.
+  keyConcepts?: string;
 }
 
 interface PlannedDiagram {
@@ -182,9 +186,13 @@ export async function runDiagrams(payload: DiagramsPayload) {
     const config = loadAgentConfig("module5/5b/planner.config.json");
     const systemPrompt = loadPrompt("module5/5b/planner.md");
 
+    const keyConceptsBlock = (payload.keyConcepts || "").trim();
     const userMessage =
       `Provisional Patent Title: ${title}\n` +
       `Provisional Patent Text: ${patentText}\n\n` +
+      (keyConceptsBlock
+        ? `MANDATORY KEY CONCEPTS TO COVER (each MUST be represented in at least one figure):\n${keyConceptsBlock}\n\n`
+        : "") +
       `Code Snippets Uploaded by the User (${codeCount} total):\n${formattedCode}`;
 
     const plan = await callAgentJSON<PlannerOutput>({

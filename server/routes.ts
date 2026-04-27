@@ -4980,9 +4980,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         };
       });
 
-      const diagramsPayload: any = { 
+      const diagramsPayload: any = {
         title: parsedDraft.title || 'Provisional Patent Application',
-        detailed_description: formattedDocument 
+        detailed_description: formattedDocument,
+        // Pass the user-selected key concepts (== the claims, in this app's
+        // UPL-safe terminology) as a separate, explicit field. The planner
+        // uses this to guarantee each key concept is represented in a figure,
+        // rather than competing for attention inside the document blob.
+        keyConcepts: claimsForDiagrams,
       };
 
       // Only include codeFromTheUser if there are code files
