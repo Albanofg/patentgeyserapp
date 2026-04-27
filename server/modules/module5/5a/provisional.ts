@@ -729,63 +729,76 @@ export async function runProvisional(payload: ProvisionalPayload) {
     console.log(">>> [M5-5a PROVISIONAL] <<< 3/9 summary");
     sections.summary = await runAgent("summary", summaryUserPrompt(parsed, sections));
 
-    // Stage 4: Architecture (part 1 of detailed description)
-    console.log(">>> [M5-5a PROVISIONAL] <<< 4/9 architecture");
-    sections.architecture = await runAgent("architecture", architectureUserPrompt(parsed, sections));
-
-    // Stage 5: Data Structures (part 2)
-    console.log(">>> [M5-5a PROVISIONAL] <<< 5/9 data-structures");
-    sections.data_structures = await runAgent(
-      "data-structures",
-      dataStructuresUserPrompt(parsed, sections),
+    // Abstract only depends on title + summary, so it can run in parallel with
+    // the architecture → data-structures → operations → alternatives →
+    // ramifications chain. Saves the ~25s + any fixer-loop time off the
+    // critical path. The two branches mutate disjoint fields of `sections`
+    // (abstract reads only title/summary; the chain writes the rest).
+    console.log(
+      ">>> [M5-5a PROVISIONAL] <<< running abstract chain || detailed-description chain in parallel",
     );
 
-    // Stage 6: Operations (part 3)
-    console.log(">>> [M5-5a PROVISIONAL] <<< 6/9 operations");
-    sections.operations = await runAgent("operations", operationsUserPrompt(parsed, sections));
+    const abstractChain = (async () => {
+      console.log(">>> [M5-5a PROVISIONAL] <<< abstract (parallel)");
+      let abstract = await runAgent("abstract", abstractUserPrompt(parsed, sections));
+      let wordCount = countWords(abstract);
 
-    // Stage 7: Alternatives (part 4)
-    console.log(">>> [M5-5a PROVISIONAL] <<< 7/9 alternatives");
-    sections.alternatives = await runAgent(
-      "alternatives",
-      alternativesUserPrompt(parsed, sections),
-    );
+      for (
+        let attempt = 0;
+        wordCount > 150 && attempt < MAX_ABSTRACT_FIX_ATTEMPTS;
+        attempt++
+      ) {
+        console.log(
+          `>>> [M5-5a PROVISIONAL] <<< abstract ${wordCount} words > 150, fixer attempt ${attempt + 1}/${MAX_ABSTRACT_FIX_ATTEMPTS}`,
+        );
+        abstract = await runAgent(
+          "abstract-fixer",
+          abstractFixerUserPrompt({ p: parsed, s: sections, abstract, wordCount }),
+        );
+        wordCount = countWords(abstract);
+      }
+      return abstract;
+    })();
 
-    // Combine Detailed Description (matches n8n "Combine Detailed Description" node)
-    sections.detailed_description = [
-      sections.architecture,
-      sections.data_structures,
-      sections.operations,
-      sections.alternatives,
-    ].join("\n\n");
-
-    // Stage 8: Ramifications
-    console.log(">>> [M5-5a PROVISIONAL] <<< 8/9 ramifications");
-    sections.ramifications_and_scope = await runAgent(
-      "ramifications",
-      ramificationsUserPrompt(parsed, sections),
-    );
-
-    // Stage 9: Abstract + compliance loop
-    console.log(">>> [M5-5a PROVISIONAL] <<< 9/9 abstract");
-    let abstract = await runAgent("abstract", abstractUserPrompt(parsed, sections));
-    let wordCount = countWords(abstract);
-
-    for (
-      let attempt = 0;
-      wordCount > 150 && attempt < MAX_ABSTRACT_FIX_ATTEMPTS;
-      attempt++
-    ) {
-      console.log(
-        `>>> [M5-5a PROVISIONAL] <<< abstract ${wordCount} words > 150, fixer attempt ${attempt + 1}/${MAX_ABSTRACT_FIX_ATTEMPTS}`,
+    const detailedDescriptionChain = (async () => {
+      console.log(">>> [M5-5a PROVISIONAL] <<< architecture (parallel)");
+      sections.architecture = await runAgent(
+        "architecture",
+        architectureUserPrompt(parsed, sections),
       );
-      abstract = await runAgent(
-        "abstract-fixer",
-        abstractFixerUserPrompt({ p: parsed, s: sections, abstract, wordCount }),
+
+      console.log(">>> [M5-5a PROVISIONAL] <<< data-structures (parallel)");
+      sections.data_structures = await runAgent(
+        "data-structures",
+        dataStructuresUserPrompt(parsed, sections),
       );
-      wordCount = countWords(abstract);
-    }
-    sections.abstract = abstract;
+
+      console.log(">>> [M5-5a PROVISIONAL] <<< operations (parallel)");
+      sections.operations = await runAgent("operations", operationsUserPrompt(parsed, sections));
+
+      console.log(">>> [M5-5a PROVISIONAL] <<< alternatives (parallel)");
+      sections.alternatives = await runAgent(
+        "alternatives",
+        alternativesUserPrompt(parsed, sections),
+      );
+
+      // Combine Detailed Description (matches n8n "Combine Detailed Description" node)
+      sections.detailed_description = [
+        sections.architecture,
+        sections.data_structures,
+        sections.operations,
+        sections.alternatives,
+      ].join("\n\n");
+
+      console.log(">>> [M5-5a PROVISIONAL] <<< ramifications (parallel)");
+      sections.ramifications_and_scope = await runAgent(
+        "ramifications",
+        ramificationsUserPrompt(parsed, sections),
+      );
+    })();
+
+    const [abstractResult] = await Promise.all([abstractChain, detailedDescriptionChain]);
+    sections.abstract = abstractResult;
 
     // Final Assembly
     const keyConceptsArray: string[] = [];

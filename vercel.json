@@ -6,7 +6,7 @@
   "regions": ["cle1"],
   "functions": {
     "api/index.js": {
-      "maxDuration": 300,
+      "maxDuration": 800,
       "includeFiles": "server/modules/**"
     }
   },
