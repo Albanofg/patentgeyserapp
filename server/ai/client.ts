@@ -19,6 +19,34 @@ export interface AgentCallOptions {
   userMessage: string;
   config: AgentConfig;
   jsonMode?: boolean;
+  // Optional JSON Schema constraining the model output. When provided alongside
+  // jsonMode, Gemini enforces structure at the API level (no markdown fences,
+  // no trailing prose, properly escaped strings).
+  responseSchema?: Record<string, any>;
+  // Per-call timeout. Protects against the SDK hanging on a stalled stream and
+  // burning the whole 300s function budget. Default 120s.
+  timeoutMs?: number;
+}
+
+const DEFAULT_CALL_TIMEOUT_MS = 120_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms,
+    );
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
 }
 
 // Detect provider from model name
@@ -40,19 +68,29 @@ const EMPTY_RESPONSE_GUARD =
 async function callGemini(opts: AgentCallOptions, model: string): Promise<string> {
   const systemInstruction = (opts.systemPrompt || "") + EMPTY_RESPONSE_GUARD;
   const maxOutputTokens = Math.max(opts.config.maxTokens || 0, 2048);
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
 
-  const response = await gemini.models.generateContent({
-    model,
-    contents: opts.userMessage,
-    config: {
-      systemInstruction,
-      maxOutputTokens,
-      temperature: opts.config.temperature,
-      topP: opts.config.topP,
-      responseMimeType: opts.jsonMode ? "application/json" : "text/plain",
-      safetySettings: GEMINI_SAFETY_OFF,
-    },
-  });
+  const response = await withTimeout(
+    gemini.models.generateContent({
+      model,
+      contents: opts.userMessage,
+      config: {
+        systemInstruction,
+        maxOutputTokens,
+        temperature: opts.config.temperature,
+        topP: opts.config.topP,
+        responseMimeType: opts.jsonMode ? "application/json" : "text/plain",
+        // When a schema is provided in jsonMode, Gemini constrains output to it
+        // (eliminates markdown fences, trailing prose, and unescaped strings).
+        ...(opts.jsonMode && opts.responseSchema
+          ? { responseSchema: opts.responseSchema as any }
+          : {}),
+        safetySettings: GEMINI_SAFETY_OFF,
+      },
+    }),
+    timeoutMs,
+    `Gemini ${model}`,
+  );
   const text = response.text;
   if (!text) {
     const finishReason = response.candidates?.[0]?.finishReason;
@@ -65,17 +103,22 @@ async function callGemini(opts: AgentCallOptions, model: string): Promise<string
 }
 
 async function callGPT(opts: AgentCallOptions, model: string): Promise<string> {
-  const response = await openai.chat.completions.create({
-    model,
-    messages: [
-      { role: "system", content: opts.systemPrompt },
-      { role: "user", content: opts.userMessage },
-    ],
-    max_tokens: opts.config.maxTokens,
-    temperature: opts.config.temperature,
-    top_p: opts.config.topP,
-    ...(opts.jsonMode ? { response_format: { type: "json_object" as const } } : {}),
-  });
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
+  const response = await withTimeout(
+    openai.chat.completions.create({
+      model,
+      messages: [
+        { role: "system", content: opts.systemPrompt },
+        { role: "user", content: opts.userMessage },
+      ],
+      max_tokens: opts.config.maxTokens,
+      temperature: opts.config.temperature,
+      top_p: opts.config.topP,
+      ...(opts.jsonMode ? { response_format: { type: "json_object" as const } } : {}),
+    }),
+    timeoutMs,
+    `GPT ${model}`,
+  );
   const text = response.choices[0]?.message?.content;
   if (!text) throw new Error("GPT returned empty response");
   return text;
@@ -116,16 +159,42 @@ export async function callAgent(opts: AgentCallOptions): Promise<string> {
   }
 }
 
+// Strip markdown fences and trim to the first `{` through the last `}`.
+// Defense-in-depth for the rare case Gemini emits prose despite jsonMode.
+function extractJsonPayload(raw: string): string {
+  let s = raw.trim();
+  // Strip ```json ... ``` or ``` ... ``` wrappers.
+  const fenced = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (fenced) s = fenced[1].trim();
+  // Trim any leading/trailing prose by slicing to the outermost braces.
+  const first = s.indexOf("{");
+  const last = s.lastIndexOf("}");
+  if (first !== -1 && last !== -1 && last > first) {
+    s = s.slice(first, last + 1);
+  }
+  return s;
+}
+
 export async function callAgentJSON<T = any>(opts: AgentCallOptions): Promise<T> {
   const raw = await callAgent({ ...opts, jsonMode: true });
   try {
     return JSON.parse(raw) as T;
-  } catch {
-    const jsonMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[1].trim()) as T;
+  } catch (firstErr: any) {
+    try {
+      return JSON.parse(extractJsonPayload(raw)) as T;
+    } catch (secondErr: any) {
+      // Log the FULL raw payload as a single line so Vercel doesn't truncate at
+      // the first newline. This is what the next person debugging will need.
+      const oneLine = raw.replace(/\r?\n/g, "\\n");
+      console.error(
+        `[AI] JSON parse failed (len=${raw.length}, model=${opts.config.model}): ` +
+          `${secondErr?.message || firstErr?.message}. RAW: ${oneLine}`,
+      );
+      throw new Error(
+        `AI returned malformed JSON (${secondErr?.message || firstErr?.message}). ` +
+          `Length=${raw.length}. Head: ${raw.substring(0, 120)} | Tail: ${raw.slice(-120)}`,
+      );
     }
-    throw new Error(`Failed to parse AI response as JSON: ${raw.substring(0, 200)}`);
   }
 }
 

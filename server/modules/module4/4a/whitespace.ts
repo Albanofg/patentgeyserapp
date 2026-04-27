@@ -51,6 +51,61 @@ interface AnalyzerJson {
   claimDraftingGuidance?: string;
 }
 
+// Mirrors AnalyzerJson and the JSON shape declared in whitespace.md.
+// Passed to Gemini as responseSchema so the model is API-constrained to valid
+// JSON — no markdown fences, no trailing prose, properly escaped strings.
+const WHITESPACE_RESPONSE_SCHEMA = {
+  type: "object",
+  properties: {
+    overallRiskLevel: { type: "string", enum: ["Green", "Yellow", "Red"] },
+    totalPatentsAnalyzed: { type: "integer" },
+    highThreatCount: { type: "integer" },
+    mediumThreatCount: { type: "integer" },
+    lowThreatCount: { type: "integer" },
+    patentAnalyses: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          patentNumber: { type: "string" },
+          patentTitle: { type: "string" },
+          patentStatus: { type: "string", enum: ["GRANTED", "PENDING"] },
+          threatLevel: {
+            type: "string",
+            enum: ["High", "Medium", "Low", "Minimal"],
+          },
+          specificConstraint: { type: "string" },
+          differentiationStrategy: { type: "string" },
+          canDesignAround: { type: "boolean" },
+        },
+        required: [
+          "patentNumber",
+          "patentTitle",
+          "patentStatus",
+          "threatLevel",
+          "specificConstraint",
+          "differentiationStrategy",
+          "canDesignAround",
+        ],
+      },
+    },
+    consolidatedWhiteSpaceStrategy: { type: "string" },
+    primaryDifferentiators: { type: "array", items: { type: "string" } },
+    claimDraftingGuidance: { type: "string" },
+  },
+  required: [
+    "overallRiskLevel",
+    "totalPatentsAnalyzed",
+    "highThreatCount",
+    "mediumThreatCount",
+    "lowThreatCount",
+    "patentAnalyses",
+    "consolidatedWhiteSpaceStrategy",
+    "primaryDifferentiators",
+    "claimDraftingGuidance",
+  ],
+} as const;
+
 function matchPriorArt(
   idea: SelectedIdea,
   priorArtResults: PriorArtResult[],
@@ -214,6 +269,10 @@ export async function runWhitespace(payload: WhitespacePayload) {
             systemPrompt,
             userMessage,
             config,
+            responseSchema: WHITESPACE_RESPONSE_SCHEMA as unknown as Record<string, any>,
+            // Per-call cap so a single hung Gemini stream cannot burn the whole
+            // 300s function budget (see prior orphaned-timeout incident).
+            timeoutMs: 90_000,
           });
           return { nugget, parsed, parseError: null as string | null };
         } catch (err: any) {
@@ -247,12 +306,14 @@ export async function runWhitespace(payload: WhitespacePayload) {
           whiteSpaceStrategy:
             p.consolidatedWhiteSpaceStrategy ||
             (parseError
-              ? `Analysis failed: ${parseError}`
+              ? `Analysis unavailable for this concept: ${parseError}`
               : "No strategy generated."),
           primaryDifferentiators: p.primaryDifferentiators || [],
           claimDraftingGuidance:
             p.claimDraftingGuidance ||
-            (parseError ? "Manual review required — AI call failed." : ""),
+            (parseError
+              ? "Manual review required — model output could not be parsed for this concept. Re-run the stage to retry."
+              : ""),
         },
       };
     });
