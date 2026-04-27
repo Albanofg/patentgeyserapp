@@ -398,9 +398,9 @@ export default function Agent2a() {
                   <CardContent className="pt-6">
                     <div className="text-center space-y-4">
                       <div>
-                        <h3 className="text-lg font-semibold mb-2">Ready to Extract Patentable Ideas?</h3>
+                        <h3 className="text-lg font-semibold mb-2">Ready to Extract Key Concepts?</h3>
                         <p className="text-sm text-muted-foreground mb-6">
-                          Continue to identify individual concepts that can be patented
+                          Continue to identify the core concepts and distinct functional elements of your idea
                         </p>
                         <Button
                           size="lg"

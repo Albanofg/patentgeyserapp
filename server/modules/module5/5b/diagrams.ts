@@ -187,6 +187,21 @@ export async function runDiagrams(payload: DiagramsPayload) {
     const systemPrompt = loadPrompt("module5/5b/planner.md");
 
     const keyConceptsBlock = (payload.keyConcepts || "").trim();
+    if (!keyConceptsBlock) {
+      // Silent fall-through used to mask cases where the upstream caller
+      // forgot to pass keyConcepts, or where claims parsing returned empty.
+      // Surface it so the dropped coverage is visible in logs.
+      console.warn(
+        ">>> [M5-5b DIAGRAMS] <<< keyConcepts not provided — planner has no explicit coverage anchor; figure count and claim alignment will rely entirely on the document blob.",
+      );
+    } else {
+      const conceptCount = keyConceptsBlock
+        .split(/\n\s*\n/)
+        .filter((s) => s.trim().length > 0).length;
+      console.log(
+        `>>> [M5-5b DIAGRAMS] <<< planner receiving ${conceptCount} key concept(s) as mandatory coverage anchors`,
+      );
+    }
     const userMessage =
       `Provisional Patent Title: ${title}\n` +
       `Provisional Patent Text: ${patentText}\n\n` +

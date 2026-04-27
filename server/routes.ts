@@ -4291,110 +4291,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Generate provisional patent draft (Agent 4b → 4c transition)
-  app.post("/api/projects/:id/agent/4b/generate-provisional", isAuthenticated, async (req, res) => {
-    try {
-      // Clear diagrams (agent 5) when regenerating provisional
-      await clearDownstreamData(req.params.id, '4c');
-
-      const project = await storage.getProject(req.params.id);
-      if (!project) {
-        return res.status(404).json({ message: "Project not found" });
-      }
-
-      // Get Agent 1 data for session ID and main idea
-      const agent1Data = await storage.getAgentData(req.params.id, 1);
-      const agent1DataObj = agent1Data?.data as any;
-      const sessionId = agent1DataObj?.sessionId || req.params.id;
-      const mainIdea = agent1DataObj?.ideaSummary || "";
-
-      // Get Agent 2 data for expanded concept
-      const agent2Data = await storage.getAgentData(req.params.id, 2);
-      const agent2DataObj = agent2Data?.data as any;
-      const expandedConcept = agent2DataObj?.provisionalDraft || 
-                             agent2DataObj?.draftSpecification || 
-                             "";
-
-      // Get Agent 4 data for selected claims
-      const agent4Data = await storage.getAgentData(req.params.id, 4);
-      const agent4DataObj = agent4Data?.data as any;
-      console.log("[GENERATE-PROVISIONAL] Agent 4 data keys:", Object.keys(agent4DataObj || {}));
-      console.log("[GENERATE-PROVISIONAL] Has selectedKeyConcepts?", !!agent4DataObj?.selectedKeyConcepts);
-      console.log("[GENERATE-PROVISIONAL] Has selectedClaims?", !!agent4DataObj?.selectedClaims);
-      const selectedKeyConcepts = agent4DataObj?.selectedKeyConcepts || agent4DataObj?.selectedClaims || [];
-
-      if (selectedKeyConcepts.length === 0) {
-        return res.status(400).json({ message: "No claims selected. Please select at least one claim." });
-      }
-
-      // Prepare webhook payload with key concepts
-      const webhookPayload = {
-        sessionId,
-        category: project.category,
-        coreIdea: mainIdea,
-        expandedConcept,
-        selectedKeyConcepts: selectedKeyConcepts.map((concept: any) => ({
-          text: concept.text,
-          number: concept.number,
-        }))
-      };
-
-      console.log("Calling provisional patent writing webhook...");
-      const rawWebhookResponse: any = await runProvisional(webhookPayload);
-      if (rawWebhookResponse && rawWebhookResponse.success === false) {
-        return res.status(503).json({ message: rawWebhookResponse.error || "Provisional generation failed" });
-      }
-      console.log("Provisional webhook response received");
-      console.log("Provisional response structure:", JSON.stringify(rawWebhookResponse, null, 2));
-
-      // Handle array-wrapped response (new format returns [{...}])
-      const webhookResponse = Array.isArray(rawWebhookResponse) ? rawWebhookResponse[0] : rawWebhookResponse;
-
-      // Store the complete provisional draft structure for diagram generation
-      await storage.upsertAgentData({
-        projectId: req.params.id,
-        agentNumber: 4,
-        data: {
-          ...agent4DataObj,
-          provisionalDraft: webhookResponse, // Store complete structured response (unwrapped)
-          selectedKeyConcepts: formattedClaims, // Save selected key concepts for regeneration
-          provisionalGeneratedAt: new Date().toISOString()
-        },
-      });
-
-      // Create snapshot for provisional draft (Agent 4c)
-      const provisionalVersion = await storage.getNextSnapshotVersion(req.params.id);
-      const claimsCount = webhookResponse?.claims_count || webhookResponse?.claims?.length || 0;
-      const provisionalContent = `**${webhookResponse?.title || 'Provisional Patent Application'}**\n\n` +
-        `**Abstract:**\n${webhookResponse?.abstract?.substring(0, 300) || 'Generated'}...\n\n` +
-        `**Claims:** ${claimsCount} claims included\n\n` +
-        `_Full specification includes: Background, Summary, Detailed Description, and Ramifications_`;
-      
-      await storage.createIdeaSnapshot({
-        projectId: req.params.id,
-        version: provisionalVersion,
-        snapshotType: '4c_provisional',
-        title: 'Provisional Draft Complete',
-        content: provisionalContent,
-        metadata: { 
-          stage: 4,
-          substage: '4c',
-          title: webhookResponse?.title,
-          claimsCount,
-          timestamp: webhookResponse?.timestamp,
-        },
-      });
-
-      res.json({ 
-        success: true, 
-        provisionalDraft: webhookResponse
-      });
-    } catch (error: any) {
-      console.error("Provisional generation error:", error);
-      res.status(500).json({ message: error.message || "Failed to generate provisional patent. Please try again." });
-    }
-  });
-
   // Regenerate provisional draft (retry) - keeps diagrams intact
   app.post("/api/projects/:id/regenerate-draft", isAuthenticated, async (req, res) => {
     try {
@@ -5120,7 +5016,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
       
       console.log(`Using ${specificKeyConcepts.length} Specific Claims for diagrams (not Broad Claims from provisional)`);
-      
+
+      // Format once so we can use the same string for both the document blob
+      // and the explicit keyConcepts coverage field passed to the planner.
+      const formattedSpecificClaims = formatSpecificClaims(specificKeyConcepts);
+
       // Build document for diagrams using Specific Claims (not Broad Claims)
       const formattedDocument = [
         `TITLE: ${parsedDraft.title || 'Provisional Patent Application'}`,
@@ -5138,7 +5038,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         parsedDraft.ramifications_and_scope || '',
         '',
         '--- CLAIMS ---',
-        formatSpecificClaims(specificKeyConcepts),  // Use Specific Claims for diagrams
+        formattedSpecificClaims,  // Use Specific Claims for diagrams
         '',
         '--- ABSTRACT ---',
         parsedDraft.abstract || ''
@@ -5155,9 +5055,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         };
       });
 
-      const diagramsPayload: any = { 
+      const diagramsPayload: any = {
         title: parsedDraft.title || 'Provisional Patent Application',
-        detailed_description: formattedDocument 
+        detailed_description: formattedDocument,
+        // Mirrors the wiring in /generate-showcase: pass key concepts (the
+        // claims-equivalent) as a separate field so the planner is required
+        // to cover each one with a figure, independent of the document blob.
+        keyConcepts: formattedSpecificClaims,
       };
 
       if (Object.keys(codeFromTheUser4).length > 0) {
