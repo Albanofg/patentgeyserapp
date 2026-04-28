@@ -81,7 +81,6 @@ export default function Dashboard() {
       }
       return await apiRequest<Project>("POST", "/api/projects", {
         title: projectName,
-        category: "Software",
         currentStage: 1,
         completed: 0,
       });
@@ -171,15 +170,6 @@ export default function Dashboard() {
     return stages[stage - 1] || "Unknown";
   };
 
-  const getCategoryColor = (category: string) => {
-    const colors: Record<string, string> = {
-      Software: "bg-blue-500/10 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300 border-blue-200 dark:border-blue-800",
-      SaaS: "bg-green-500/10 text-green-700 dark:bg-green-500/20 dark:text-green-300 border-green-200 dark:border-green-800",
-      Blockchain: "bg-purple-500/10 text-purple-700 dark:bg-purple-500/20 dark:text-purple-300 border-purple-200 dark:border-purple-800",
-    };
-    return colors[category] || "bg-gray-500/10 text-gray-700 dark:bg-gray-500/20 dark:text-gray-300 border-gray-200 dark:border-gray-800";
-  };
-
   useEffect(() => {
     if (!userLoading && !user) {
       setLocation("/login");
@@ -265,12 +255,11 @@ export default function Dashboard() {
                   onClick={() => setLocation(`/project/${project.id}/agent/${project.currentStage}`)}
                 >
                   <CardHeader>
-                    <div className="flex items-center gap-2 mb-2 flex-wrap">
-                      <Badge className={getCategoryColor(project.category)}>{project.category}</Badge>
-                      {project.completed === 1 && (
+                    {project.completed === 1 && (
+                      <div className="flex items-center gap-2 mb-2 flex-wrap">
                         <Badge variant="secondary">Complete</Badge>
-                      )}
-                    </div>
+                      </div>
+                    )}
                     <CardTitle className="text-xl mb-2">{project.title}</CardTitle>
                     <CardDescription>
                       Created {new Date(project.createdAt!).toLocaleDateString()}

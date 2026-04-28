@@ -57,7 +57,7 @@ export const projects = pgTable("projects", {
   userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
   paidUserId: varchar("paid_user_id").references(() => paidUsers.id, { onDelete: "cascade" }),
   title: text("title").notNull(),
-  category: text("category").notNull(), // Software, SaaS, or Blockchain
+  category: text("category"), // deprecated — kept nullable for legacy rows
   currentStage: integer("current_stage").notNull().default(1), // 1-5 representing agent stages
   currentSubstage: text("current_substage"), // For Agent 2: '2a', '2b', '2c'
   completed: integer("completed").notNull().default(0), // 0 or 1 boolean

@@ -199,7 +199,6 @@ export function AppSidebar({ projectId }: AppSidebarProps) {
             <SidebarGroupContent>
               <div className="px-3 py-2 text-sm">
                 <p className="font-medium truncate">{project.title}</p>
-                <p className="text-xs text-muted-foreground">{project.category}</p>
               </div>
             </SidebarGroupContent>
           </SidebarGroup>

@@ -4840,6 +4840,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
+      // Fallback: if neither edited claims nor broad claims yielded anything,
+      // pull the user-selected key concepts from Agent 4 directly. Without this,
+      // the planner runs with no coverage anchor and the figure count collapses.
+      if (!claimsForDiagrams.trim()) {
+        const selectedKeyConcepts = agent4DataObj?.selectedKeyConcepts || [];
+        if (Array.isArray(selectedKeyConcepts) && selectedKeyConcepts.length > 0) {
+          claimsForDiagrams = selectedKeyConcepts.map((c: any, i: number) => {
+            const text = typeof c === 'string' ? c : c?.text || '';
+            const num = c?.number || (i + 1);
+            const trimmed = text.trim();
+            if (!trimmed) return '';
+            if (/^(Claim\s+\d+[:.:]|\d+[.)])/i.test(trimmed)) return trimmed;
+            return `${num}. ${trimmed}`;
+          }).filter((c: string) => c.length > 0).join('\n\n');
+          console.log(`[generate-showcase] claims empty in draft — falling back to ${selectedKeyConcepts.length} Agent 4 key concept(s)`);
+        }
+      }
+
       console.log("Generating diagrams...");
       console.log(`Using ${selectedClaimType} claims for diagrams (from edited specification)`);
       
@@ -5518,7 +5536,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Build comprehensive project context for the assistant
       const projectContext = {
         projectTitle: project.title,
-        category: project.category,
         currentStage: project.currentStage,
         // Module 1 data
         ideaSummary: agent1Obj?.ideaSummary || agent1Obj?.currentIdea || '',
@@ -6078,8 +6095,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Title
       doc.fontSize(16).font('Helvetica-Bold').text(draft.title || 'Provisional Patent Application', { align: 'center' });
-      doc.moveDown(0.5);
-      doc.fontSize(10).font('Helvetica').text(`Category: ${project.category}`, { align: 'center' });
       doc.moveDown(1.5);
 
       // Background - with paragraph numbering
@@ -6529,12 +6544,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           text: draft.title || 'Provisional Patent Application',
           heading: HeadingLevel.TITLE,
           alignment: AlignmentType.CENTER,
-          spacing: { after: 200 },
-        }),
-        new Paragraph({
-          text: `Category: ${project.category}`,
-          alignment: AlignmentType.CENTER,
-          spacing: { after: 400 },
+          spacing: { after: 600 },
         })
       );
 

@@ -151,7 +151,7 @@ function buildUserMessage(args: {
   whiteSpaceContext: string;
   nugget: PerConceptContext | null;
 }): string {
-  const { category, mainIdea, expandedConcept, conceptText, whiteSpaceContext, nugget } = args;
+  const { mainIdea, expandedConcept, conceptText, whiteSpaceContext, nugget } = args;
 
   const priorArtAware = whiteSpaceContext
     ? `---\n\n**PRIOR ART AWARENESS:**\n${whiteSpaceContext}\n`
@@ -167,7 +167,6 @@ function buildUserMessage(args: {
 
   return (
     `**TECHNICAL CONTEXT:**\n\n` +
-    `**Invention Category:** ${category}\n\n` +
     `**Core Innovation:**\n${mainIdea}\n\n` +
     `**Technical Specification:**\n${expandedConcept}\n\n` +
     `**Specific Concept to Document:**\n${conceptText}\n\n` +

@@ -5,7 +5,6 @@ interface QAPayload {
   conversationHistory: Array<{ role: string; content: string }>;
   projectContext: {
     projectTitle: string;
-    category: string;
     currentStage: number;
     ideaSummary: string;
     extractedIdeas: any[];
@@ -31,10 +30,9 @@ function buildContext(payload: QAPayload): string {
   const sections: string[] = [];
 
   // Project info
-  if (projectContext.projectTitle || projectContext.category || projectContext.currentStage) {
+  if (projectContext.projectTitle || projectContext.currentStage) {
     let projectInfo = "## PROJECT INFO";
     if (projectContext.projectTitle) projectInfo += `\nTitle: ${projectContext.projectTitle}`;
-    if (projectContext.category) projectInfo += `\nCategory: ${projectContext.category}`;
     if (projectContext.currentStage) projectInfo += `\nCurrent Stage: Module ${projectContext.currentStage}`;
     if (currentLocation) projectInfo += `\nLocation: ${currentLocation}`;
     sections.push(projectInfo);

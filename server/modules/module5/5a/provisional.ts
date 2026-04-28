@@ -102,7 +102,6 @@ async function runAgent(agentName: string, userMessage: string): Promise<string>
 
 function titleUserPrompt(p: ParsedInput): string {
   return (
-    `**CATEGORY:** ${p.category}\n\n` +
     `**CORE INNOVATION:**\n${p.coreIdea}\n\n` +
     `**EXPANDED CONCEPT:**\n${p.expandedConcept}\n\n` +
     `**KEY CONCEPTS:**\n${p.keyConceptsText}\n\n` +
@@ -126,7 +125,6 @@ function titleUserPrompt(p: ParsedInput): string {
 function backgroundUserPrompt(p: ParsedInput, s: Sections): string {
   return (
     `**PATENT TITLE:**\n${s.title}\n\n` +
-    `**CATEGORY:** ${p.category}\n\n` +
     `**CORE INNOVATION:**\n${p.coreIdea}\n\n` +
     `**EXPANDED CONCEPT:**\n${p.expandedConcept}\n\n` +
     `**KEY CONCEPTS:**\n${p.keyConceptsText}\n\n` +
@@ -444,7 +442,7 @@ function operationsUserPrompt(p: ParsedInput, s: Sections): string {
   );
 }
 
-function alternativesUserPrompt(p: ParsedInput, s: Sections): string {
+function alternativesUserPrompt(_p: ParsedInput, s: Sections): string {
   return (
     `**PATENT TITLE:**\n${s.title}\n\n` +
     `**SYSTEM ARCHITECTURE:**\n${s.architecture}\n\n` +
