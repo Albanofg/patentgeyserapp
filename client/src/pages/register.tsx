@@ -6,9 +6,21 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Check, X, Eye, EyeOff } from "lucide-react";
+import { TERMS_VERSION } from "@shared/terms";
+import TermsPage from "../../../server/terms/page";
 import logoUrl from "@/assets/geyser-logo.png";
 
 interface PasswordRequirement {
@@ -30,6 +42,8 @@ export default function Register() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [termsOpen, setTermsOpen] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
 
   const passwordChecks = useMemo(() => {
     return passwordRequirements.map((req) => ({
@@ -47,7 +61,12 @@ export default function Register() {
       if (!isPasswordValid) {
         throw new Error("Please meet all password requirements");
       }
-      const response = await apiRequest("POST", "/api/auth/register", { email, password });
+      const response = await apiRequest("POST", "/api/auth/register", {
+        email,
+        password,
+        termsAccepted: true,
+        termsVersion: TERMS_VERSION,
+      });
       return response;
     },
     onSuccess: async () => {
@@ -70,6 +89,11 @@ export default function Register() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!termsAccepted) {
+      setTermsOpen(true);
+      return;
+    }
+
     registerMutation.mutate();
   };
 
@@ -158,11 +182,43 @@ export default function Register() {
                 ))}
               </div>
             </div>
+            <div className="rounded-md border bg-muted/30 p-3 text-sm">
+              <div className="flex items-start gap-3">
+                <Checkbox
+                  id="signup-terms-accepted"
+                  data-testid="checkbox-signup-terms-accepted"
+                  checked={termsAccepted}
+                  onCheckedChange={(checked) => setTermsAccepted(checked === true)}
+                  className="mt-0.5"
+                />
+                <div className="space-y-1 leading-5">
+                  <label htmlFor="signup-terms-accepted" className="text-foreground">
+                    I have read and agree to the{" "}
+                    <a
+                      href="/terms"
+                      data-testid="link-signup-terms"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setTermsOpen(true);
+                      }}
+                      className="font-medium text-primary underline-offset-4 hover:underline"
+                    >
+                      Terms of Service and Refund and Cancellation Policy
+                    </a>
+                    .
+                  </label>
+                  <p className="text-xs text-muted-foreground">
+                    You must check this box before creating your account.
+                  </p>
+                </div>
+              </div>
+            </div>
             <Button
               type="submit"
               data-testid="button-submit"
               className="w-full"
-              disabled={registerMutation.isPending || !isPasswordValid}
+              disabled={registerMutation.isPending || !isPasswordValid || !termsAccepted}
             >
               {registerMutation.isPending ? "Creating account..." : "Create Account"}
             </Button>
@@ -178,6 +234,42 @@ export default function Register() {
           </div>
         </CardContent>
       </Card>
+
+      <Dialog open={termsOpen} onOpenChange={setTermsOpen}>
+        <DialogContent className="h-[88vh] max-h-[88vh] w-[94vw] max-w-5xl gap-0 p-0 sm:rounded-lg">
+          <DialogHeader className="border-b px-6 py-5">
+            <DialogTitle>User Agreement</DialogTitle>
+            <DialogDescription>
+              Clickwrap Agreement
+            </DialogDescription>
+          </DialogHeader>
+
+          <ScrollArea className="h-[calc(88vh-150px)] px-6 py-6 sm:px-8">
+            <div className="pr-4 text-sm leading-6 sm:text-base sm:leading-7 [&_.py-16]:py-6 [&_.px-6]:px-0 [&_.max-w-3xl]:max-w-none">
+              <TermsPage />
+            </div>
+          </ScrollArea>
+
+          <DialogFooter className="border-t px-6 py-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setTermsOpen(false)}
+              disabled={registerMutation.isPending}
+            >
+              Close
+            </Button>
+            <Button
+              type="button"
+              data-testid="button-confirm-reviewed-terms"
+              onClick={() => setTermsOpen(false)}
+              disabled={registerMutation.isPending}
+            >
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

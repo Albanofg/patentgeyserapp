@@ -3,7 +3,8 @@ import { createServer, type Server } from "http";
 import https from "https";
 import { storage } from "./storage";
 import { pool } from "./db";
-import { insertUserSchema, insertProjectSchema } from "@shared/schema";
+import { insertProjectSchema } from "@shared/schema";
+import { TERMS_VERSION } from "@shared/terms";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 import session from "express-session";
@@ -27,6 +28,11 @@ import { runBroaderClaims } from "./modules/module5/5c/broader-claims";
 import { runProvisional } from "./modules/module5/5a/provisional";
 
 const SALT_ROUNDS = 10;
+
+const registerRequestSchema = z.object({
+  email: z.string().trim().toLowerCase().email("Enter a valid email address"),
+  password: z.string(),
+});
 
 // Agent processing timeout - 15 minutes for complex AI operations
 const AGENT_TIMEOUT = 900000; // 15 minutes in milliseconds
@@ -425,7 +431,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Register new user
   app.post("/api/auth/register", async (req, res) => {
     try {
-      const { email, password } = insertUserSchema.parse(req.body);
+      if (req.body?.termsAccepted !== true || req.body?.termsVersion !== TERMS_VERSION) {
+        return res.status(400).json({
+          message: "You must accept the current Terms of Service before creating an account.",
+        });
+      }
+
+      const { email, password } = registerRequestSchema.parse(req.body);
       // Default new signups to "paid" (PatentGeyser consumer). Legacy creation is admin-only.
       const kind: UserKind = req.body?.kind === "legacy" ? "legacy" : "paid";
 
@@ -6807,4 +6819,3 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const httpServer = createServer(app);
   return httpServer;
 }
-
