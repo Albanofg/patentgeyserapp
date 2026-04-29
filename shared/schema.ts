@@ -1,5 +1,11 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, jsonb, boolean } from "drizzle-orm/pg-core";
+import { pgSchema, text, varchar, timestamp, integer, jsonb, boolean } from "drizzle-orm/pg-core";
+
+// All PatentGeyser (inventor/consumer) tables live under the `inventor_geyser`
+// Postgres schema. The same Neon DB also hosts the twin (lawyer) app under the
+// `patent_geyser` schema — DO NOT touch that schema from this app.
+const inventorGeyser = pgSchema("inventor_geyser");
+const pgTable = inventorGeyser.table.bind(inventorGeyser);
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
