@@ -29,7 +29,10 @@ export const users = pgTable("users", {
 // PatentGeyser paid customers (GoHighLevel funnel). Separate from the shared
 // `users` table used by the lawyer twin app. Same auth mechanism (bcrypt +
 // email/password + 2FA), but each paid user has a project creation cap.
-export const paidUsers = pgTable("paid_users", {
+// NOTE: identifier kept as `paidUsers` to avoid touching ~140 references across
+// the codebase right now — but the underlying table is `inventors_users` in the
+// `inventor_geyser` schema. Full rename to `inventorsUsers` is a follow-up.
+export const paidUsers = pgTable("inventors_users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   email: text("email").notNull().unique(),
   password: text("password").notNull(),
@@ -61,7 +64,7 @@ export type SourceCodeFile = {
 export const projects = pgTable("projects", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
-  paidUserId: varchar("paid_user_id").references(() => paidUsers.id, { onDelete: "cascade" }),
+  paidUserId: varchar("inventors_user_id").references(() => paidUsers.id, { onDelete: "cascade" }),
   title: text("title").notNull(),
   category: text("category"), // deprecated — kept nullable for legacy rows
   currentStage: integer("current_stage").notNull().default(1), // 1-5 representing agent stages
@@ -107,7 +110,7 @@ export const ideaSnapshots = pgTable("idea_snapshots", {
 export const priorArtSearches = pgTable("prior_art_searches", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
-  paidUserId: varchar("paid_user_id").references(() => paidUsers.id, { onDelete: "cascade" }),
+  paidUserId: varchar("inventors_user_id").references(() => paidUsers.id, { onDelete: "cascade" }),
   searchText: text("search_text").notNull(),
   results: jsonb("results"),
   analysis: jsonb("analysis"),
