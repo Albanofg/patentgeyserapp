@@ -211,8 +211,8 @@ export class DatabaseStorage implements IStorage {
         COUNT(p.id)::int AS "projectCount",
         pu.last_login_at AS "lastLoginAt",
         pu.created_at AS "createdAt"
-      FROM paid_users pu
-      LEFT JOIN projects p ON p.paid_user_id = pu.id
+      FROM inventor_geyser.inventors_users pu
+      LEFT JOIN inventor_geyser.projects p ON p.inventors_user_id = pu.id
       GROUP BY pu.id, pu.email, pu.project_limit, pu.two_factor_enabled, pu.last_login_at, pu.created_at
       ORDER BY pu.created_at DESC NULLS LAST
     `);
@@ -497,9 +497,9 @@ export class DatabaseStorage implements IStorage {
           ) FILTER (WHERE p.id IS NOT NULL),
           '[]'
         ) AS "projectStages"
-      FROM users u
-      LEFT JOIN email_whitelist w ON lower(u.email) = w.email
-      LEFT JOIN projects p ON p.user_id = u.id
+      FROM inventor_geyser.users u
+      LEFT JOIN inventor_geyser.email_whitelist w ON lower(u.email) = w.email
+      LEFT JOIN inventor_geyser.projects p ON p.user_id = u.id
       GROUP BY u.id, u.email, u.two_factor_enabled, w.status, w.note, u.last_login_at, u.created_at
       ORDER BY u.last_login_at DESC NULLS LAST
     `);
