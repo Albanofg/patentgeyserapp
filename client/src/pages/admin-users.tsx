@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, Users, ShieldCheck, ShieldOff, FolderOpen, PauseCircle, PlayCircle, Mail, Clock } from "lucide-react";
 
-interface PaidAdminUser {
+interface InventorAdminUser {
   id: string;
   email: string;
   projectLimit: number;
@@ -70,8 +70,8 @@ export default function AdminUsers() {
     retry: false,
   });
 
-  const { data: paidUsers = [], isLoading: paidLoading } = useQuery<PaidAdminUser[]>({
-    queryKey: ["/api/admin/paid-users"],
+  const { data: inventorUsers = [], isLoading: inventorLoading } = useQuery<InventorAdminUser[]>({
+    queryKey: ["/api/admin/inventors-users"],
     retry: false,
   });
 
@@ -79,10 +79,10 @@ export default function AdminUsers() {
 
   const limitMutation = useMutation({
     mutationFn: async ({ id, projectLimit }: { id: string; projectLimit: number }) => {
-      return await apiRequest("PATCH", `/api/admin/paid-users/${id}/project-limit`, { projectLimit });
+      return await apiRequest("PATCH", `/api/admin/inventors-users/${id}/project-limit`, { projectLimit });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/paid-users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/inventors-users"] });
       toast({ title: "Project limit updated" });
     },
     onError: () => {
@@ -280,14 +280,14 @@ export default function AdminUsers() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Paid Users (PatentGeyser)</CardTitle>
-          <CardDescription>Project creation limit per paid user. Bump this when a GHL purchase is confirmed.</CardDescription>
+          <CardTitle>Inventor Users (PatentGeyser)</CardTitle>
+          <CardDescription>Project creation limit per user. Bump this when a credit purchase is confirmed.</CardDescription>
         </CardHeader>
         <CardContent>
-          {paidLoading ? (
+          {inventorLoading ? (
             <div className="flex items-center gap-2 text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Loading…</div>
-          ) : paidUsers.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No paid users yet.</p>
+          ) : inventorUsers.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No users yet.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -303,7 +303,7 @@ export default function AdminUsers() {
                   </tr>
                 </thead>
                 <tbody>
-                  {paidUsers.map((u) => {
+                  {inventorUsers.map((u) => {
                     const draft = limitEdits[u.id] ?? String(u.projectLimit);
                     const dirty = draft !== String(u.projectLimit);
                     return (

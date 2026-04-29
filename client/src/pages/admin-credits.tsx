@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, Minus, Plus } from "lucide-react";
 
-interface PaidAdminUser {
+interface InventorAdminUser {
   id: string;
   email: string;
   projectLimit: number;
@@ -20,20 +20,20 @@ export default function AdminCredits() {
   const [email, setEmail] = useState("");
   const [delta, setDelta] = useState("1");
 
-  const { data: users = [], isLoading } = useQuery<PaidAdminUser[]>({
-    queryKey: ["/api/admin/paid-users"],
+  const { data: users = [], isLoading } = useQuery<InventorAdminUser[]>({
+    queryKey: ["/api/admin/inventors-users"],
     retry: false,
   });
 
   const setLimitMutation = useMutation({
     mutationFn: async ({ id, projectLimit }: { id: string; projectLimit: number }) =>
-      apiRequest("PATCH", `/api/admin/paid-users/${id}/project-limit`, { projectLimit }),
+      apiRequest("PATCH", `/api/admin/inventors-users/${id}/project-limit`, { projectLimit }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/paid-users"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/inventors-users"] });
     },
   });
 
-  function applyDelta(user: PaidAdminUser, change: number) {
+  function applyDelta(user: InventorAdminUser, change: number) {
     const next = Math.max(0, user.projectLimit + change);
     setLimitMutation.mutate(
       { id: user.id, projectLimit: next },
@@ -47,7 +47,7 @@ export default function AdminCredits() {
   function applyByEmail() {
     const match = users.find((u) => u.email.toLowerCase() === email.trim().toLowerCase());
     if (!match) {
-      toast({ title: "No paid user with that email", variant: "destructive" });
+      toast({ title: "No user with that email", variant: "destructive" });
       return;
     }
     const n = Number(delta);
@@ -63,7 +63,7 @@ export default function AdminCredits() {
       <div>
         <h1 className="text-2xl font-semibold">Grant Credits</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Add or remove project credits for a paid user. Changes apply instantly.
+          Add or remove project credits for a user. Changes apply instantly.
         </p>
       </div>
 
@@ -99,7 +99,7 @@ export default function AdminCredits() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">All paid users</CardTitle>
+          <CardTitle className="text-base">All users</CardTitle>
         </CardHeader>
         <CardContent>
           {isLoading ? (
@@ -107,7 +107,7 @@ export default function AdminCredits() {
               <Loader2 className="h-4 w-4 animate-spin" /> Loading…
             </div>
           ) : users.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No paid users yet.</p>
+            <p className="text-sm text-muted-foreground">No users yet.</p>
           ) : (
             <div className="space-y-2">
               {users.map((u) => (

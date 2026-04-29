@@ -26,13 +26,10 @@ export const users = pgTable("users", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
-// PatentGeyser paid customers (GoHighLevel funnel). Separate from the shared
-// `users` table used by the lawyer twin app. Same auth mechanism (bcrypt +
-// email/password + 2FA), but each paid user has a project creation cap.
-// NOTE: identifier kept as `paidUsers` to avoid touching ~140 references across
-// the codebase right now — but the underlying table is `inventors_users` in the
-// `inventor_geyser` schema. Full rename to `inventorsUsers` is a follow-up.
-export const paidUsers = pgTable("inventors_users", {
+// PatentGeyser inventor users. Separate from the shared `users` table used by
+// the lawyer twin app. Same auth mechanism (bcrypt + email/password + 2FA),
+// and each user has a per-credit project creation cap (free signups start at 0).
+export const inventorsUsers = pgTable("inventors_users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   email: text("email").notNull().unique(),
   password: text("password").notNull(),
@@ -60,11 +57,11 @@ export type SourceCodeFile = {
 };
 
 // Projects table - stores patent application projects
-// Exactly one of userId / paidUserId is set per row (enforced at app layer).
+// Exactly one of userId / inventorsUserId is set per row (enforced at app layer).
 export const projects = pgTable("projects", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
-  paidUserId: varchar("inventors_user_id").references(() => paidUsers.id, { onDelete: "cascade" }),
+  inventorsUserId: varchar("inventors_user_id").references(() => inventorsUsers.id, { onDelete: "cascade" }),
   title: text("title").notNull(),
   category: text("category"), // deprecated — kept nullable for legacy rows
   currentStage: integer("current_stage").notNull().default(1), // 1-5 representing agent stages
@@ -106,11 +103,11 @@ export const ideaSnapshots = pgTable("idea_snapshots", {
 });
 
 // Quick Prior Art Searches - standalone prior art checks from sidebar.
-// Exactly one of userId / paidUserId is set per row.
+// Exactly one of userId / inventorsUserId is set per row.
 export const priorArtSearches = pgTable("prior_art_searches", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
-  paidUserId: varchar("inventors_user_id").references(() => paidUsers.id, { onDelete: "cascade" }),
+  inventorsUserId: varchar("inventors_user_id").references(() => inventorsUsers.id, { onDelete: "cascade" }),
   searchText: text("search_text").notNull(),
   results: jsonb("results"),
   analysis: jsonb("analysis"),
@@ -138,7 +135,7 @@ export const usersRelations = relations(users, ({ many }) => ({
   projects: many(projects),
 }));
 
-export const paidUsersRelations = relations(paidUsers, ({ many }) => ({
+export const inventorsUsersRelations = relations(inventorsUsers, ({ many }) => ({
   projects: many(projects),
 }));
 
@@ -147,9 +144,9 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
     fields: [projects.userId],
     references: [users.id],
   }),
-  paidUser: one(paidUsers, {
-    fields: [projects.paidUserId],
-    references: [paidUsers.id],
+  inventorUser: one(inventorsUsers, {
+    fields: [projects.inventorsUserId],
+    references: [inventorsUsers.id],
   }),
   agentData: many(agentData),
   ideaSnapshots: many(ideaSnapshots),
@@ -191,7 +188,7 @@ export const insertUserSchema = createInsertSchema(users).omit({
   updatedAt: true,
 });
 
-export const insertPaidUserSchema = createInsertSchema(paidUsers).omit({
+export const insertInventorUserSchema = createInsertSchema(inventorsUsers).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
@@ -200,7 +197,7 @@ export const insertPaidUserSchema = createInsertSchema(paidUsers).omit({
 
 export const insertProjectSchema = createInsertSchema(projects, {
   userId: z.string().nullable().optional(),
-  paidUserId: z.string().nullable().optional(),
+  inventorsUserId: z.string().nullable().optional(),
   sourceCodeFiles: z.array(z.object({
     id: z.string(),
     fileName: z.string(),
@@ -233,7 +230,7 @@ export const insertIdeaSnapshotSchema = createInsertSchema(ideaSnapshots).omit({
 
 export const insertPriorArtSearchSchema = createInsertSchema(priorArtSearches, {
   userId: z.string().nullable().optional(),
-  paidUserId: z.string().nullable().optional(),
+  inventorsUserId: z.string().nullable().optional(),
 }).omit({
   id: true,
   createdAt: true,
@@ -242,8 +239,8 @@ export const insertPriorArtSearchSchema = createInsertSchema(priorArtSearches, {
 // Types
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
-export type InsertPaidUser = z.infer<typeof insertPaidUserSchema>;
-export type PaidUser = typeof paidUsers.$inferSelect;
+export type InsertInventorUser = z.infer<typeof insertInventorUserSchema>;
+export type InventorUser = typeof inventorsUsers.$inferSelect;
 export type InsertProject = z.infer<typeof insertProjectSchema>;
 export type Project = typeof projects.$inferSelect;
 export type InsertAgentData = z.infer<typeof insertAgentDataSchema>;

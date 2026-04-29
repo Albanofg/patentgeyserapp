@@ -1,5 +1,5 @@
 // Storage layer implementation using DatabaseStorage as per javascript_database blueprint
-import { users, paidUsers, projects, agentData, pannuRecords, ideaSnapshots, priorArtSearches, emailWhitelist, type User, type InsertUser, type PaidUser, type InsertPaidUser, type Project, type InsertProject, type AgentData, type InsertAgentData, type PannuRecord, type InsertPannuRecord, type IdeaSnapshot, type InsertIdeaSnapshot, type PriorArtSearch, type InsertPriorArtSearch, type EmailWhitelistEntry } from "@shared/schema";
+import { users, inventorsUsers, projects, agentData, pannuRecords, ideaSnapshots, priorArtSearches, emailWhitelist, type User, type InsertUser, type InventorUser, type InsertInventorUser, type Project, type InsertProject, type AgentData, type InsertAgentData, type PannuRecord, type InsertPannuRecord, type IdeaSnapshot, type InsertIdeaSnapshot, type PriorArtSearch, type InsertPriorArtSearch, type EmailWhitelistEntry } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, and, desc, sql } from "drizzle-orm";
 
@@ -21,16 +21,16 @@ export interface IStorage {
   updateUser2FA(userId: string, data: Update2FAData): Promise<User | undefined>;
   updateUserPassword(userId: string, hashedPassword: string): Promise<User | undefined>;
 
-  // Paid user operations (PatentGeyser GHL customers)
-  getPaidUser(id: string): Promise<PaidUser | undefined>;
-  getPaidUserByEmail(email: string): Promise<PaidUser | undefined>;
-  createPaidUser(user: InsertPaidUser): Promise<PaidUser>;
-  updatePaidUser2FA(userId: string, data: Update2FAData): Promise<PaidUser | undefined>;
-  updatePaidUserPassword(userId: string, hashedPassword: string): Promise<PaidUser | undefined>;
-  setPaidUserProjectLimit(userId: string, projectLimit: number): Promise<PaidUser | undefined>;
-  incrementPaidUserProjectLimit(userId: string, delta: number): Promise<PaidUser | undefined>;
-  updatePaidUserLastLogin(userId: string): Promise<void>;
-  getPaidUsersAdminView(): Promise<Array<{
+  // Inventor user operations
+  getInventorUser(id: string): Promise<InventorUser | undefined>;
+  getInventorUserByEmail(email: string): Promise<InventorUser | undefined>;
+  createInventorUser(user: InsertInventorUser): Promise<InventorUser>;
+  updateInventorUser2FA(userId: string, data: Update2FAData): Promise<InventorUser | undefined>;
+  updateInventorUserPassword(userId: string, hashedPassword: string): Promise<InventorUser | undefined>;
+  setInventorUserProjectLimit(userId: string, projectLimit: number): Promise<InventorUser | undefined>;
+  incrementInventorUserProjectLimit(userId: string, delta: number): Promise<InventorUser | undefined>;
+  updateInventorUserLastLogin(userId: string): Promise<void>;
+  getInventorUsersAdminView(): Promise<Array<{
     id: string;
     email: string;
     projectLimit: number;
@@ -43,8 +43,8 @@ export interface IStorage {
   // Project operations
   getProject(id: string): Promise<Project | undefined>;
   getProjectsByUserId(userId: string): Promise<Project[]>;
-  getProjectsByOwner(owner: { kind: "legacy"; userId: string } | { kind: "paid"; paidUserId: string }): Promise<Project[]>;
-  countProjectsByPaidUserId(paidUserId: string): Promise<number>;
+  getProjectsByOwner(owner: { kind: "legacy"; userId: string } | { kind: "paid"; inventorsUserId: string }): Promise<Project[]>;
+  countProjectsByInventorUserId(inventorsUserId: string): Promise<number>;
   createProject(project: InsertProject): Promise<Project>;
   updateProject(id: string, data: Partial<InsertProject>): Promise<Project | undefined>;
   deleteProject(id: string): Promise<void>;
@@ -133,67 +133,67 @@ export class DatabaseStorage implements IStorage {
     return user || undefined;
   }
 
-  // Paid user operations
-  async getPaidUser(id: string): Promise<PaidUser | undefined> {
-    const [user] = await db.select().from(paidUsers).where(eq(paidUsers.id, id));
+  // Inventor user operations
+  async getInventorUser(id: string): Promise<InventorUser | undefined> {
+    const [user] = await db.select().from(inventorsUsers).where(eq(inventorsUsers.id, id));
     return user || undefined;
   }
 
-  async getPaidUserByEmail(email: string): Promise<PaidUser | undefined> {
+  async getInventorUserByEmail(email: string): Promise<InventorUser | undefined> {
     const normalized = email.toLowerCase().trim();
-    const [user] = await db.select().from(paidUsers).where(eq(paidUsers.email, normalized));
+    const [user] = await db.select().from(inventorsUsers).where(eq(inventorsUsers.email, normalized));
     return user || undefined;
   }
 
-  async createPaidUser(insert: InsertPaidUser): Promise<PaidUser> {
+  async createInventorUser(insert: InsertInventorUser): Promise<InventorUser> {
     const [user] = await db
-      .insert(paidUsers)
+      .insert(inventorsUsers)
       .values({ ...insert, email: insert.email.toLowerCase().trim() })
       .returning();
     return user;
   }
 
-  async updatePaidUser2FA(userId: string, data: Update2FAData): Promise<PaidUser | undefined> {
+  async updateInventorUser2FA(userId: string, data: Update2FAData): Promise<InventorUser | undefined> {
     const [user] = await db
-      .update(paidUsers)
+      .update(inventorsUsers)
       .set({ ...data, updatedAt: new Date() })
-      .where(eq(paidUsers.id, userId))
+      .where(eq(inventorsUsers.id, userId))
       .returning();
     return user || undefined;
   }
 
-  async updatePaidUserPassword(userId: string, hashedPassword: string): Promise<PaidUser | undefined> {
+  async updateInventorUserPassword(userId: string, hashedPassword: string): Promise<InventorUser | undefined> {
     const [user] = await db
-      .update(paidUsers)
+      .update(inventorsUsers)
       .set({ password: hashedPassword, updatedAt: new Date() })
-      .where(eq(paidUsers.id, userId))
+      .where(eq(inventorsUsers.id, userId))
       .returning();
     return user || undefined;
   }
 
-  async setPaidUserProjectLimit(userId: string, projectLimit: number): Promise<PaidUser | undefined> {
+  async setInventorUserProjectLimit(userId: string, projectLimit: number): Promise<InventorUser | undefined> {
     const [user] = await db
-      .update(paidUsers)
+      .update(inventorsUsers)
       .set({ projectLimit, updatedAt: new Date() })
-      .where(eq(paidUsers.id, userId))
+      .where(eq(inventorsUsers.id, userId))
       .returning();
     return user || undefined;
   }
 
-  async incrementPaidUserProjectLimit(userId: string, delta: number): Promise<PaidUser | undefined> {
+  async incrementInventorUserProjectLimit(userId: string, delta: number): Promise<InventorUser | undefined> {
     const [user] = await db
-      .update(paidUsers)
-      .set({ projectLimit: sql`${paidUsers.projectLimit} + ${delta}`, updatedAt: new Date() })
-      .where(eq(paidUsers.id, userId))
+      .update(inventorsUsers)
+      .set({ projectLimit: sql`${inventorsUsers.projectLimit} + ${delta}`, updatedAt: new Date() })
+      .where(eq(inventorsUsers.id, userId))
       .returning();
     return user || undefined;
   }
 
-  async updatePaidUserLastLogin(userId: string): Promise<void> {
-    await db.update(paidUsers).set({ lastLoginAt: new Date() }).where(eq(paidUsers.id, userId));
+  async updateInventorUserLastLogin(userId: string): Promise<void> {
+    await db.update(inventorsUsers).set({ lastLoginAt: new Date() }).where(eq(inventorsUsers.id, userId));
   }
 
-  async getPaidUsersAdminView(): Promise<Array<{
+  async getInventorUsersAdminView(): Promise<Array<{
     id: string;
     email: string;
     projectLimit: number;
@@ -242,7 +242,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getProjectsByOwner(
-    owner: { kind: "legacy"; userId: string } | { kind: "paid"; paidUserId: string }
+    owner: { kind: "legacy"; userId: string } | { kind: "paid"; inventorsUserId: string }
   ): Promise<Project[]> {
     if (owner.kind === "legacy") {
       return await db
@@ -254,15 +254,15 @@ export class DatabaseStorage implements IStorage {
     return await db
       .select()
       .from(projects)
-      .where(eq(projects.paidUserId, owner.paidUserId))
+      .where(eq(projects.inventorsUserId, owner.inventorsUserId))
       .orderBy(desc(projects.updatedAt));
   }
 
-  async countProjectsByPaidUserId(paidUserId: string): Promise<number> {
+  async countProjectsByInventorUserId(inventorsUserId: string): Promise<number> {
     const [row] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(projects)
-      .where(eq(projects.paidUserId, paidUserId));
+      .where(eq(projects.inventorsUserId, inventorsUserId));
     return row?.count ?? 0;
   }
 
@@ -412,7 +412,7 @@ export class DatabaseStorage implements IStorage {
 
   // Prior art search operations
   async getPriorArtSearches(owner: { kind: "legacy" | "paid"; userId: string }): Promise<PriorArtSearch[]> {
-    const col = owner.kind === "paid" ? priorArtSearches.paidUserId : priorArtSearches.userId;
+    const col = owner.kind === "paid" ? priorArtSearches.inventorsUserId : priorArtSearches.userId;
     return await db
       .select()
       .from(priorArtSearches)

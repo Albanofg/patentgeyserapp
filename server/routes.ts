@@ -191,7 +191,7 @@ async function loadAuthUser(req: Request): Promise<AuthUser | null> {
   if (!userId) return null;
   const kind: UserKind = session.userKind === "paid" ? "paid" : "legacy";
   if (kind === "paid") {
-    const user = await storage.getPaidUser(userId);
+    const user = await storage.getInventorUser(userId);
     if (!user) return null;
     return { id: user.id, email: user.email, kind: "paid" };
   }
@@ -208,16 +208,16 @@ const withAuthUser = async (req: Request, res: Response, next: NextFunction) => 
 };
 
 // Checks that the current session owns the given project, whether they are a
-// legacy user (project.userId) or a paid user (project.paidUserId).
+// legacy user (project.userId) or an inventor user (project.inventorsUserId).
 function sessionOwnsProject(
   req: Request,
-  project: { userId: string | null; paidUserId: string | null }
+  project: { userId: string | null; inventorsUserId: string | null }
 ): boolean {
   const session = req.session as any;
   const sid: string | undefined = session?.userId;
   if (!sid) return false;
   const kind: UserKind = session.userKind === "paid" ? "paid" : "legacy";
-  return kind === "paid" ? project.paidUserId === sid : project.userId === sid;
+  return kind === "paid" ? project.inventorsUserId === sid : project.userId === sid;
 }
 
 const ADMIN_EMAILS = new Set([
@@ -227,8 +227,11 @@ const ADMIN_EMAILS = new Set([
 
 const isAdmin = async (req: Request, res: Response, next: NextFunction) => {
   const userId = (req.session as any)?.userId;
+  const userKind = (req.session as any)?.userKind;
   if (!userId) return res.status(401).json({ message: "Unauthorized" });
-  const user = await storage.getUser(userId);
+  const user = userKind === "paid"
+    ? await storage.getInventorUser(userId)
+    : await storage.getUser(userId);
   if (!user || !ADMIN_EMAILS.has(user.email.toLowerCase().trim())) {
     return res.status(403).json({ message: "Forbidden" });
   }
@@ -453,17 +456,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: failedRequirement.message });
       }
 
-      // Cross-table uniqueness: an email exists in at most one of users / paid_users.
+      // Cross-table uniqueness: an email exists in at most one of users / inventors_users.
       const existingLegacy = await storage.getUserByEmail(email);
-      const existingPaid = await storage.getPaidUserByEmail(email);
-      if (existingLegacy || existingPaid) {
+      const existingInventor = await storage.getInventorUserByEmail(email);
+      if (existingLegacy || existingInventor) {
         return res.status(400).json({ message: "User already exists" });
       }
 
       const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
       let newId: string;
       if (kind === "paid") {
-        const user = await storage.createPaidUser({ email, password: hashedPassword });
+        const user = await storage.createInventorUser({ email, password: hashedPassword });
         newId = user.id;
       } else {
         const user = await storage.createUser({ email, password: hashedPassword });
@@ -503,11 +506,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { email, password } = req.body;
 
       // Whitelist gate is currently disabled (freemium). Kept in DB so we can re-enable later.
-      // Try paid_users first (PatentGeyser customers), fall back to shared users table.
-      const paidUser = await storage.getPaidUserByEmail(email);
-      const legacyUser = paidUser ? undefined : await storage.getUserByEmail(email);
-      const matched = paidUser
-        ? { kind: "paid" as const, record: paidUser }
+      // Try inventors_users first (PatentGeyser customers), fall back to shared users table.
+      const inventorUser = await storage.getInventorUserByEmail(email);
+      const legacyUser = inventorUser ? undefined : await storage.getUserByEmail(email);
+      const matched = inventorUser
+        ? { kind: "paid" as const, record: inventorUser }
         : legacyUser
           ? { kind: "legacy" as const, record: legacyUser }
           : null;
@@ -536,7 +539,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (!matched.record.twoFactorEnabled) {
         if (matched.kind === "paid") {
-          storage.updatePaidUserLastLogin(matched.record.id).catch(() => {});
+          storage.updateInventorUserLastLogin(matched.record.id).catch(() => {});
         } else {
           storage.updateLastLogin(matched.record.id).catch(() => {});
         }
@@ -577,26 +580,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // List PatentGeyser paid users with their project usage.
-  app.get("/api/admin/paid-users", isAdmin, async (req, res) => {
+  // List PatentGeyser inventor users with their project usage.
+  app.get("/api/admin/inventors-users", isAdmin, async (req, res) => {
     try {
-      const list = await storage.getPaidUsersAdminView();
+      const list = await storage.getInventorUsersAdminView();
       res.json(list);
     } catch (error: any) {
-      console.error("List paid users error:", error);
-      res.status(500).json({ message: "Failed to fetch paid users" });
+      console.error("List inventor users error:", error);
+      res.status(500).json({ message: "Failed to fetch users" });
     }
   });
 
-  app.patch("/api/admin/paid-users/:id/project-limit", isAdmin, async (req, res) => {
+  app.patch("/api/admin/inventors-users/:id/project-limit", isAdmin, async (req, res) => {
     try {
       const { projectLimit } = req.body;
       const parsed = Number(projectLimit);
       if (!Number.isInteger(parsed) || parsed < 0 || parsed > 10000) {
         return res.status(400).json({ message: "projectLimit must be an integer between 0 and 10000" });
       }
-      const user = await storage.setPaidUserProjectLimit(req.params.id, parsed);
-      if (!user) return res.status(404).json({ message: "Paid user not found" });
+      const user = await storage.setInventorUserProjectLimit(req.params.id, parsed);
+      if (!user) return res.status(404).json({ message: "User not found" });
       res.json({ id: user.id, projectLimit: user.projectLimit });
     } catch (error: any) {
       console.error("Set project limit error:", error);
@@ -754,9 +757,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const subscriptionStatus = session.whitelistStatus || "active";
 
       if (kind === "paid") {
-        const user = await storage.getPaidUser(userId);
+        const user = await storage.getInventorUser(userId);
         if (!user) return res.status(404).json({ message: "User not found" });
-        const projectsUsed = await storage.countProjectsByPaidUserId(user.id);
+        const projectsUsed = await storage.countProjectsByInventorUserId(user.id);
         return res.json({
           id: user.id,
           email: user.email,
@@ -1467,7 +1470,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Store the search in database under the right owner column.
       const savedSearch = await storage.createPriorArtSearch({
         userId: authUser.kind === "legacy" ? userId : null,
-        paidUserId: authUser.kind === "paid" ? userId : null,
+        inventorsUserId: authUser.kind === "paid" ? userId : null,
         searchText: searchText.trim(),
         results,
         analysis,
@@ -1505,7 +1508,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const authUser: AuthUser = (req as any).authUser;
       const list = authUser.kind === "paid"
-        ? await storage.getProjectsByOwner({ kind: "paid", paidUserId: authUser.id })
+        ? await storage.getProjectsByOwner({ kind: "paid", inventorsUserId: authUser.id })
         : await storage.getProjectsByOwner({ kind: "legacy", userId: authUser.id });
       res.json(list);
     } catch (error: any) {
@@ -1542,25 +1545,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const authUser: AuthUser = (req as any).authUser;
 
       if (authUser.kind === "paid") {
-        const paidUser = await storage.getPaidUser(authUser.id);
-        if (!paidUser) return res.status(401).json({ message: "Unauthorized" });
-        const used = await storage.countProjectsByPaidUserId(paidUser.id);
-        if (used >= paidUser.projectLimit) {
+        const inventorUser = await storage.getInventorUser(authUser.id);
+        if (!inventorUser) return res.status(401).json({ message: "Unauthorized" });
+        const used = await storage.countProjectsByInventorUserId(inventorUser.id);
+        if (used >= inventorUser.projectLimit) {
           return res.status(402).json({
             code: "PROJECT_LIMIT_REACHED",
             message: "You're out of credits. Purchase more to create another project.",
-            credits: paidUser.projectLimit,
+            credits: inventorUser.projectLimit,
             creditsUsed: used,
-            creditsRemaining: Math.max(0, paidUser.projectLimit - used),
+            creditsRemaining: Math.max(0, inventorUser.projectLimit - used),
             embedUrl: process.env.GHL_EMBED_URL || null,
           });
         }
       }
 
-      const { userId: _u, paidUserId: _p, ...clientFields } = req.body || {};
+      const { userId: _u, inventorsUserId: _p, ...clientFields } = req.body || {};
       const ownerFields = authUser.kind === "paid"
-        ? { paidUserId: authUser.id, userId: null }
-        : { userId: authUser.id, paidUserId: null };
+        ? { inventorsUserId: authUser.id, userId: null }
+        : { userId: authUser.id, inventorsUserId: null };
 
       const projectData = insertProjectSchema.parse({ ...clientFields, ...ownerFields });
       const project = await storage.createProject(projectData);

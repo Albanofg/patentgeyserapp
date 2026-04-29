@@ -24,13 +24,13 @@ __export(schema_exports, {
   ideaSnapshotsRelations: () => ideaSnapshotsRelations,
   insertAgentDataSchema: () => insertAgentDataSchema,
   insertIdeaSnapshotSchema: () => insertIdeaSnapshotSchema,
-  insertPaidUserSchema: () => insertPaidUserSchema,
+  insertInventorUserSchema: () => insertInventorUserSchema,
   insertPannuRecordSchema: () => insertPannuRecordSchema,
   insertPriorArtSearchSchema: () => insertPriorArtSearchSchema,
   insertProjectSchema: () => insertProjectSchema,
   insertUserSchema: () => insertUserSchema,
-  paidUsers: () => paidUsers,
-  paidUsersRelations: () => paidUsersRelations,
+  inventorsUsers: () => inventorsUsers,
+  inventorsUsersRelations: () => inventorsUsersRelations,
   pannuRecords: () => pannuRecords,
   pannuRecordsRelations: () => pannuRecordsRelations,
   priorArtSearches: () => priorArtSearches,
@@ -41,9 +41,11 @@ __export(schema_exports, {
   usersRelations: () => usersRelations
 });
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, jsonb, boolean } from "drizzle-orm/pg-core";
+import { pgSchema, text, varchar, timestamp, integer, jsonb, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+var inventorGeyser = pgSchema("inventor_geyser");
+var pgTable = inventorGeyser.table.bind(inventorGeyser);
 var users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   email: text("email").notNull().unique(),
@@ -64,7 +66,7 @@ var users = pgTable("users", {
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow()
 });
-var paidUsers = pgTable("paid_users", {
+var inventorsUsers = pgTable("inventors_users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   email: text("email").notNull().unique(),
   password: text("password").notNull(),
@@ -83,10 +85,10 @@ var paidUsers = pgTable("paid_users", {
 var projects = pgTable("projects", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
-  paidUserId: varchar("paid_user_id").references(() => paidUsers.id, { onDelete: "cascade" }),
+  inventorsUserId: varchar("inventors_user_id").references(() => inventorsUsers.id, { onDelete: "cascade" }),
   title: text("title").notNull(),
-  category: text("category").notNull(),
-  // Software, SaaS, or Blockchain
+  category: text("category"),
+  // deprecated — kept nullable for legacy rows
   currentStage: integer("current_stage").notNull().default(1),
   // 1-5 representing agent stages
   currentSubstage: text("current_substage"),
@@ -130,7 +132,7 @@ var ideaSnapshots = pgTable("idea_snapshots", {
 var priorArtSearches = pgTable("prior_art_searches", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }),
-  paidUserId: varchar("paid_user_id").references(() => paidUsers.id, { onDelete: "cascade" }),
+  inventorsUserId: varchar("inventors_user_id").references(() => inventorsUsers.id, { onDelete: "cascade" }),
   searchText: text("search_text").notNull(),
   results: jsonb("results"),
   analysis: jsonb("analysis"),
@@ -161,7 +163,7 @@ var pannuRecords = pgTable("pannu_records", {
 var usersRelations = relations(users, ({ many }) => ({
   projects: many(projects)
 }));
-var paidUsersRelations = relations(paidUsers, ({ many }) => ({
+var inventorsUsersRelations = relations(inventorsUsers, ({ many }) => ({
   projects: many(projects)
 }));
 var projectsRelations = relations(projects, ({ one, many }) => ({
@@ -169,9 +171,9 @@ var projectsRelations = relations(projects, ({ one, many }) => ({
     fields: [projects.userId],
     references: [users.id]
   }),
-  paidUser: one(paidUsers, {
-    fields: [projects.paidUserId],
-    references: [paidUsers.id]
+  inventorUser: one(inventorsUsers, {
+    fields: [projects.inventorsUserId],
+    references: [inventorsUsers.id]
   }),
   agentData: many(agentData),
   ideaSnapshots: many(ideaSnapshots),
@@ -206,7 +208,7 @@ var insertUserSchema = createInsertSchema(users).omit({
   createdAt: true,
   updatedAt: true
 });
-var insertPaidUserSchema = createInsertSchema(paidUsers).omit({
+var insertInventorUserSchema = createInsertSchema(inventorsUsers).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
@@ -215,7 +217,7 @@ var insertPaidUserSchema = createInsertSchema(paidUsers).omit({
 });
 var insertProjectSchema = createInsertSchema(projects, {
   userId: z.string().nullable().optional(),
-  paidUserId: z.string().nullable().optional(),
+  inventorsUserId: z.string().nullable().optional(),
   sourceCodeFiles: z.array(z.object({
     id: z.string(),
     fileName: z.string(),
@@ -244,7 +246,7 @@ var insertIdeaSnapshotSchema = createInsertSchema(ideaSnapshots).omit({
 });
 var insertPriorArtSearchSchema = createInsertSchema(priorArtSearches, {
   userId: z.string().nullable().optional(),
-  paidUserId: z.string().nullable().optional()
+  inventorsUserId: z.string().nullable().optional()
 }).omit({
   id: true,
   createdAt: true
@@ -308,40 +310,40 @@ var DatabaseStorage = class {
     const [user] = await db.update(users).set({ password: hashedPassword, updatedAt: /* @__PURE__ */ new Date() }).where(eq(users.id, userId)).returning();
     return user || void 0;
   }
-  // Paid user operations
-  async getPaidUser(id) {
-    const [user] = await db.select().from(paidUsers).where(eq(paidUsers.id, id));
+  // Inventor user operations
+  async getInventorUser(id) {
+    const [user] = await db.select().from(inventorsUsers).where(eq(inventorsUsers.id, id));
     return user || void 0;
   }
-  async getPaidUserByEmail(email) {
+  async getInventorUserByEmail(email) {
     const normalized = email.toLowerCase().trim();
-    const [user] = await db.select().from(paidUsers).where(eq(paidUsers.email, normalized));
+    const [user] = await db.select().from(inventorsUsers).where(eq(inventorsUsers.email, normalized));
     return user || void 0;
   }
-  async createPaidUser(insert) {
-    const [user] = await db.insert(paidUsers).values({ ...insert, email: insert.email.toLowerCase().trim() }).returning();
+  async createInventorUser(insert) {
+    const [user] = await db.insert(inventorsUsers).values({ ...insert, email: insert.email.toLowerCase().trim() }).returning();
     return user;
   }
-  async updatePaidUser2FA(userId, data) {
-    const [user] = await db.update(paidUsers).set({ ...data, updatedAt: /* @__PURE__ */ new Date() }).where(eq(paidUsers.id, userId)).returning();
+  async updateInventorUser2FA(userId, data) {
+    const [user] = await db.update(inventorsUsers).set({ ...data, updatedAt: /* @__PURE__ */ new Date() }).where(eq(inventorsUsers.id, userId)).returning();
     return user || void 0;
   }
-  async updatePaidUserPassword(userId, hashedPassword) {
-    const [user] = await db.update(paidUsers).set({ password: hashedPassword, updatedAt: /* @__PURE__ */ new Date() }).where(eq(paidUsers.id, userId)).returning();
+  async updateInventorUserPassword(userId, hashedPassword) {
+    const [user] = await db.update(inventorsUsers).set({ password: hashedPassword, updatedAt: /* @__PURE__ */ new Date() }).where(eq(inventorsUsers.id, userId)).returning();
     return user || void 0;
   }
-  async setPaidUserProjectLimit(userId, projectLimit) {
-    const [user] = await db.update(paidUsers).set({ projectLimit, updatedAt: /* @__PURE__ */ new Date() }).where(eq(paidUsers.id, userId)).returning();
+  async setInventorUserProjectLimit(userId, projectLimit) {
+    const [user] = await db.update(inventorsUsers).set({ projectLimit, updatedAt: /* @__PURE__ */ new Date() }).where(eq(inventorsUsers.id, userId)).returning();
     return user || void 0;
   }
-  async incrementPaidUserProjectLimit(userId, delta) {
-    const [user] = await db.update(paidUsers).set({ projectLimit: sql2`${paidUsers.projectLimit} + ${delta}`, updatedAt: /* @__PURE__ */ new Date() }).where(eq(paidUsers.id, userId)).returning();
+  async incrementInventorUserProjectLimit(userId, delta) {
+    const [user] = await db.update(inventorsUsers).set({ projectLimit: sql2`${inventorsUsers.projectLimit} + ${delta}`, updatedAt: /* @__PURE__ */ new Date() }).where(eq(inventorsUsers.id, userId)).returning();
     return user || void 0;
   }
-  async updatePaidUserLastLogin(userId) {
-    await db.update(paidUsers).set({ lastLoginAt: /* @__PURE__ */ new Date() }).where(eq(paidUsers.id, userId));
+  async updateInventorUserLastLogin(userId) {
+    await db.update(inventorsUsers).set({ lastLoginAt: /* @__PURE__ */ new Date() }).where(eq(inventorsUsers.id, userId));
   }
-  async getPaidUsersAdminView() {
+  async getInventorUsersAdminView() {
     const result = await pool.query(`
       SELECT
         pu.id,
@@ -351,8 +353,8 @@ var DatabaseStorage = class {
         COUNT(p.id)::int AS "projectCount",
         pu.last_login_at AS "lastLoginAt",
         pu.created_at AS "createdAt"
-      FROM paid_users pu
-      LEFT JOIN projects p ON p.paid_user_id = pu.id
+      FROM inventor_geyser.inventors_users pu
+      LEFT JOIN inventor_geyser.projects p ON p.inventors_user_id = pu.id
       GROUP BY pu.id, pu.email, pu.project_limit, pu.two_factor_enabled, pu.last_login_at, pu.created_at
       ORDER BY pu.created_at DESC NULLS LAST
     `);
@@ -374,10 +376,10 @@ var DatabaseStorage = class {
     if (owner.kind === "legacy") {
       return await db.select().from(projects).where(eq(projects.userId, owner.userId)).orderBy(desc(projects.updatedAt));
     }
-    return await db.select().from(projects).where(eq(projects.paidUserId, owner.paidUserId)).orderBy(desc(projects.updatedAt));
+    return await db.select().from(projects).where(eq(projects.inventorsUserId, owner.inventorsUserId)).orderBy(desc(projects.updatedAt));
   }
-  async countProjectsByPaidUserId(paidUserId) {
-    const [row] = await db.select({ count: sql2`count(*)::int` }).from(projects).where(eq(projects.paidUserId, paidUserId));
+  async countProjectsByInventorUserId(inventorsUserId) {
+    const [row] = await db.select({ count: sql2`count(*)::int` }).from(projects).where(eq(projects.inventorsUserId, inventorsUserId));
     return row?.count ?? 0;
   }
   async updateProject(id, data) {
@@ -455,7 +457,7 @@ var DatabaseStorage = class {
   }
   // Prior art search operations
   async getPriorArtSearches(owner) {
-    const col = owner.kind === "paid" ? priorArtSearches.paidUserId : priorArtSearches.userId;
+    const col = owner.kind === "paid" ? priorArtSearches.inventorsUserId : priorArtSearches.userId;
     return await db.select().from(priorArtSearches).where(eq(col, owner.userId)).orderBy(desc(priorArtSearches.createdAt));
   }
   async createPriorArtSearch(insertSearch) {
@@ -507,9 +509,9 @@ var DatabaseStorage = class {
           ) FILTER (WHERE p.id IS NOT NULL),
           '[]'
         ) AS "projectStages"
-      FROM users u
-      LEFT JOIN email_whitelist w ON lower(u.email) = w.email
-      LEFT JOIN projects p ON p.user_id = u.id
+      FROM inventor_geyser.users u
+      LEFT JOIN inventor_geyser.email_whitelist w ON lower(u.email) = w.email
+      LEFT JOIN inventor_geyser.projects p ON p.user_id = u.id
       GROUP BY u.id, u.email, u.two_factor_enabled, w.status, w.note, u.last_login_at, u.created_at
       ORDER BY u.last_login_at DESC NULLS LAST
     `);
@@ -520,6 +522,9 @@ var DatabaseStorage = class {
   }
 };
 var storage = new DatabaseStorage();
+
+// shared/terms.ts
+var TERMS_VERSION = "2026-03-12";
 
 // server/routes.ts
 import { z as z2 } from "zod";
@@ -536,6 +541,25 @@ import fs from "fs";
 import path from "path";
 var gemini = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 var openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+var DEFAULT_CALL_TIMEOUT_MS = 12e4;
+function withTimeout(p, ms, label) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms
+    );
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      }
+    );
+  });
+}
 function isGemini(model) {
   return model.startsWith("gemini");
 }
@@ -550,18 +574,26 @@ var EMPTY_RESPONSE_GUARD = "\n\nCRITICAL: You must never return an empty respons
 async function callGemini(opts, model) {
   const systemInstruction = (opts.systemPrompt || "") + EMPTY_RESPONSE_GUARD;
   const maxOutputTokens = Math.max(opts.config.maxTokens || 0, 2048);
-  const response = await gemini.models.generateContent({
-    model,
-    contents: opts.userMessage,
-    config: {
-      systemInstruction,
-      maxOutputTokens,
-      temperature: opts.config.temperature,
-      topP: opts.config.topP,
-      responseMimeType: opts.jsonMode ? "application/json" : "text/plain",
-      safetySettings: GEMINI_SAFETY_OFF
-    }
-  });
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
+  const response = await withTimeout(
+    gemini.models.generateContent({
+      model,
+      contents: opts.userMessage,
+      config: {
+        systemInstruction,
+        maxOutputTokens,
+        temperature: opts.config.temperature,
+        topP: opts.config.topP,
+        responseMimeType: opts.jsonMode ? "application/json" : "text/plain",
+        // When a schema is provided in jsonMode, Gemini constrains output to it
+        // (eliminates markdown fences, trailing prose, and unescaped strings).
+        ...opts.jsonMode && opts.responseSchema ? { responseSchema: opts.responseSchema } : {},
+        safetySettings: GEMINI_SAFETY_OFF
+      }
+    }),
+    timeoutMs,
+    `Gemini ${model}`
+  );
   const text2 = response.text;
   if (!text2) {
     const finishReason = response.candidates?.[0]?.finishReason;
@@ -573,17 +605,22 @@ async function callGemini(opts, model) {
   return text2;
 }
 async function callGPT(opts, model) {
-  const response = await openai.chat.completions.create({
-    model,
-    messages: [
-      { role: "system", content: opts.systemPrompt },
-      { role: "user", content: opts.userMessage }
-    ],
-    max_tokens: opts.config.maxTokens,
-    temperature: opts.config.temperature,
-    top_p: opts.config.topP,
-    ...opts.jsonMode ? { response_format: { type: "json_object" } } : {}
-  });
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
+  const response = await withTimeout(
+    openai.chat.completions.create({
+      model,
+      messages: [
+        { role: "system", content: opts.systemPrompt },
+        { role: "user", content: opts.userMessage }
+      ],
+      max_tokens: opts.config.maxTokens,
+      temperature: opts.config.temperature,
+      top_p: opts.config.topP,
+      ...opts.jsonMode ? { response_format: { type: "json_object" } } : {}
+    }),
+    timeoutMs,
+    `GPT ${model}`
+  );
   const text2 = response.choices[0]?.message?.content;
   if (!text2) throw new Error("GPT returned empty response");
   return text2;
@@ -618,16 +655,33 @@ async function callAgent(opts) {
     }
   }
 }
+function extractJsonPayload(raw) {
+  let s = raw.trim();
+  const fenced = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (fenced) s = fenced[1].trim();
+  const first = s.indexOf("{");
+  const last = s.lastIndexOf("}");
+  if (first !== -1 && last !== -1 && last > first) {
+    s = s.slice(first, last + 1);
+  }
+  return s;
+}
 async function callAgentJSON(opts) {
   const raw = await callAgent({ ...opts, jsonMode: true });
   try {
     return JSON.parse(raw);
-  } catch {
-    const jsonMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[1].trim());
+  } catch (firstErr) {
+    try {
+      return JSON.parse(extractJsonPayload(raw));
+    } catch (secondErr) {
+      const oneLine = raw.replace(/\r?\n/g, "\\n");
+      console.error(
+        `[AI] JSON parse failed (len=${raw.length}, model=${opts.config.model}): ${secondErr?.message || firstErr?.message}. RAW: ${oneLine}`
+      );
+      throw new Error(
+        `AI returned malformed JSON (${secondErr?.message || firstErr?.message}). Length=${raw.length}. Head: ${raw.substring(0, 120)} | Tail: ${raw.slice(-120)}`
+      );
     }
-    throw new Error(`Failed to parse AI response as JSON: ${raw.substring(0, 200)}`);
   }
 }
 var configCache = /* @__PURE__ */ new Map();
@@ -659,12 +713,10 @@ function loadPrompt(modulePath, vars = {}) {
 function buildContext(payload) {
   const { projectContext, conversationHistory, currentLocation } = payload;
   const sections = [];
-  if (projectContext.projectTitle || projectContext.category || projectContext.currentStage) {
+  if (projectContext.projectTitle || projectContext.currentStage) {
     let projectInfo = "## PROJECT INFO";
     if (projectContext.projectTitle) projectInfo += `
 Title: ${projectContext.projectTitle}`;
-    if (projectContext.category) projectInfo += `
-Category: ${projectContext.category}`;
     if (projectContext.currentStage) projectInfo += `
 Current Stage: Module ${projectContext.currentStage}`;
     if (currentLocation) projectInfo += `
@@ -1201,6 +1253,57 @@ ${payload.detailedConcept}`;
 }
 
 // server/modules/module4/4a/whitespace.ts
+var WHITESPACE_RESPONSE_SCHEMA = {
+  type: "object",
+  properties: {
+    overallRiskLevel: { type: "string", enum: ["Green", "Yellow", "Red"] },
+    totalPatentsAnalyzed: { type: "integer" },
+    highThreatCount: { type: "integer" },
+    mediumThreatCount: { type: "integer" },
+    lowThreatCount: { type: "integer" },
+    patentAnalyses: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          patentNumber: { type: "string" },
+          patentTitle: { type: "string" },
+          patentStatus: { type: "string", enum: ["GRANTED", "PENDING"] },
+          threatLevel: {
+            type: "string",
+            enum: ["High", "Medium", "Low", "Minimal"]
+          },
+          specificConstraint: { type: "string" },
+          differentiationStrategy: { type: "string" },
+          canDesignAround: { type: "boolean" }
+        },
+        required: [
+          "patentNumber",
+          "patentTitle",
+          "patentStatus",
+          "threatLevel",
+          "specificConstraint",
+          "differentiationStrategy",
+          "canDesignAround"
+        ]
+      }
+    },
+    consolidatedWhiteSpaceStrategy: { type: "string" },
+    primaryDifferentiators: { type: "array", items: { type: "string" } },
+    claimDraftingGuidance: { type: "string" }
+  },
+  required: [
+    "overallRiskLevel",
+    "totalPatentsAnalyzed",
+    "highThreatCount",
+    "mediumThreatCount",
+    "lowThreatCount",
+    "patentAnalyses",
+    "consolidatedWhiteSpaceStrategy",
+    "primaryDifferentiators",
+    "claimDraftingGuidance"
+  ]
+};
 function matchPriorArt(idea, priorArtResults, index) {
   if (idea.id) {
     const byId = priorArtResults.find((pa) => pa.conceptId === idea.id);
@@ -1371,7 +1474,11 @@ async function runWhitespace(payload) {
           const parsed = await callAgentJSON({
             systemPrompt,
             userMessage,
-            config
+            config,
+            responseSchema: WHITESPACE_RESPONSE_SCHEMA,
+            // Per-call cap so a single hung Gemini stream cannot burn the whole
+            // 300s function budget (see prior orphaned-timeout incident).
+            timeoutMs: 9e4
           });
           return { nugget, parsed, parseError: null };
         } catch (err) {
@@ -1400,9 +1507,9 @@ async function runWhitespace(payload) {
         },
         patentAnalyses: p.patentAnalyses || [],
         strategy: {
-          whiteSpaceStrategy: p.consolidatedWhiteSpaceStrategy || (parseError ? `Analysis failed: ${parseError}` : "No strategy generated."),
+          whiteSpaceStrategy: p.consolidatedWhiteSpaceStrategy || (parseError ? `Analysis unavailable for this concept: ${parseError}` : "No strategy generated."),
           primaryDifferentiators: p.primaryDifferentiators || [],
-          claimDraftingGuidance: p.claimDraftingGuidance || (parseError ? "Manual review required \u2014 AI call failed." : "")
+          claimDraftingGuidance: p.claimDraftingGuidance || (parseError ? "Manual review required \u2014 model output could not be parsed for this concept. Re-run the stage to retry." : "")
         }
       };
     });
@@ -1516,7 +1623,7 @@ ${idx + 1}. ${n.primaryPriorArt || ""}
   return { contextBlock, perConcept: [] };
 }
 function buildUserMessage2(args) {
-  const { category, mainIdea, expandedConcept, conceptText, whiteSpaceContext, nugget } = args;
+  const { mainIdea, expandedConcept, conceptText, whiteSpaceContext, nugget } = args;
   const priorArtAware = whiteSpaceContext ? `---
 
 **PRIOR ART AWARENESS:**
@@ -1530,8 +1637,6 @@ ${whiteSpaceContext}
 - Differentiation Logic: ${nugget.differentiationLogic}
 ` : "";
   return `**TECHNICAL CONTEXT:**
-
-**Invention Category:** ${category}
 
 **Core Innovation:**
 ${mainIdea}
@@ -1906,10 +2011,24 @@ async function runDiagrams(payload) {
     const { title, patentText, codeCount, formattedCode } = extractPatentText(payload);
     const config = loadAgentConfig("module5/5b/planner.config.json");
     const systemPrompt = loadPrompt("module5/5b/planner.md");
+    const keyConceptsBlock = (payload.keyConcepts || "").trim();
+    if (!keyConceptsBlock) {
+      console.warn(
+        ">>> [M5-5b DIAGRAMS] <<< keyConcepts not provided \u2014 planner has no explicit coverage anchor; figure count and claim alignment will rely entirely on the document blob."
+      );
+    } else {
+      const conceptCount = keyConceptsBlock.split(/\n\s*\n/).filter((s) => s.trim().length > 0).length;
+      console.log(
+        `>>> [M5-5b DIAGRAMS] <<< planner receiving ${conceptCount} key concept(s) as mandatory coverage anchors`
+      );
+    }
     const userMessage = `Provisional Patent Title: ${title}
 Provisional Patent Text: ${patentText}
 
-Code Snippets Uploaded by the User (${codeCount} total):
+` + (keyConceptsBlock ? `MANDATORY KEY CONCEPTS TO COVER (each MUST be represented in at least one figure):
+${keyConceptsBlock}
+
+` : "") + `Code Snippets Uploaded by the User (${codeCount} total):
 ${formattedCode}`;
     const plan = await callAgentJSON({
       systemPrompt,
@@ -2348,9 +2467,7 @@ async function runAgent(agentName, userMessage) {
   return (result || "").trim();
 }
 function titleUserPrompt(p) {
-  return `**CATEGORY:** ${p.category}
-
-**CORE INNOVATION:**
+  return `**CORE INNOVATION:**
 ${p.coreIdea}
 
 **EXPANDED CONCEPT:**
@@ -2382,8 +2499,6 @@ Provide only the title text. No explanations, no preamble, no markdown.`;
 function backgroundUserPrompt(p, s) {
   return `**PATENT TITLE:**
 ${s.title}
-
-**CATEGORY:** ${p.category}
 
 **CORE INNOVATION:**
 ${p.coreIdea}
@@ -2807,7 +2922,7 @@ Write as a flowing narrative, not bullet points. Use reference numerals constant
 **OUTPUT:**
 Provide only the operational workflow description text. No section headers in output, no markdown formatting. This will be Part 3 of the Detailed Description section.`;
 }
-function alternativesUserPrompt(p, s) {
+function alternativesUserPrompt(_p, s) {
   return `**PATENT TITLE:**
 ${s.title}
 
@@ -3141,45 +3256,57 @@ async function runProvisional(payload) {
     sections.background = await runAgent("background", backgroundUserPrompt(parsed, sections));
     console.log(">>> [M5-5a PROVISIONAL] <<< 3/9 summary");
     sections.summary = await runAgent("summary", summaryUserPrompt(parsed, sections));
-    console.log(">>> [M5-5a PROVISIONAL] <<< 4/9 architecture");
-    sections.architecture = await runAgent("architecture", architectureUserPrompt(parsed, sections));
-    console.log(">>> [M5-5a PROVISIONAL] <<< 5/9 data-structures");
-    sections.data_structures = await runAgent(
-      "data-structures",
-      dataStructuresUserPrompt(parsed, sections)
+    console.log(
+      ">>> [M5-5a PROVISIONAL] <<< running abstract chain || detailed-description chain in parallel"
     );
-    console.log(">>> [M5-5a PROVISIONAL] <<< 6/9 operations");
-    sections.operations = await runAgent("operations", operationsUserPrompt(parsed, sections));
-    console.log(">>> [M5-5a PROVISIONAL] <<< 7/9 alternatives");
-    sections.alternatives = await runAgent(
-      "alternatives",
-      alternativesUserPrompt(parsed, sections)
-    );
-    sections.detailed_description = [
-      sections.architecture,
-      sections.data_structures,
-      sections.operations,
-      sections.alternatives
-    ].join("\n\n");
-    console.log(">>> [M5-5a PROVISIONAL] <<< 8/9 ramifications");
-    sections.ramifications_and_scope = await runAgent(
-      "ramifications",
-      ramificationsUserPrompt(parsed, sections)
-    );
-    console.log(">>> [M5-5a PROVISIONAL] <<< 9/9 abstract");
-    let abstract = await runAgent("abstract", abstractUserPrompt(parsed, sections));
-    let wordCount = countWords(abstract);
-    for (let attempt = 0; wordCount > 150 && attempt < MAX_ABSTRACT_FIX_ATTEMPTS; attempt++) {
-      console.log(
-        `>>> [M5-5a PROVISIONAL] <<< abstract ${wordCount} words > 150, fixer attempt ${attempt + 1}/${MAX_ABSTRACT_FIX_ATTEMPTS}`
+    const abstractChain = (async () => {
+      console.log(">>> [M5-5a PROVISIONAL] <<< abstract (parallel)");
+      let abstract = await runAgent("abstract", abstractUserPrompt(parsed, sections));
+      let wordCount = countWords(abstract);
+      for (let attempt = 0; wordCount > 150 && attempt < MAX_ABSTRACT_FIX_ATTEMPTS; attempt++) {
+        console.log(
+          `>>> [M5-5a PROVISIONAL] <<< abstract ${wordCount} words > 150, fixer attempt ${attempt + 1}/${MAX_ABSTRACT_FIX_ATTEMPTS}`
+        );
+        abstract = await runAgent(
+          "abstract-fixer",
+          abstractFixerUserPrompt({ p: parsed, s: sections, abstract, wordCount })
+        );
+        wordCount = countWords(abstract);
+      }
+      return abstract;
+    })();
+    const detailedDescriptionChain = (async () => {
+      console.log(">>> [M5-5a PROVISIONAL] <<< architecture (parallel)");
+      sections.architecture = await runAgent(
+        "architecture",
+        architectureUserPrompt(parsed, sections)
       );
-      abstract = await runAgent(
-        "abstract-fixer",
-        abstractFixerUserPrompt({ p: parsed, s: sections, abstract, wordCount })
+      console.log(">>> [M5-5a PROVISIONAL] <<< data-structures (parallel)");
+      sections.data_structures = await runAgent(
+        "data-structures",
+        dataStructuresUserPrompt(parsed, sections)
       );
-      wordCount = countWords(abstract);
-    }
-    sections.abstract = abstract;
+      console.log(">>> [M5-5a PROVISIONAL] <<< operations (parallel)");
+      sections.operations = await runAgent("operations", operationsUserPrompt(parsed, sections));
+      console.log(">>> [M5-5a PROVISIONAL] <<< alternatives (parallel)");
+      sections.alternatives = await runAgent(
+        "alternatives",
+        alternativesUserPrompt(parsed, sections)
+      );
+      sections.detailed_description = [
+        sections.architecture,
+        sections.data_structures,
+        sections.operations,
+        sections.alternatives
+      ].join("\n\n");
+      console.log(">>> [M5-5a PROVISIONAL] <<< ramifications (parallel)");
+      sections.ramifications_and_scope = await runAgent(
+        "ramifications",
+        ramificationsUserPrompt(parsed, sections)
+      );
+    })();
+    const [abstractResult] = await Promise.all([abstractChain, detailedDescriptionChain]);
+    sections.abstract = abstractResult;
     const keyConceptsArray = [];
     let keyConceptNumber = 1;
     for (const group of parsed.keyConceptGroups) {
@@ -3242,6 +3369,10 @@ async function runProvisional(payload) {
 
 // server/routes.ts
 var SALT_ROUNDS = 10;
+var registerRequestSchema = z2.object({
+  email: z2.string().trim().toLowerCase().email("Enter a valid email address"),
+  password: z2.string()
+});
 var AGENT_TIMEOUT = 9e5;
 var N8N_MECHANIC_WEBHOOK = process.env.N8N_MECHANIC_WEBHOOK;
 var N8N_WHITESPACE_WEBHOOK = process.env.N8N_WHITESPACE_WEBHOOK;
@@ -3367,7 +3498,7 @@ async function loadAuthUser(req) {
   if (!userId) return null;
   const kind = session2.userKind === "paid" ? "paid" : "legacy";
   if (kind === "paid") {
-    const user2 = await storage.getPaidUser(userId);
+    const user2 = await storage.getInventorUser(userId);
     if (!user2) return null;
     return { id: user2.id, email: user2.email, kind: "paid" };
   }
@@ -3386,7 +3517,7 @@ function sessionOwnsProject(req, project) {
   const sid = session2?.userId;
   if (!sid) return false;
   const kind = session2.userKind === "paid" ? "paid" : "legacy";
-  return kind === "paid" ? project.paidUserId === sid : project.userId === sid;
+  return kind === "paid" ? project.inventorsUserId === sid : project.userId === sid;
 }
 var ADMIN_EMAILS = /* @__PURE__ */ new Set([
   (process.env.ADMIN_EMAIL || "albano@bookingboostpro.com").toLowerCase().trim(),
@@ -3394,8 +3525,9 @@ var ADMIN_EMAILS = /* @__PURE__ */ new Set([
 ]);
 var isAdmin = async (req, res, next) => {
   const userId = req.session?.userId;
+  const userKind = req.session?.userKind;
   if (!userId) return res.status(401).json({ message: "Unauthorized" });
-  const user = await storage.getUser(userId);
+  const user = userKind === "paid" ? await storage.getInventorUser(userId) : await storage.getUser(userId);
   if (!user || !ADMIN_EMAILS.has(user.email.toLowerCase().trim())) {
     return res.status(403).json({ message: "Forbidden" });
   }
@@ -3545,7 +3677,12 @@ async function registerRoutes(app2) {
   });
   app2.post("/api/auth/register", async (req, res) => {
     try {
-      const { email, password } = insertUserSchema.parse(req.body);
+      if (req.body?.termsAccepted !== true || req.body?.termsVersion !== TERMS_VERSION) {
+        return res.status(400).json({
+          message: "You must accept the current Terms of Service before creating an account."
+        });
+      }
+      const { email, password } = registerRequestSchema.parse(req.body);
       const kind = req.body?.kind === "legacy" ? "legacy" : "paid";
       const passwordRequirements = [
         { test: password.length >= 8, message: "Password must be at least 8 characters" },
@@ -3559,14 +3696,14 @@ async function registerRoutes(app2) {
         return res.status(400).json({ message: failedRequirement.message });
       }
       const existingLegacy = await storage.getUserByEmail(email);
-      const existingPaid = await storage.getPaidUserByEmail(email);
-      if (existingLegacy || existingPaid) {
+      const existingInventor = await storage.getInventorUserByEmail(email);
+      if (existingLegacy || existingInventor) {
         return res.status(400).json({ message: "User already exists" });
       }
       const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
       let newId;
       if (kind === "paid") {
-        const user = await storage.createPaidUser({ email, password: hashedPassword });
+        const user = await storage.createInventorUser({ email, password: hashedPassword });
         newId = user.id;
       } else {
         const user = await storage.createUser({ email, password: hashedPassword });
@@ -3597,9 +3734,9 @@ async function registerRoutes(app2) {
   app2.post("/api/auth/login", async (req, res) => {
     try {
       const { email, password } = req.body;
-      const paidUser = await storage.getPaidUserByEmail(email);
-      const legacyUser = paidUser ? void 0 : await storage.getUserByEmail(email);
-      const matched = paidUser ? { kind: "paid", record: paidUser } : legacyUser ? { kind: "legacy", record: legacyUser } : null;
+      const inventorUser = await storage.getInventorUserByEmail(email);
+      const legacyUser = inventorUser ? void 0 : await storage.getUserByEmail(email);
+      const matched = inventorUser ? { kind: "paid", record: inventorUser } : legacyUser ? { kind: "legacy", record: legacyUser } : null;
       if (!matched) {
         return res.status(401).json({ message: "Invalid credentials" });
       }
@@ -3620,7 +3757,7 @@ async function registerRoutes(app2) {
       });
       if (!matched.record.twoFactorEnabled) {
         if (matched.kind === "paid") {
-          storage.updatePaidUserLastLogin(matched.record.id).catch(() => {
+          storage.updateInventorUserLastLogin(matched.record.id).catch(() => {
           });
         } else {
           storage.updateLastLogin(matched.record.id).catch(() => {
@@ -3654,24 +3791,24 @@ async function registerRoutes(app2) {
       res.status(500).json({ message: "Failed to fetch users" });
     }
   });
-  app2.get("/api/admin/paid-users", isAdmin, async (req, res) => {
+  app2.get("/api/admin/inventors-users", isAdmin, async (req, res) => {
     try {
-      const list = await storage.getPaidUsersAdminView();
+      const list = await storage.getInventorUsersAdminView();
       res.json(list);
     } catch (error) {
-      console.error("List paid users error:", error);
-      res.status(500).json({ message: "Failed to fetch paid users" });
+      console.error("List inventor users error:", error);
+      res.status(500).json({ message: "Failed to fetch users" });
     }
   });
-  app2.patch("/api/admin/paid-users/:id/project-limit", isAdmin, async (req, res) => {
+  app2.patch("/api/admin/inventors-users/:id/project-limit", isAdmin, async (req, res) => {
     try {
       const { projectLimit } = req.body;
       const parsed = Number(projectLimit);
       if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1e4) {
         return res.status(400).json({ message: "projectLimit must be an integer between 0 and 10000" });
       }
-      const user = await storage.setPaidUserProjectLimit(req.params.id, parsed);
-      if (!user) return res.status(404).json({ message: "Paid user not found" });
+      const user = await storage.setInventorUserProjectLimit(req.params.id, parsed);
+      if (!user) return res.status(404).json({ message: "User not found" });
       res.json({ id: user.id, projectLimit: user.projectLimit });
     } catch (error) {
       console.error("Set project limit error:", error);
@@ -3795,9 +3932,9 @@ async function registerRoutes(app2) {
       const twoFactorVerified = session2.twoFactorVerified || false;
       const subscriptionStatus = session2.whitelistStatus || "active";
       if (kind === "paid") {
-        const user2 = await storage.getPaidUser(userId);
+        const user2 = await storage.getInventorUser(userId);
         if (!user2) return res.status(404).json({ message: "User not found" });
-        const projectsUsed = await storage.countProjectsByPaidUserId(user2.id);
+        const projectsUsed = await storage.countProjectsByInventorUserId(user2.id);
         return res.json({
           id: user2.id,
           email: user2.email,
@@ -3805,10 +3942,7 @@ async function registerRoutes(app2) {
           credits: user2.projectLimit,
           creditsUsed: projectsUsed,
           creditsRemaining: Math.max(0, user2.projectLimit - projectsUsed),
-          embedUrls: {
-            slot1: process.env.GHL_EMBED_URL_SLOT_1 || null,
-            slot5: process.env.GHL_EMBED_URL_SLOT_5 || null
-          },
+          embedUrl: process.env.GHL_EMBED_URL || null,
           twoFactorEnabled: user2.twoFactorEnabled || false,
           twoFactorMethod: user2.twoFactorMethod || null,
           twoFactorVerified,
@@ -4322,7 +4456,7 @@ async function registerRoutes(app2) {
       }
       const savedSearch = await storage.createPriorArtSearch({
         userId: authUser.kind === "legacy" ? userId : null,
-        paidUserId: authUser.kind === "paid" ? userId : null,
+        inventorsUserId: authUser.kind === "paid" ? userId : null,
         searchText: searchText.trim(),
         results,
         analysis
@@ -4349,7 +4483,7 @@ async function registerRoutes(app2) {
   app2.get("/api/projects", isAuthenticated, withAuthUser, async (req, res) => {
     try {
       const authUser = req.authUser;
-      const list = authUser.kind === "paid" ? await storage.getProjectsByOwner({ kind: "paid", paidUserId: authUser.id }) : await storage.getProjectsByOwner({ kind: "legacy", userId: authUser.id });
+      const list = authUser.kind === "paid" ? await storage.getProjectsByOwner({ kind: "paid", inventorsUserId: authUser.id }) : await storage.getProjectsByOwner({ kind: "legacy", userId: authUser.id });
       res.json(list);
     } catch (error) {
       console.error("Get projects error:", error);
@@ -4376,25 +4510,22 @@ async function registerRoutes(app2) {
     try {
       const authUser = req.authUser;
       if (authUser.kind === "paid") {
-        const paidUser = await storage.getPaidUser(authUser.id);
-        if (!paidUser) return res.status(401).json({ message: "Unauthorized" });
-        const used = await storage.countProjectsByPaidUserId(paidUser.id);
-        if (used >= paidUser.projectLimit) {
+        const inventorUser = await storage.getInventorUser(authUser.id);
+        if (!inventorUser) return res.status(401).json({ message: "Unauthorized" });
+        const used = await storage.countProjectsByInventorUserId(inventorUser.id);
+        if (used >= inventorUser.projectLimit) {
           return res.status(402).json({
             code: "PROJECT_LIMIT_REACHED",
             message: "You're out of credits. Purchase more to create another project.",
-            credits: paidUser.projectLimit,
+            credits: inventorUser.projectLimit,
             creditsUsed: used,
-            creditsRemaining: Math.max(0, paidUser.projectLimit - used),
-            embedUrls: {
-              slot1: process.env.GHL_EMBED_URL_SLOT_1 || null,
-              slot5: process.env.GHL_EMBED_URL_SLOT_5 || null
-            }
+            creditsRemaining: Math.max(0, inventorUser.projectLimit - used),
+            embedUrl: process.env.GHL_EMBED_URL || null
           });
         }
       }
-      const { userId: _u, paidUserId: _p, ...clientFields } = req.body || {};
-      const ownerFields = authUser.kind === "paid" ? { paidUserId: authUser.id, userId: null } : { userId: authUser.id, paidUserId: null };
+      const { userId: _u, inventorsUserId: _p, ...clientFields } = req.body || {};
+      const ownerFields = authUser.kind === "paid" ? { inventorsUserId: authUser.id, userId: null } : { userId: authUser.id, inventorsUserId: null };
       const projectData = insertProjectSchema.parse({ ...clientFields, ...ownerFields });
       const project = await storage.createProject(projectData);
       res.json(project);
@@ -6487,92 +6618,6 @@ ${dependentClaims.map((c, i) => `${i + 1}. ${c.text?.substring(0, 100)}...`).joi
       res.status(500).json({ message: error.message || "Failed to save selected claims" });
     }
   });
-  app2.post("/api/projects/:id/agent/4b/generate-provisional", isAuthenticated, async (req, res) => {
-    try {
-      await clearDownstreamData(req.params.id, "4c");
-      const project = await storage.getProject(req.params.id);
-      if (!project) {
-        return res.status(404).json({ message: "Project not found" });
-      }
-      const agent1Data = await storage.getAgentData(req.params.id, 1);
-      const agent1DataObj = agent1Data?.data;
-      const sessionId = agent1DataObj?.sessionId || req.params.id;
-      const mainIdea = agent1DataObj?.ideaSummary || "";
-      const agent2Data = await storage.getAgentData(req.params.id, 2);
-      const agent2DataObj = agent2Data?.data;
-      const expandedConcept = agent2DataObj?.provisionalDraft || agent2DataObj?.draftSpecification || "";
-      const agent4Data = await storage.getAgentData(req.params.id, 4);
-      const agent4DataObj = agent4Data?.data;
-      console.log("[GENERATE-PROVISIONAL] Agent 4 data keys:", Object.keys(agent4DataObj || {}));
-      console.log("[GENERATE-PROVISIONAL] Has selectedKeyConcepts?", !!agent4DataObj?.selectedKeyConcepts);
-      console.log("[GENERATE-PROVISIONAL] Has selectedClaims?", !!agent4DataObj?.selectedClaims);
-      const selectedKeyConcepts = agent4DataObj?.selectedKeyConcepts || agent4DataObj?.selectedClaims || [];
-      if (selectedKeyConcepts.length === 0) {
-        return res.status(400).json({ message: "No claims selected. Please select at least one claim." });
-      }
-      const webhookPayload = {
-        sessionId,
-        category: project.category,
-        coreIdea: mainIdea,
-        expandedConcept,
-        selectedKeyConcepts: selectedKeyConcepts.map((concept) => ({
-          text: concept.text,
-          number: concept.number
-        }))
-      };
-      console.log("Calling provisional patent writing webhook...");
-      const rawWebhookResponse = await runProvisional(webhookPayload);
-      if (rawWebhookResponse && rawWebhookResponse.success === false) {
-        return res.status(503).json({ message: rawWebhookResponse.error || "Provisional generation failed" });
-      }
-      console.log("Provisional webhook response received");
-      console.log("Provisional response structure:", JSON.stringify(rawWebhookResponse, null, 2));
-      const webhookResponse = Array.isArray(rawWebhookResponse) ? rawWebhookResponse[0] : rawWebhookResponse;
-      await storage.upsertAgentData({
-        projectId: req.params.id,
-        agentNumber: 4,
-        data: {
-          ...agent4DataObj,
-          provisionalDraft: webhookResponse,
-          // Store complete structured response (unwrapped)
-          selectedKeyConcepts: formattedClaims,
-          // Save selected key concepts for regeneration
-          provisionalGeneratedAt: (/* @__PURE__ */ new Date()).toISOString()
-        }
-      });
-      const provisionalVersion = await storage.getNextSnapshotVersion(req.params.id);
-      const claimsCount = webhookResponse?.claims_count || webhookResponse?.claims?.length || 0;
-      const provisionalContent = `**${webhookResponse?.title || "Provisional Patent Application"}**
-
-**Abstract:**
-${webhookResponse?.abstract?.substring(0, 300) || "Generated"}...
-
-**Claims:** ${claimsCount} claims included
-
-_Full specification includes: Background, Summary, Detailed Description, and Ramifications_`;
-      await storage.createIdeaSnapshot({
-        projectId: req.params.id,
-        version: provisionalVersion,
-        snapshotType: "4c_provisional",
-        title: "Provisional Draft Complete",
-        content: provisionalContent,
-        metadata: {
-          stage: 4,
-          substage: "4c",
-          title: webhookResponse?.title,
-          claimsCount,
-          timestamp: webhookResponse?.timestamp
-        }
-      });
-      res.json({
-        success: true,
-        provisionalDraft: webhookResponse
-      });
-    } catch (error) {
-      console.error("Provisional generation error:", error);
-      res.status(500).json({ message: error.message || "Failed to generate provisional patent. Please try again." });
-    }
-  });
   app2.post("/api/projects/:id/regenerate-draft", isAuthenticated, async (req, res) => {
     try {
       const project = await storage.getProject(req.params.id);
@@ -7003,6 +7048,20 @@ _Full specification includes: Background, Summary, Detailed Description, and Ram
           claimsForDiagrams = claimsArr.map((c, i) => `${i + 1}. ${c}`).join("\n\n");
         }
       }
+      if (!claimsForDiagrams.trim()) {
+        const selectedKeyConcepts = agent4DataObj?.selectedKeyConcepts || [];
+        if (Array.isArray(selectedKeyConcepts) && selectedKeyConcepts.length > 0) {
+          claimsForDiagrams = selectedKeyConcepts.map((c, i) => {
+            const text2 = typeof c === "string" ? c : c?.text || "";
+            const num = c?.number || i + 1;
+            const trimmed = text2.trim();
+            if (!trimmed) return "";
+            if (/^(Claim\s+\d+[:.:]|\d+[.)])/i.test(trimmed)) return trimmed;
+            return `${num}. ${trimmed}`;
+          }).filter((c) => c.length > 0).join("\n\n");
+          console.log(`[generate-showcase] claims empty in draft \u2014 falling back to ${selectedKeyConcepts.length} Agent 4 key concept(s)`);
+        }
+      }
       console.log("Generating diagrams...");
       console.log(`Using ${selectedClaimType} claims for diagrams (from edited specification)`);
       const formattedDocument = [
@@ -7036,7 +7095,12 @@ _Full specification includes: Background, Summary, Detailed Description, and Ram
       });
       const diagramsPayload = {
         title: parsedDraft.title || "Provisional Patent Application",
-        detailed_description: formattedDocument
+        detailed_description: formattedDocument,
+        // Pass the user-selected key concepts (== the claims, in this app's
+        // UPL-safe terminology) as a separate, explicit field. The planner
+        // uses this to guarantee each key concept is represented in a figure,
+        // rather than competing for attention inside the document blob.
+        keyConcepts: claimsForDiagrams
       };
       if (Object.keys(codeFromTheUser).length > 0) {
         diagramsPayload.codeFromTheUser = codeFromTheUser;
@@ -7142,6 +7206,7 @@ _${diagrams.length} diagram(s) ready for patent application_`;
         }).join("\n\n");
       };
       console.log(`Using ${specificKeyConcepts.length} Specific Claims for diagrams (not Broad Claims from provisional)`);
+      const formattedSpecificClaims = formatSpecificClaims(specificKeyConcepts);
       const formattedDocument = [
         `TITLE: ${parsedDraft.title || "Provisional Patent Application"}`,
         "",
@@ -7158,7 +7223,7 @@ _${diagrams.length} diagram(s) ready for patent application_`;
         parsedDraft.ramifications_and_scope || "",
         "",
         "--- CLAIMS ---",
-        formatSpecificClaims(specificKeyConcepts),
+        formattedSpecificClaims,
         // Use Specific Claims for diagrams
         "",
         "--- ABSTRACT ---",
@@ -7175,7 +7240,11 @@ _${diagrams.length} diagram(s) ready for patent application_`;
       });
       const diagramsPayload = {
         title: parsedDraft.title || "Provisional Patent Application",
-        detailed_description: formattedDocument
+        detailed_description: formattedDocument,
+        // Mirrors the wiring in /generate-showcase: pass key concepts (the
+        // claims-equivalent) as a separate field so the planner is required
+        // to cover each one with a figure, independent of the document blob.
+        keyConcepts: formattedSpecificClaims
       };
       if (Object.keys(codeFromTheUser4).length > 0) {
         diagramsPayload.codeFromTheUser = codeFromTheUser4;
@@ -7534,7 +7603,6 @@ _${diagrams.length} diagram(s) ready for patent application_`;
       const agent5Obj = agent5Data?.data;
       const projectContext = {
         projectTitle: project.title,
-        category: project.category,
         currentStage: project.currentStage,
         // Module 1 data
         ideaSummary: agent1Obj?.ideaSummary || agent1Obj?.currentIdea || "",
@@ -7881,8 +7949,6 @@ _${diagrams.length} diagram(s) ready for patent application_`;
       const diagrams = agent5Data?.data?.diagrams || [];
       const successfulDiagrams = diagrams.filter((d) => d.imageUrl && d.success !== false);
       doc.fontSize(16).font("Helvetica-Bold").text(draft.title || "Provisional Patent Application", { align: "center" });
-      doc.moveDown(0.5);
-      doc.fontSize(10).font("Helvetica").text(`Category: ${project.category}`, { align: "center" });
       doc.moveDown(1.5);
       if (draft.background) {
         doc.fontSize(14).font("Helvetica-Bold").text("BACKGROUND");
@@ -8220,12 +8286,7 @@ _${diagrams.length} diagram(s) ready for patent application_`;
           text: draft.title || "Provisional Patent Application",
           heading: HeadingLevel.TITLE,
           alignment: AlignmentType.CENTER,
-          spacing: { after: 200 }
-        }),
-        new Paragraph({
-          text: `Category: ${project.category}`,
-          alignment: AlignmentType.CENTER,
-          spacing: { after: 400 }
+          spacing: { after: 600 }
         })
       );
       if (draft.background) {
