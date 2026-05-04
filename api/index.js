@@ -3512,6 +3512,27 @@ var withAuthUser = async (req, res, next) => {
   req.authUser = user;
   next();
 };
+async function findUserByEmailAcrossTables(email) {
+  const inv = await storage.getInventorUserByEmail(email);
+  if (inv) return { kind: "paid", record: inv };
+  const leg = await storage.getUserByEmail(email);
+  if (leg) return { kind: "legacy", record: leg };
+  return null;
+}
+async function findUserByIdAcrossTables(kind, userId) {
+  if (kind === "paid") {
+    const inv = await storage.getInventorUser(userId);
+    return inv ? { kind: "paid", record: inv } : null;
+  }
+  const leg = await storage.getUser(userId);
+  return leg ? { kind: "legacy", record: leg } : null;
+}
+async function update2FAByKind(kind, userId, data) {
+  return kind === "paid" ? storage.updateInventorUser2FA(userId, data) : storage.updateUser2FA(userId, data);
+}
+async function updatePasswordByKind(kind, userId, hashedPassword) {
+  return kind === "paid" ? storage.updateInventorUserPassword(userId, hashedPassword) : storage.updateUserPassword(userId, hashedPassword);
+}
 function sessionOwnsProject(req, project) {
   const session2 = req.session;
   const sid = session2?.userId;
@@ -3974,14 +3995,17 @@ async function registerRoutes(app2) {
   app2.post("/api/2fa/initiate", isAuthenticated, async (req, res) => {
     try {
       const userId = req.session.userId;
+      const sessionKind = req.session.userKind === "paid" ? "paid" : "legacy";
       const { method } = req.body;
       if (!method || !["email", "totp"].includes(method)) {
         return res.status(400).json({ message: "Invalid 2FA method" });
       }
-      const user = await storage.getUser(userId);
-      if (!user) {
+      const lookup = await findUserByIdAcrossTables(sessionKind, userId);
+      if (!lookup) {
         return res.status(404).json({ message: "User not found" });
       }
+      const user = lookup.record;
+      const userKind = lookup.kind;
       if (method === "totp") {
         const secret = generateSecret();
         const otpauthUrl = generateURI({
@@ -3993,7 +4017,7 @@ async function registerRoutes(app2) {
           period: 30
         });
         const qrCodeUrl = await QRCode.toDataURL(otpauthUrl);
-        await storage.updateUser2FA(userId, {
+        await update2FAByKind(userKind, userId, {
           twoFactorMethod: "totp",
           totpSecret: secret,
           twoFactorEnabled: false
@@ -4002,7 +4026,7 @@ async function registerRoutes(app2) {
       } else {
         const code = generateEmailCode();
         const expiry = new Date(Date.now() + 10 * 60 * 1e3);
-        await storage.updateUser2FA(userId, {
+        await update2FAByKind(userKind, userId, {
           twoFactorMethod: "email",
           pendingTwoFactorCode: code,
           pendingTwoFactorExpiry: expiry,
@@ -4034,14 +4058,17 @@ async function registerRoutes(app2) {
   app2.post("/api/2fa/verify-setup", isAuthenticated, async (req, res) => {
     try {
       const userId = req.session.userId;
+      const sessionKind = req.session.userKind === "paid" ? "paid" : "legacy";
       const { code } = req.body;
       if (!code || typeof code !== "string" || code.length !== 6) {
         return res.status(400).json({ message: "Invalid verification code" });
       }
-      const user = await storage.getUser(userId);
-      if (!user) {
+      const lookup = await findUserByIdAcrossTables(sessionKind, userId);
+      if (!lookup) {
         return res.status(404).json({ message: "User not found" });
       }
+      const user = lookup.record;
+      const userKind = lookup.kind;
       let isValid = false;
       if (user.twoFactorMethod === "totp" && user.totpSecret) {
         const verifyResult = await verifyTOTP({ token: code, secret: user.totpSecret });
@@ -4055,7 +4082,7 @@ async function registerRoutes(app2) {
       if (!isValid) {
         return res.status(400).json({ message: "Invalid or expired verification code" });
       }
-      await storage.updateUser2FA(userId, {
+      await update2FAByKind(userKind, userId, {
         twoFactorEnabled: true,
         pendingTwoFactorCode: null,
         pendingTwoFactorExpiry: null,
@@ -4078,10 +4105,13 @@ async function registerRoutes(app2) {
       if (!pendingUserId) {
         return res.status(400).json({ message: "No pending 2FA verification" });
       }
-      const user = await storage.getUser(pendingUserId);
-      if (!user) {
+      const sessionKind = req.session.userKind === "paid" ? "paid" : "legacy";
+      const lookup = await findUserByIdAcrossTables(sessionKind, pendingUserId);
+      if (!lookup) {
         return res.status(404).json({ message: "User not found" });
       }
+      const user = lookup.record;
+      const userKind = lookup.kind;
       let isValid = false;
       if (user.twoFactorMethod === "totp" && user.totpSecret) {
         const verifyResult = await verifyTOTP({ token: code, secret: user.totpSecret });
@@ -4096,7 +4126,7 @@ async function registerRoutes(app2) {
         return res.status(400).json({ message: "Invalid or expired verification code" });
       }
       if (user.twoFactorMethod === "email") {
-        await storage.updateUser2FA(pendingUserId, {
+        await update2FAByKind(userKind, pendingUserId, {
           pendingTwoFactorCode: null,
           pendingTwoFactorExpiry: null,
           twoFactorVerifiedAt: /* @__PURE__ */ new Date()
@@ -4111,8 +4141,13 @@ async function registerRoutes(app2) {
           else resolve();
         });
       });
-      storage.updateLastLogin(pendingUserId).catch(() => {
-      });
+      if (userKind === "paid") {
+        storage.updateInventorUserLastLogin(pendingUserId).catch(() => {
+        });
+      } else {
+        storage.updateLastLogin(pendingUserId).catch(() => {
+        });
+      }
       res.json({ id: user.id, email: user.email });
     } catch (error) {
       console.error("2FA verify error:", error);
@@ -4126,13 +4161,15 @@ async function registerRoutes(app2) {
       if (!pendingUserId) {
         return res.status(400).json({ message: "No pending 2FA verification" });
       }
-      const user = await storage.getUser(pendingUserId);
-      if (!user || user.twoFactorMethod !== "email") {
+      const sessionKind = req.session.userKind === "paid" ? "paid" : "legacy";
+      const lookup = await findUserByIdAcrossTables(sessionKind, pendingUserId);
+      if (!lookup || lookup.record.twoFactorMethod !== "email") {
         return res.status(400).json({ message: "Email 2FA not configured for this user" });
       }
+      const user = lookup.record;
       const code = generateEmailCode();
       const expiry = new Date(Date.now() + 10 * 60 * 1e3);
-      await storage.updateUser2FA(pendingUserId, {
+      await update2FAByKind(lookup.kind, pendingUserId, {
         pendingTwoFactorCode: code,
         pendingTwoFactorExpiry: expiry
       });
@@ -4161,7 +4198,8 @@ async function registerRoutes(app2) {
   app2.post("/api/2fa/disable", isAuthenticated, async (req, res) => {
     try {
       const userId = req.session.userId;
-      await storage.updateUser2FA(userId, {
+      const sessionKind = req.session.userKind === "paid" ? "paid" : "legacy";
+      await update2FAByKind(sessionKind, userId, {
         twoFactorEnabled: false,
         twoFactorMethod: null,
         totpSecret: null,
@@ -4177,10 +4215,12 @@ async function registerRoutes(app2) {
   app2.get("/api/2fa/status", isAuthenticated, async (req, res) => {
     try {
       const userId = req.session.userId;
-      const user = await storage.getUser(userId);
-      if (!user) {
+      const sessionKind = req.session.userKind === "paid" ? "paid" : "legacy";
+      const lookup = await findUserByIdAcrossTables(sessionKind, userId);
+      if (!lookup) {
         return res.status(404).json({ message: "User not found" });
       }
+      const user = lookup.record;
       res.json({
         enabled: user.twoFactorEnabled || false,
         method: user.twoFactorMethod || null,
@@ -4202,17 +4242,19 @@ async function registerRoutes(app2) {
       if (newPassword.length < 6) {
         return res.status(400).json({ message: "New password must be at least 6 characters" });
       }
-      const user = await storage.getUser(userId);
-      if (!user || !user.password) {
+      const sessionKind = req.session.userKind === "paid" ? "paid" : "legacy";
+      const lookup = await findUserByIdAcrossTables(sessionKind, userId);
+      if (!lookup || !lookup.record.password) {
         return res.status(404).json({ message: "User not found" });
       }
+      const user = lookup.record;
       const bcrypt2 = await import("bcryptjs");
       const isValid = await bcrypt2.compare(currentPassword, user.password);
       if (!isValid) {
         return res.status(401).json({ message: "Current password is incorrect" });
       }
       const hashedPassword = await bcrypt2.hash(newPassword, 10);
-      await storage.updateUserPassword(userId, hashedPassword);
+      await updatePasswordByKind(lookup.kind, userId, hashedPassword);
       res.json({ message: "Password changed successfully" });
     } catch (error) {
       console.error("Change password error:", error);
@@ -4222,13 +4264,15 @@ async function registerRoutes(app2) {
   app2.post("/api/auth/request-password-reset", isAuthenticated, async (req, res) => {
     try {
       const userId = req.session.userId;
-      const user = await storage.getUser(userId);
-      if (!user) {
+      const sessionKind = req.session.userKind === "paid" ? "paid" : "legacy";
+      const lookup = await findUserByIdAcrossTables(sessionKind, userId);
+      if (!lookup) {
         return res.status(404).json({ message: "User not found" });
       }
+      const user = lookup.record;
       const code = generateEmailCode();
       const expiry = new Date(Date.now() + 10 * 60 * 1e3);
-      await storage.updateUser2FA(userId, {
+      await update2FAByKind(lookup.kind, userId, {
         pendingTwoFactorCode: code,
         pendingTwoFactorExpiry: expiry
       });
@@ -4264,10 +4308,12 @@ async function registerRoutes(app2) {
       if (newPassword.length < 6) {
         return res.status(400).json({ message: "New password must be at least 6 characters" });
       }
-      const user = await storage.getUser(userId);
-      if (!user) {
+      const sessionKind = req.session.userKind === "paid" ? "paid" : "legacy";
+      const lookup = await findUserByIdAcrossTables(sessionKind, userId);
+      if (!lookup) {
         return res.status(404).json({ message: "User not found" });
       }
+      const user = lookup.record;
       if (!user.pendingTwoFactorCode || user.pendingTwoFactorCode !== code) {
         return res.status(401).json({ message: "Invalid reset code" });
       }
@@ -4276,8 +4322,8 @@ async function registerRoutes(app2) {
       }
       const bcrypt2 = await import("bcryptjs");
       const hashedPassword = await bcrypt2.hash(newPassword, 10);
-      await storage.updateUserPassword(userId, hashedPassword);
-      await storage.updateUser2FA(userId, {
+      await updatePasswordByKind(lookup.kind, userId, hashedPassword);
+      await update2FAByKind(lookup.kind, userId, {
         pendingTwoFactorCode: null,
         pendingTwoFactorExpiry: null
       });
@@ -4294,10 +4340,11 @@ async function registerRoutes(app2) {
       if (!email) {
         return res.status(400).json({ message: "Email is required" });
       }
-      const user = await storage.getUserByEmail(email.toLowerCase());
-      if (!user) {
+      const lookup = await findUserByEmailAcrossTables(email.toLowerCase());
+      if (!lookup) {
         return res.status(404).json({ message: "No account found with that email address." });
       }
+      const user = lookup.record;
       let method = "email";
       if (user.twoFactorMethod === "totp" && user.totpSecret) {
         method = "totp";
@@ -4305,7 +4352,7 @@ async function registerRoutes(app2) {
       } else {
         const code = generateEmailCode();
         const expiry = new Date(Date.now() + 10 * 60 * 1e3);
-        await storage.updateUser2FA(user.id, {
+        await update2FAByKind(lookup.kind, user.id, {
           pendingTwoFactorCode: code,
           pendingTwoFactorExpiry: expiry
         });
@@ -4336,10 +4383,11 @@ async function registerRoutes(app2) {
       if (!email || !code) {
         return res.status(400).json({ message: "Email and code are required" });
       }
-      const user = await storage.getUserByEmail(email.toLowerCase());
-      if (!user) {
+      const lookup = await findUserByEmailAcrossTables(email.toLowerCase());
+      if (!lookup) {
         return res.status(401).json({ message: "Invalid verification code" });
       }
+      const user = lookup.record;
       let isValid = false;
       if (method === "totp" && user.totpSecret) {
         const verifyResult = await verifyTOTP({ token: code, secret: user.totpSecret });
@@ -4363,7 +4411,7 @@ async function registerRoutes(app2) {
       const tokenExpiry = new Date(Date.now() + 15 * 60 * 1e3);
       resetTokens.set(resetToken, { email: user.email, expiry: tokenExpiry });
       if (method !== "totp") {
-        await storage.updateUser2FA(user.id, {
+        await update2FAByKind(lookup.kind, user.id, {
           pendingTwoFactorCode: null,
           pendingTwoFactorExpiry: null
         });
@@ -4394,12 +4442,17 @@ async function registerRoutes(app2) {
         resetTokens.delete(resetToken);
         return res.status(401).json({ message: "Reset token has expired" });
       }
-      const user = await storage.getUserByEmail(email.toLowerCase());
-      if (!user) {
+      const lookup = await findUserByEmailAcrossTables(email.toLowerCase());
+      if (!lookup) {
         return res.status(404).json({ message: "User not found" });
       }
+      const user = lookup.record;
       const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
-      await storage.updateUserPassword(user.id, hashedPassword);
+      await updatePasswordByKind(lookup.kind, user.id, hashedPassword);
+      await update2FAByKind(lookup.kind, user.id, {
+        pendingTwoFactorCode: null,
+        pendingTwoFactorExpiry: null
+      });
       resetTokens.delete(resetToken);
       res.json({ message: "Password reset successfully" });
     } catch (error) {
@@ -6877,7 +6930,9 @@ ${markdown}`;
         return res.status(404).json({ message: "Project not found" });
       }
       const userId = req.session.userId;
-      const user = await storage.getUser(userId);
+      const sessionKind = req.session.userKind === "paid" ? "paid" : "legacy";
+      const lookup = await findUserByIdAcrossTables(sessionKind, userId);
+      const user = lookup?.record;
       const agent5Data = await storage.getAgentData(req.params.id, 5);
       const agent5DataObj = agent5Data?.data;
       let provisionalDraft = agent5DataObj?.provisionalDraft;

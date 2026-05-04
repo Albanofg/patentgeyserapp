@@ -207,6 +207,53 @@ const withAuthUser = async (req: Request, res: Response, next: NextFunction) => 
   next();
 };
 
+// Phase 1 paid-projects: dual-table lookup helpers for auth/2FA/password flows.
+// Many endpoints originally only queried the legacy `users` table; we need them
+// to transparently work for inventor users in `inventors_users` as well.
+type AuthLookup =
+  | { kind: "paid"; record: import("@shared/schema").InventorUser }
+  | { kind: "legacy"; record: import("@shared/schema").User };
+
+async function findUserByEmailAcrossTables(email: string): Promise<AuthLookup | null> {
+  const inv = await storage.getInventorUserByEmail(email);
+  if (inv) return { kind: "paid", record: inv };
+  const leg = await storage.getUserByEmail(email);
+  if (leg) return { kind: "legacy", record: leg };
+  return null;
+}
+
+async function findUserByIdAcrossTables(
+  kind: UserKind,
+  userId: string,
+): Promise<AuthLookup | null> {
+  if (kind === "paid") {
+    const inv = await storage.getInventorUser(userId);
+    return inv ? { kind: "paid", record: inv } : null;
+  }
+  const leg = await storage.getUser(userId);
+  return leg ? { kind: "legacy", record: leg } : null;
+}
+
+async function update2FAByKind(
+  kind: UserKind,
+  userId: string,
+  data: import("./storage").Update2FAData,
+) {
+  return kind === "paid"
+    ? storage.updateInventorUser2FA(userId, data)
+    : storage.updateUser2FA(userId, data);
+}
+
+async function updatePasswordByKind(
+  kind: UserKind,
+  userId: string,
+  hashedPassword: string,
+) {
+  return kind === "paid"
+    ? storage.updateInventorUserPassword(userId, hashedPassword)
+    : storage.updateUserPassword(userId, hashedPassword);
+}
+
 // Checks that the current session owns the given project, whether they are a
 // legacy user (project.userId) or an inventor user (project.inventorsUserId).
 function sessionOwnsProject(
@@ -809,16 +856,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/2fa/initiate", isAuthenticated, async (req, res) => {
     try {
       const userId = (req.session as any).userId;
+      const sessionKind: UserKind = (req.session as any).userKind === "paid" ? "paid" : "legacy";
       const { method } = req.body;
 
       if (!method || !['email', 'totp'].includes(method)) {
         return res.status(400).json({ message: "Invalid 2FA method" });
       }
 
-      const user = await storage.getUser(userId);
-      if (!user) {
+      const lookup = await findUserByIdAcrossTables(sessionKind, userId);
+      if (!lookup) {
         return res.status(404).json({ message: "User not found" });
       }
+      const user = lookup.record;
+      const userKind = lookup.kind;
 
       if (method === 'totp') {
         // Generate TOTP secret
@@ -836,7 +886,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const qrCodeUrl = await QRCode.toDataURL(otpauthUrl);
         
         // Store secret temporarily (not enabled until verified)
-        await storage.updateUser2FA(userId, {
+        await update2FAByKind(userKind, userId, {
           twoFactorMethod: 'totp',
           totpSecret: secret,
           twoFactorEnabled: false
@@ -849,7 +899,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const expiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
         // Store code temporarily
-        await storage.updateUser2FA(userId, {
+        await update2FAByKind(userKind, userId, {
           twoFactorMethod: 'email',
           pendingTwoFactorCode: code,
           pendingTwoFactorExpiry: expiry,
@@ -886,16 +936,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/2fa/verify-setup", isAuthenticated, async (req, res) => {
     try {
       const userId = (req.session as any).userId;
+      const sessionKind: UserKind = (req.session as any).userKind === "paid" ? "paid" : "legacy";
       const { code } = req.body;
 
       if (!code || typeof code !== 'string' || code.length !== 6) {
         return res.status(400).json({ message: "Invalid verification code" });
       }
 
-      const user = await storage.getUser(userId);
-      if (!user) {
+      const lookup = await findUserByIdAcrossTables(sessionKind, userId);
+      if (!lookup) {
         return res.status(404).json({ message: "User not found" });
       }
+      const user = lookup.record;
+      const userKind = lookup.kind;
 
       let isValid = false;
 
@@ -916,7 +969,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Enable 2FA
-      await storage.updateUser2FA(userId, {
+      await update2FAByKind(userKind, userId, {
         twoFactorEnabled: true,
         pendingTwoFactorCode: null,
         pendingTwoFactorExpiry: null,
@@ -948,10 +1001,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "No pending 2FA verification" });
       }
 
-      const user = await storage.getUser(pendingUserId);
-      if (!user) {
+      const sessionKind: UserKind = (req.session as any).userKind === "paid" ? "paid" : "legacy";
+      const lookup = await findUserByIdAcrossTables(sessionKind, pendingUserId);
+      if (!lookup) {
         return res.status(404).json({ message: "User not found" });
       }
+      const user = lookup.record;
+      const userKind = lookup.kind;
 
       let isValid = false;
 
@@ -971,7 +1027,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Clear pending code if email method
       if (user.twoFactorMethod === 'email') {
-        await storage.updateUser2FA(pendingUserId, {
+        await update2FAByKind(userKind, pendingUserId, {
           pendingTwoFactorCode: null,
           pendingTwoFactorExpiry: null,
           twoFactorVerifiedAt: new Date()
@@ -990,7 +1046,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       });
 
-      storage.updateLastLogin(pendingUserId).catch(() => {});
+      if (userKind === "paid") {
+        storage.updateInventorUserLastLogin(pendingUserId).catch(() => {});
+      } else {
+        storage.updateLastLogin(pendingUserId).catch(() => {});
+      }
 
       res.json({ id: user.id, email: user.email });
     } catch (error: any) {
@@ -1009,15 +1069,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "No pending 2FA verification" });
       }
 
-      const user = await storage.getUser(pendingUserId);
-      if (!user || user.twoFactorMethod !== 'email') {
+      const sessionKind: UserKind = (req.session as any).userKind === "paid" ? "paid" : "legacy";
+      const lookup = await findUserByIdAcrossTables(sessionKind, pendingUserId);
+      if (!lookup || lookup.record.twoFactorMethod !== 'email') {
         return res.status(400).json({ message: "Email 2FA not configured for this user" });
       }
+      const user = lookup.record;
 
       const code = generateEmailCode();
       const expiry = new Date(Date.now() + 10 * 60 * 1000);
 
-      await storage.updateUser2FA(pendingUserId, {
+      await update2FAByKind(lookup.kind, pendingUserId, {
         pendingTwoFactorCode: code,
         pendingTwoFactorExpiry: expiry
       });
@@ -1050,8 +1112,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/2fa/disable", isAuthenticated, async (req, res) => {
     try {
       const userId = (req.session as any).userId;
+      const sessionKind: UserKind = (req.session as any).userKind === "paid" ? "paid" : "legacy";
 
-      await storage.updateUser2FA(userId, {
+      await update2FAByKind(sessionKind, userId, {
         twoFactorEnabled: false,
         twoFactorMethod: null,
         totpSecret: null,
@@ -1070,11 +1133,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/2fa/status", isAuthenticated, async (req, res) => {
     try {
       const userId = (req.session as any).userId;
-      const user = await storage.getUser(userId);
+      const sessionKind: UserKind = (req.session as any).userKind === "paid" ? "paid" : "legacy";
+      const lookup = await findUserByIdAcrossTables(sessionKind, userId);
 
-      if (!user) {
+      if (!lookup) {
         return res.status(404).json({ message: "User not found" });
       }
+      const user = lookup.record;
 
       res.json({
         enabled: user.twoFactorEnabled || false,
@@ -1107,21 +1172,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "New password must be at least 6 characters" });
       }
 
-      const user = await storage.getUser(userId);
-      if (!user || !user.password) {
+      const sessionKind: UserKind = (req.session as any).userKind === "paid" ? "paid" : "legacy";
+      const lookup = await findUserByIdAcrossTables(sessionKind, userId);
+      if (!lookup || !lookup.record.password) {
         return res.status(404).json({ message: "User not found" });
       }
+      const user = lookup.record;
 
       // Verify current password
       const bcrypt = await import('bcryptjs');
-      const isValid = await bcrypt.compare(currentPassword, user.password);
+      const isValid = await bcrypt.compare(currentPassword, user.password!);
       if (!isValid) {
         return res.status(401).json({ message: "Current password is incorrect" });
       }
 
       // Hash and save new password
       const hashedPassword = await bcrypt.hash(newPassword, 10);
-      await storage.updateUserPassword(userId, hashedPassword);
+      await updatePasswordByKind(lookup.kind, userId, hashedPassword);
 
       res.json({ message: "Password changed successfully" });
     } catch (error: any) {
@@ -1134,18 +1201,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/auth/request-password-reset", isAuthenticated, async (req, res) => {
     try {
       const userId = (req.session as any).userId;
-      const user = await storage.getUser(userId);
+      const sessionKind: UserKind = (req.session as any).userKind === "paid" ? "paid" : "legacy";
+      const lookup = await findUserByIdAcrossTables(sessionKind, userId);
 
-      if (!user) {
+      if (!lookup) {
         return res.status(404).json({ message: "User not found" });
       }
+      const user = lookup.record;
 
       // Generate a 6-digit reset code
       const code = generateEmailCode();
       const expiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
       // Store the code temporarily
-      await storage.updateUser2FA(userId, {
+      await update2FAByKind(lookup.kind, userId, {
         pendingTwoFactorCode: code,
         pendingTwoFactorExpiry: expiry
       });
@@ -1189,10 +1258,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "New password must be at least 6 characters" });
       }
 
-      const user = await storage.getUser(userId);
-      if (!user) {
+      const sessionKind: UserKind = (req.session as any).userKind === "paid" ? "paid" : "legacy";
+      const lookup = await findUserByIdAcrossTables(sessionKind, userId);
+      if (!lookup) {
         return res.status(404).json({ message: "User not found" });
       }
+      const user = lookup.record;
 
       // Verify the reset code
       if (!user.pendingTwoFactorCode || user.pendingTwoFactorCode !== code) {
@@ -1207,10 +1278,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Hash and save new password
       const bcrypt = await import('bcryptjs');
       const hashedPassword = await bcrypt.hash(newPassword, 10);
-      await storage.updateUserPassword(userId, hashedPassword);
+      await updatePasswordByKind(lookup.kind, userId, hashedPassword);
 
       // Clear the reset code
-      await storage.updateUser2FA(userId, {
+      await update2FAByKind(lookup.kind, userId, {
         pendingTwoFactorCode: null,
         pendingTwoFactorExpiry: null
       });
@@ -1238,15 +1309,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Email is required" });
       }
 
-      // Find user by email
-      const user = await storage.getUserByEmail(email.toLowerCase());
-      if (!user) {
+      // Find user by email across both tables (paid first, then legacy)
+      const lookup = await findUserByEmailAcrossTables(email.toLowerCase());
+      if (!lookup) {
         return res.status(404).json({ message: "No account found with that email address." });
       }
+      const user = lookup.record;
 
       // Determine verification method based on user's 2FA settings
       let method: 'email' | 'totp' = 'email';
-      
+
       if (user.twoFactorMethod === 'totp' && user.totpSecret) {
         // User has TOTP 2FA - use authenticator app
         method = 'totp';
@@ -1256,8 +1328,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const code = generateEmailCode();
         const expiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-        // Store the code
-        await storage.updateUser2FA(user.id, {
+        // Store the code on whichever table the user lives in
+        await update2FAByKind(lookup.kind, user.id, {
           pendingTwoFactorCode: code,
           pendingTwoFactorExpiry: expiry
         });
@@ -1295,10 +1367,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Email and code are required" });
       }
 
-      const user = await storage.getUserByEmail(email.toLowerCase());
-      if (!user) {
+      const lookup = await findUserByEmailAcrossTables(email.toLowerCase());
+      if (!lookup) {
         return res.status(401).json({ message: "Invalid verification code" });
       }
+      const user = lookup.record;
 
       let isValid = false;
 
@@ -1334,7 +1407,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Clear the email code if used
       if (method !== 'totp') {
-        await storage.updateUser2FA(user.id, {
+        await update2FAByKind(lookup.kind, user.id, {
           pendingTwoFactorCode: null,
           pendingTwoFactorExpiry: null
         });
@@ -1375,14 +1448,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ message: "Reset token has expired" });
       }
 
-      const user = await storage.getUserByEmail(email.toLowerCase());
-      if (!user) {
+      const lookup = await findUserByEmailAcrossTables(email.toLowerCase());
+      if (!lookup) {
         return res.status(404).json({ message: "User not found" });
       }
+      const user = lookup.record;
 
-      // Hash and save new password
+      // Hash and save new password on whichever table the user lives in
       const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
-      await storage.updateUserPassword(user.id, hashedPassword);
+      await updatePasswordByKind(lookup.kind, user.id, hashedPassword);
+
+      // Clear any pending reset code on the right table
+      await update2FAByKind(lookup.kind, user.id, {
+        pendingTwoFactorCode: null,
+        pendingTwoFactorExpiry: null
+      });
 
       // Clean up the token
       resetTokens.delete(resetToken);
@@ -4628,7 +4708,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const userId = (req.session as any).userId;
-      const user = await storage.getUser(userId);
+      const sessionKind: UserKind = (req.session as any).userKind === "paid" ? "paid" : "legacy";
+      const lookup = await findUserByIdAcrossTables(sessionKind, userId);
+      const user = lookup?.record;
 
       // Get agent5 data for provisional draft
       const agent5Data = await storage.getAgentData(req.params.id, 5);

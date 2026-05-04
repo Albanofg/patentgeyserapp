@@ -27,3 +27,7 @@ docs
 
 # Documentation images
 image/
+
+# Admin / migration scripts (keep post-merge.sh tracked)
+scripts/*
+!scripts/post-merge.sh
