@@ -68,11 +68,6 @@ export const projects = pgTable("projects", {
   currentSubstage: text("current_substage"), // For Agent 2: '2a', '2b', '2c'
   completed: integer("completed").notNull().default(0), // 0 or 1 boolean
   sourceCodeFiles: jsonb("source_code_files").$type<SourceCodeFile[]>(), // Array of source code files
-  // Soft-delete marker. When a user deletes a project that already reached
-  // stage 5, we soft-delete instead of hard-deleting so the row still counts
-  // toward their credit usage (no free re-runs after downloading the draft).
-  // Pre-stage-5 deletes remain hard-deletes and refund the credit.
-  deletedAt: timestamp("deleted_at"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

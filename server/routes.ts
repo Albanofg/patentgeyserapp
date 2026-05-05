@@ -811,9 +811,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Tokens for first-time password setup (magic-link flow). 7-day TTL.
-  // In-memory map matches the existing forgot-password pattern.
-  const signupTokens = new Map<string, { email: string; expiry: Date }>();
+  // Stateless signup-token helpers. Tokens are HMAC-signed strings of the form
+  // `<base64url(payload)>.<hex hmac>` where payload = JSON({ e: email, x: exp_ms }).
+  // No server-side storage — survives serverless cold starts, scales to N instances.
+  // Single-use is approximated by clearing the user's throwaway password on
+  // successful set; replays after that fail because the user already has a real password.
+  const SIGNUP_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+  function getSignupTokenSecret(): string {
+    const s = process.env.SESSION_SECRET;
+    if (!s) throw new Error("SESSION_SECRET not configured — required for signup tokens");
+    return s;
+  }
+
+  function issueSignupToken(email: string): string {
+    const payload = JSON.stringify({ e: email, x: Date.now() + SIGNUP_TOKEN_TTL_MS });
+    const payloadB64 = Buffer.from(payload, "utf8").toString("base64url");
+    const sig = crypto
+      .createHmac("sha256", getSignupTokenSecret())
+      .update(payloadB64)
+      .digest("hex");
+    return `${payloadB64}.${sig}`;
+  }
+
+  function verifySignupToken(token: string): { email: string } | { error: string } {
+    if (typeof token !== "string" || !token.includes(".")) {
+      return { error: "Invalid token" };
+    }
+    const [payloadB64, sig] = token.split(".");
+    if (!payloadB64 || !sig) return { error: "Invalid token" };
+
+    const expectedSig = crypto
+      .createHmac("sha256", getSignupTokenSecret())
+      .update(payloadB64)
+      .digest("hex");
+    // Constant-time compare to avoid timing attacks.
+    const a = Buffer.from(sig, "hex");
+    const b = Buffer.from(expectedSig, "hex");
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      return { error: "Invalid token" };
+    }
+
+    let payload: { e?: unknown; x?: unknown };
+    try {
+      payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8"));
+    } catch {
+      return { error: "Invalid token" };
+    }
+
+    if (typeof payload.e !== "string" || typeof payload.x !== "number") {
+      return { error: "Invalid token" };
+    }
+    if (payload.x < Date.now()) {
+      return { error: "Token expired" };
+    }
+    return { email: payload.e };
+  }
 
   // Public webhook endpoint — create paid account from GHL after a successful purchase.
   // GHL form collects {email, firstName?, lastName?, phone?} + credit pack — NEVER a password.
@@ -845,14 +898,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.status(401).json({ message: "Unauthorized — invalid or missing API key" });
     }
 
-    const { email, credits, firstName, lastName } = req.body || {};
+    const body = req.body || {};
+    // Accept top-level OR nested under common GHL shapes (contact.*, customData.*).
+    const pick = (k: string) =>
+      body?.[k] ?? body?.contact?.[k] ?? body?.customData?.[k];
+    const email = pick("email");
+    const credits = pick("credits") ?? pick("credit");
+    // firstName / lastName are accepted but currently not stored — schema has no
+    // name columns on inventors_users. If you need them later, add columns and
+    // wire them in here.
+
     if (!email || typeof email !== "string") {
+      console.warn("[ghl-signup] Missing/invalid email. Body keys:", Object.keys(body));
       return res.status(400).json({ message: "email is required" });
     }
-    const creditCount = Number(credits);
-    if (!Number.isInteger(creditCount) || creditCount < 1) {
-      return res.status(400).json({ message: "credits must be a positive integer" });
+    // GHL often sends numeric fields as strings ("1") or with surrounding text.
+    // Coerce, then validate as a positive integer.
+    const parsedCredits = parseInt(String(credits ?? "").trim(), 10);
+    if (!Number.isFinite(parsedCredits) || parsedCredits < 1) {
+      console.warn(
+        `[ghl-signup] Invalid credits. Received: ${JSON.stringify(credits)}. ` +
+          `Body keys: ${Object.keys(body).join(",")}`,
+      );
+      return res.status(400).json({
+        message: "credits must be a positive integer",
+        receivedCredits: credits ?? null,
+      });
     }
+    const creditCount = parsedCredits;
 
     const normalizedEmail = email.trim().toLowerCase();
 
@@ -908,14 +981,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.error("[ghl-signup] Auto-whitelist failed (non-fatal):", e);
       }
 
-      // Issue a one-time signup token and email the user a link to set password.
-      const signupToken =
-        crypto.randomBytes(32).toString("hex") + Date.now().toString(36);
-      const tokenExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
-      signupTokens.set(signupToken, { email: normalizedEmail, expiry: tokenExpiry });
-
+      // Issue a stateless HMAC-signed signup token and email the user a link.
+      const signupToken = issueSignupToken(normalizedEmail);
       const baseUrl = process.env.APP_BASE_URL || "https://inventor.patentgeyser.com";
-      const setPasswordLink = `${baseUrl}/auth/set-password?token=${signupToken}`;
+      const setPasswordLink = `${baseUrl}/auth/set-password?token=${encodeURIComponent(signupToken)}`;
 
       if (GHL_EMAIL_WEBHOOK) {
         try {
@@ -979,24 +1048,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: failed.message });
       }
 
-      const tokenData = signupTokens.get(token);
-      if (!tokenData) {
-        return res.status(401).json({ message: "Invalid or expired link. Please contact support." });
-      }
-      if (tokenData.expiry < new Date()) {
-        signupTokens.delete(token);
-        return res.status(401).json({ message: "Link has expired. Please contact support." });
+      const verified = verifySignupToken(token);
+      if ("error" in verified) {
+        const status = verified.error === "Token expired" ? 401 : 401;
+        const message =
+          verified.error === "Token expired"
+            ? "Link has expired. Please contact support."
+            : "Invalid or expired link. Please contact support.";
+        return res.status(status).json({ message });
       }
 
-      const user = await storage.getInventorUserByEmail(tokenData.email);
+      const user = await storage.getInventorUserByEmail(verified.email);
       if (!user) {
-        signupTokens.delete(token);
         return res.status(404).json({ message: "Account not found." });
       }
 
       const hashed = await bcrypt.hash(password, SALT_ROUNDS);
       await storage.updateInventorUserPassword(user.id, hashed);
-      signupTokens.delete(token);
 
       // Log the user straight in — they just proved control of the email + paid for the account.
       (req.session as any).userId = user.id;
