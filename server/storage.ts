@@ -1,7 +1,7 @@
 // Storage layer implementation using DatabaseStorage as per javascript_database blueprint
 import { users, inventorsUsers, projects, agentData, pannuRecords, ideaSnapshots, priorArtSearches, emailWhitelist, type User, type InsertUser, type InventorUser, type InsertInventorUser, type Project, type InsertProject, type AgentData, type InsertAgentData, type PannuRecord, type InsertPannuRecord, type IdeaSnapshot, type InsertIdeaSnapshot, type PriorArtSearch, type InsertPriorArtSearch, type EmailWhitelistEntry } from "@shared/schema";
 import { db, pool } from "./db";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, sql, isNull, or, gte } from "drizzle-orm";
 
 // 2FA update data type
 export interface Update2FAData {
@@ -221,7 +221,10 @@ export class DatabaseStorage implements IStorage {
 
   // Project operations
   async getProject(id: string): Promise<Project | undefined> {
-    const [project] = await db.select().from(projects).where(eq(projects.id, id));
+    const [project] = await db
+      .select()
+      .from(projects)
+      .where(and(eq(projects.id, id), isNull(projects.deletedAt)));
     return project || undefined;
   }
 
@@ -229,7 +232,7 @@ export class DatabaseStorage implements IStorage {
     return await db
       .select()
       .from(projects)
-      .where(eq(projects.userId, userId))
+      .where(and(eq(projects.userId, userId), isNull(projects.deletedAt)))
       .orderBy(desc(projects.updatedAt));
   }
 
@@ -248,21 +251,29 @@ export class DatabaseStorage implements IStorage {
       return await db
         .select()
         .from(projects)
-        .where(eq(projects.userId, owner.userId))
+        .where(and(eq(projects.userId, owner.userId), isNull(projects.deletedAt)))
         .orderBy(desc(projects.updatedAt));
     }
     return await db
       .select()
       .from(projects)
-      .where(eq(projects.inventorsUserId, owner.inventorsUserId))
+      .where(and(eq(projects.inventorsUserId, owner.inventorsUserId), isNull(projects.deletedAt)))
       .orderBy(desc(projects.updatedAt));
   }
 
+  // Counts a project against the user's credits if it is either still active
+  // (deletedAt IS NULL) or reached stage 5+ before being soft-deleted.
+  // Pre-stage-5 hard-deletes refund the credit; stage-5+ soft-deletes do not.
   async countProjectsByInventorUserId(inventorsUserId: string): Promise<number> {
     const [row] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(projects)
-      .where(eq(projects.inventorsUserId, inventorsUserId));
+      .where(
+        and(
+          eq(projects.inventorsUserId, inventorsUserId),
+          or(isNull(projects.deletedAt), gte(projects.currentStage, 5)),
+        ),
+      );
     return row?.count ?? 0;
   }
 
@@ -275,8 +286,24 @@ export class DatabaseStorage implements IStorage {
     return project || undefined;
   }
 
+  // Stage-5+ projects are soft-deleted so the credit they consumed sticks.
+  // Pre-stage-5 projects are hard-deleted (cascades wipe agent data, etc.),
+  // refunding the credit.
   async deleteProject(id: string): Promise<void> {
-    await db.delete(projects).where(eq(projects.id, id));
+    const [project] = await db
+      .select({ currentStage: projects.currentStage })
+      .from(projects)
+      .where(eq(projects.id, id));
+    if (!project) return;
+
+    if (project.currentStage >= 5) {
+      await db
+        .update(projects)
+        .set({ deletedAt: new Date(), updatedAt: new Date() })
+        .where(eq(projects.id, id));
+    } else {
+      await db.delete(projects).where(eq(projects.id, id));
+    }
   }
 
   // Agent data operations

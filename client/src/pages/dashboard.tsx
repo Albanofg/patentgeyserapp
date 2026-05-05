@@ -537,9 +537,19 @@ export default function Dashboard() {
           <AlertDialogContent data-testid="dialog-delete-project">
             <AlertDialogHeader>
               <AlertDialogTitle>Delete Project</AlertDialogTitle>
-              <AlertDialogDescription>
-                Are you sure you want to delete "{projectToDelete?.title}"? This action cannot be undone
-                and will permanently remove all associated data.
+              <AlertDialogDescription asChild>
+                <div className="space-y-2">
+                  <p>
+                    Are you sure you want to delete "{projectToDelete?.title}"? This action cannot be undone
+                    and will permanently remove all associated data.
+                  </p>
+                  {projectToDelete && projectToDelete.currentStage >= 5 && (
+                    <p className="font-medium text-destructive">
+                      This project has reached the final stage. All of its data will be permanently
+                      erased and your credit will not be refunded.
+                    </p>
+                  )}
+                </div>
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
