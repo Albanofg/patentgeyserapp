@@ -120,16 +120,14 @@ export default function Agent4Pannu() {
     const agent4DataObj = agent4Data?.data as any;
     const selectedKeyConcepts = agent4DataObj?.selectedKeyConcepts || [];
     
-    return selectedKeyConcepts
-      .filter((claim: any) => claim.type === 'independent')
-      .map((claim: any, index: number) => ({
-        id: claim.id,
-        conceptId: claim.id,
-        claimText: claim.text,
-        strategyContext: claim.strategySummary || '',
-        type: claim.type,
-        number: claim.number || (index + 1), // Use original number, fallback to index for old data
-      }));
+    return selectedKeyConcepts.map((claim: any, index: number) => ({
+      id: claim.id,
+      conceptId: claim.id,
+      claimText: claim.text,
+      strategyContext: claim.strategySummary || '',
+      type: claim.type,
+      number: claim.number || (index + 1),
+    }));
   };
 
   const keyConceptsForValidation = getClaimsForValidation();
@@ -181,7 +179,7 @@ export default function Agent4Pannu() {
     mutationFn: async (claim: ClaimForValidation) => {
       const response = await apiRequest("POST", `/api/projects/${projectId}/pannu/generate-questions`, {
         conceptId: claim.conceptId,
-        claimText: claim.claimText,
+        keyConceptText: claim.claimText,
         strategyContext: claim.strategyContext,
       });
       return response;
@@ -217,7 +215,7 @@ export default function Agent4Pannu() {
       const response = await apiRequest("POST", `/api/projects/${projectId}/pannu/validate-answers`, {
         pannuRecordId: state?.pannuRecordId,
         conceptId: claim.conceptId,
-        claimText: claim.claimText,
+        keyConceptText: claim.claimText,
         answers,
       });
       return response;
@@ -330,12 +328,11 @@ export default function Agent4Pannu() {
       answer: claimAnswers[q.factor] || '',
     }));
 
-    const hasEmptyAnswers = answers.some(a => !a.answer.trim());
-    if (hasEmptyAnswers) {
+    const hasAnyAnswer = answers.some(a => a.answer.trim());
+    if (!hasAnyAnswer) {
       toast({
-        title: "Please answer all questions",
-        description: "All three Pannu factor questions must be answered.",
-        // Softer UX - no red banner
+        title: "Please answer at least one question",
+        description: "Provide an answer to at least one factor before submitting.",
       });
       return;
     }
@@ -370,7 +367,7 @@ export default function Agent4Pannu() {
   const getAiSuggestionMutation = useMutation({
     mutationFn: async ({ claim, question, factor }: { claim: ClaimForValidation; question: string; factor: string }) => {
       const response = await apiRequest("POST", `/api/projects/${projectId}/pannu/ai-suggestion`, {
-        claimText: claim.claimText,
+        keyConceptText: claim.claimText,
         question,
         factor,
       });
@@ -479,8 +476,16 @@ export default function Agent4Pannu() {
     );
   }
 
-  const allCertified = keyConceptsForValidation.length > 0 && 
+  const allCertified = keyConceptsForValidation.length > 0 &&
     keyConceptsForValidation.every(c => validationStates[c.conceptId]?.status === 'certified');
+
+  // At least one concept validated (any terminal status) is enough to proceed.
+  // Users can also Skip the whole step entirely.
+  const canProceed = keyConceptsForValidation.length === 0 ||
+    keyConceptsForValidation.some(c => {
+      const s = validationStates[c.conceptId]?.status;
+      return s === 'certified' || s === 'needs_clarification' || s === 'rejected';
+    });
 
   const getStatusBadge = (status: ValidationState['status'], certificationStatus?: string) => {
     if (status === 'certified' && certificationStatus === 'Skipped') {
@@ -619,7 +624,7 @@ export default function Agent4Pannu() {
                             data-testid={`button-generate-questions-${index}`}
                           >
                             <Shield className="h-4 w-4 mr-2" />
-                            Start Pannu Validation
+                            Start Validation
                           </Button>
                         )}
 
@@ -867,7 +872,7 @@ export default function Agent4Pannu() {
                       <AlertDialogTitle>Skip Inventorship Validation?</AlertDialogTitle>
                       <AlertDialogDescription className="space-y-2">
                         <p>
-                          The Pannu test helps validate your inventorship contribution under USPTO requirements. 
+                          Proof of Human Conception validates your inventorship contribution under USPTO requirements.
                           Skipping this step means you won't have documentation of your inventorship.
                         </p>
                         <p className="font-medium text-foreground">
@@ -891,7 +896,7 @@ export default function Agent4Pannu() {
                   variant="default"
                   size="lg"
                   onClick={() => proceedMutation.mutate()}
-                  disabled={!allCertified || proceedMutation.isPending}
+                  disabled={!canProceed || proceedMutation.isPending}
                   data-testid="button-continue"
                 >
                   {proceedMutation.isPending ? (

@@ -28,7 +28,7 @@ export interface AgentCallOptions {
   timeoutMs?: number;
 }
 
-const DEFAULT_CALL_TIMEOUT_MS = 120_000;
+const DEFAULT_CALL_TIMEOUT_MS = 150_000;
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -102,8 +102,15 @@ async function callGemini(opts: AgentCallOptions, model: string): Promise<string
   return text;
 }
 
+// gpt-4o caps completion tokens at 16384; clamp to avoid 400s on Gemini fallback
+const GPT_MAX_OUTPUT_TOKENS: Record<string, number> = {
+  "gpt-4o": 16384,
+};
+
 async function callGPT(opts: AgentCallOptions, model: string): Promise<string> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
+  const cap = GPT_MAX_OUTPUT_TOKENS[model];
+  const maxTokens = cap ? Math.min(opts.config.maxTokens, cap) : opts.config.maxTokens;
   const response = await withTimeout(
     openai.chat.completions.create({
       model,
@@ -111,7 +118,7 @@ async function callGPT(opts: AgentCallOptions, model: string): Promise<string> {
         { role: "system", content: opts.systemPrompt },
         { role: "user", content: opts.userMessage },
       ],
-      max_tokens: opts.config.maxTokens,
+      max_tokens: maxTokens,
       temperature: opts.config.temperature,
       top_p: opts.config.topP,
       ...(opts.jsonMode ? { response_format: { type: "json_object" as const } } : {}),
@@ -144,6 +151,21 @@ export async function callAgent(opts: AgentCallOptions): Promise<string> {
     return result;
   } catch (error: any) {
     console.error(`[AI] ${model} failed after ${Date.now() - started}ms:`, error.message);
+
+    // Retry Gemini once before falling back — most failures are tail-latency
+    // timeouts or transient throttling that resolve on a second attempt.
+    if (isGemini(model)) {
+      const retryStarted = Date.now();
+      console.log(`[AI] -> retry ${model}`);
+      try {
+        const result = await callModel(opts, model);
+        console.log(`[AI] <- ${model} ok on retry (${Date.now() - retryStarted}ms, ${result.length} chars)`);
+        return result;
+      } catch (retryError: any) {
+        console.error(`[AI] ${model} retry also failed after ${Date.now() - retryStarted}ms:`, retryError.message);
+      }
+    }
+
     if (!fallback) throw error;
 
     console.log(`[AI] -> fallback ${fallback}`);

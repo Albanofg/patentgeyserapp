@@ -6386,12 +6386,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const project = await storage.getProject(req.params.id);
       const agent4cData = await storage.getAgentData(req.params.id, 4);
       const agent5DataForDocx = await storage.getAgentData(req.params.id, 5);
-      
-      if (!project || !agent4cData) {
-        return res.status(404).json({ message: "Project or draft not found" });
+
+      if (!project) {
+        return res.status(404).json({ message: "Project not found" });
       }
 
-      const rawDraft = (agent4cData.data as any)?.provisionalDraft || {};
+      // Edits made via /update-specification-section land in agent 5.
+      // Prefer that draft so DOCX exports reflect user edits; fall back to
+      // agent 4's draft if no edits have been saved yet.
+      const editedDraft = (agent5DataForDocx?.data as any)?.provisionalDraft;
+      const originalDraft = (agent4cData?.data as any)?.provisionalDraft;
+      const rawDraft = editedDraft || originalDraft || {};
+
+      if (!editedDraft && !originalDraft) {
+        return res.status(404).json({ message: "Draft not found" });
+      }
+
       const parsedDraft = parseProvisionalDraft(rawDraft);
       
       // Fix claim references and convert escaped Unicode for DOCX

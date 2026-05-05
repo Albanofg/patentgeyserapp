@@ -194,8 +194,8 @@ export default function Agent4PannuIntro() {
                   What is Proof of Human Conception?
                 </h3>
                 <p className="text-sm text-muted-foreground">
-                  Proof of Human Conception is a three-factor framework based on the landmark case <em>Pannu v. Iolab Corp.</em> (1998) 
-                  that establishes three criteria for determining who qualifies as an inventor:
+                  Proof of Human Conception is a three-factor framework grounded in USPTO inventorship case law,
+                  used to determine who qualifies as a legal inventor:
                 </p>
                 
                 <div className="grid gap-4 md:grid-cols-3">
@@ -256,7 +256,7 @@ export default function Agent4PannuIntro() {
                       <p className="text-sm font-medium">Answer Questions for Each Key Concept</p>
                       <p className="text-sm text-muted-foreground">
                         For each primary key concept in your patent, you'll answer three specific questions
-                        about your contribution - one for each Pannu factor.
+                        about your contribution — one for each of the three inventorship factors.
                       </p>
                     </div>
                   </div>
@@ -363,7 +363,7 @@ export default function Agent4PannuIntro() {
                     <AlertDialogTitle>Skip Inventorship Validation?</AlertDialogTitle>
                     <AlertDialogDescription className="space-y-2">
                       <p>
-                        The Pannu test helps validate your inventorship contribution under USPTO requirements. 
+                        Proof of Human Conception validates your inventorship contribution under USPTO requirements.
                         Skipping this step means you won't have documentation of your inventorship.
                       </p>
                       <p className="font-medium text-foreground">
