@@ -811,6 +811,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Public endpoint — exposes the GHL order-form embed URL for the unauthenticated
+  // /buy page (funnel landing). Non-sensitive; same value returned to authenticated
+  // users via /api/auth/user.
+  app.get("/api/public/embed-url", (_req, res) => {
+    res.json({ embedUrl: process.env.GHL_EMBED_URL || null });
+  });
+
   // Stateless signup-token helpers. Tokens are HMAC-signed strings of the form
   // `<base64url(payload)>.<hex hmac>` where payload = JSON({ e: email, x: exp_ms }).
   // No server-side storage — survives serverless cold starts, scales to N instances.

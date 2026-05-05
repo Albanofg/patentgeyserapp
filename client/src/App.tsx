@@ -10,6 +10,7 @@ import Login from "@/pages/login";
 import Register from "@/pages/register";
 import ForgotPassword from "@/pages/forgot-password";
 import SetPassword from "@/pages/set-password";
+import Buy from "@/pages/buy";
 
 function Router() {
   const [location] = useLocation();
@@ -27,6 +28,11 @@ function Router() {
   // Set initial password (post-checkout welcome link from GHL signup email)
   if (location === "/auth/set-password" || location.startsWith("/auth/set-password?")) {
     return <SetPassword />;
+  }
+
+  // Public checkout page — embeds the GHL order form for new buyers (and top-ups)
+  if (location === "/buy" || location.startsWith("/buy?")) {
+    return <Buy />;
   }
 
   // Registration — public (freemium) and legacy hidden URL kept for admin use.
