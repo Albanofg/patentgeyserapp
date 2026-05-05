@@ -1,6 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import https from "https";
+import crypto from "crypto";
 import { storage } from "./storage";
 import { pool } from "./db";
 import { insertProjectSchema } from "@shared/schema";
@@ -488,8 +489,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const { email, password } = registerRequestSchema.parse(req.body);
-      // Default new signups to "paid" (PatentGeyser consumer). Legacy creation is admin-only.
+      // All public self-serve registration is now closed. Paid accounts must come
+      // through the GHL checkout webhook; legacy accounts are admin-provisioned via
+      // server-side scripts only. Both kinds are rejected here so the public
+      // /api/auth/register endpoint can't be used to bypass the paywall.
       const kind: UserKind = req.body?.kind === "legacy" ? "legacy" : "paid";
+      if (kind === "paid") {
+        return res.status(403).json({
+          message: "Paid accounts must be created through checkout. Please complete your purchase to receive access.",
+        });
+      }
+      // Legacy registration also requires the admin secret to prevent paywall
+      // bypass. Without it, public POSTs with kind=legacy are rejected.
+      const adminSecret = req.headers["x-admin-secret"];
+      if (kind === "legacy" && (!process.env.LEGACY_REGISTER_SECRET || adminSecret !== process.env.LEGACY_REGISTER_SECRET)) {
+        return res.status(403).json({
+          message: "Account creation is closed. Please complete your purchase to receive access.",
+        });
+      }
 
       const passwordRequirements = [
         { test: password.length >= 8, message: "Password must be at least 8 characters" },
@@ -791,6 +808,208 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("[whitelist-webhook] Reactivate error:", error);
       return res.status(404).json({ success: false, message: "Email not found in whitelist" });
+    }
+  });
+
+  // Tokens for first-time password setup (magic-link flow). 7-day TTL.
+  // In-memory map matches the existing forgot-password pattern.
+  const signupTokens = new Map<string, { email: string; expiry: Date }>();
+
+  // Public webhook endpoint — create paid account from GHL after a successful purchase.
+  // GHL form collects {email, firstName?, lastName?, phone?} + credit pack — NEVER a password.
+  // After payment, GHL POSTs here, and the server emails the buyer a one-time
+  // link to set their own password.
+  //
+  // POST /api/webhook/ghl-signup
+  // Headers: x-api-key: <GHL_SIGNUP_API_KEY>
+  // Body:    { email: string, credits: number }
+  // Behavior:
+  //   - New email   → creates inventor_user with random throwaway password (user
+  //                   sets their real one via the emailed link), sets credits.
+  //   - Existing    → adds `credits` to existing project_limit (top-up, no email).
+  app.post("/api/webhook/ghl-signup", async (req, res) => {
+    const expectedKey = process.env.GHL_SIGNUP_API_KEY;
+    if (!expectedKey) {
+      return res.status(500).json({ message: "GHL signup webhook not configured on server" });
+    }
+
+    // Accept either `x-api-key: <secret>` or `Authorization: Bearer <secret>`.
+    const apiKeyHeader = req.headers["x-api-key"];
+    const authHeader = req.headers["authorization"];
+    const bearerToken =
+      typeof authHeader === "string" && authHeader.toLowerCase().startsWith("bearer ")
+        ? authHeader.slice(7).trim()
+        : undefined;
+    const presentedKey = apiKeyHeader ?? bearerToken;
+    if (!presentedKey || presentedKey !== expectedKey) {
+      return res.status(401).json({ message: "Unauthorized — invalid or missing API key" });
+    }
+
+    const { email, credits, firstName, lastName } = req.body || {};
+    if (!email || typeof email !== "string") {
+      return res.status(400).json({ message: "email is required" });
+    }
+    const creditCount = Number(credits);
+    if (!Number.isInteger(creditCount) || creditCount < 1) {
+      return res.status(400).json({ message: "credits must be a positive integer" });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    try {
+      const existingInventor = await storage.getInventorUserByEmail(normalizedEmail);
+      const existingLegacy = existingInventor
+        ? null
+        : await storage.getUserByEmail(normalizedEmail);
+
+      if (existingLegacy) {
+        // Email already used by a legacy account — refuse to silently shadow it.
+        return res.status(409).json({
+          success: false,
+          message: "Email already exists as a legacy account. Contact support.",
+        });
+      }
+
+      if (existingInventor) {
+        // Top-up flow: increment credits, leave password untouched, no email.
+        const updated = await storage.incrementInventorUserProjectLimit(
+          existingInventor.id,
+          creditCount,
+        );
+        console.log(
+          `[ghl-signup] Top-up: ${normalizedEmail} +${creditCount} → ${updated?.projectLimit}`,
+        );
+        return res.json({
+          success: true,
+          mode: "topup",
+          email: normalizedEmail,
+          projectLimit: updated?.projectLimit ?? null,
+        });
+      }
+
+      // First-time signup. Generate an unguessable random password the user will
+      // never know — they set their real one via the emailed link.
+      const throwawayPassword = crypto.randomBytes(32).toString("hex");
+      const hashedPassword = await bcrypt.hash(throwawayPassword, SALT_ROUNDS);
+
+      const user = await storage.createInventorUser({
+        email: normalizedEmail,
+        password: hashedPassword,
+      });
+      const updated = await storage.setInventorUserProjectLimit(user.id, creditCount);
+
+      // Auto-whitelist for parity with the legacy register flow.
+      try {
+        const already = await storage.isEmailWhitelisted(normalizedEmail);
+        if (!already) {
+          await storage.addEmailToWhitelist(normalizedEmail, "ghl-signup");
+        }
+      } catch (e) {
+        console.error("[ghl-signup] Auto-whitelist failed (non-fatal):", e);
+      }
+
+      // Issue a one-time signup token and email the user a link to set password.
+      const signupToken =
+        crypto.randomBytes(32).toString("hex") + Date.now().toString(36);
+      const tokenExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+      signupTokens.set(signupToken, { email: normalizedEmail, expiry: tokenExpiry });
+
+      const baseUrl = process.env.APP_BASE_URL || "https://inventor.patentgeyser.com";
+      const setPasswordLink = `${baseUrl}/auth/set-password?token=${signupToken}`;
+
+      if (GHL_EMAIL_WEBHOOK) {
+        try {
+          await sendWebhook(
+            GHL_EMAIL_WEBHOOK,
+            {
+              email: normalizedEmail,
+              type: "welcome_set_password",
+              subject: "Welcome to Patent Geyser — set your password",
+              message:
+                `Welcome to Patent Geyser! Your account has been created with ${creditCount} credit(s).\n\n` +
+                `Click the link below to set your password and get started:\n${setPasswordLink}\n\n` +
+                `This link expires in 7 days.`,
+              setPasswordLink,
+              credits: creditCount,
+            },
+            30000,
+          );
+        } catch (emailError) {
+          console.error("[ghl-signup] Welcome email failed (non-fatal):", emailError);
+        }
+      } else {
+        console.log("[ghl-signup] GHL_EMAIL_WEBHOOK not configured. Set-password link:", setPasswordLink);
+      }
+
+      console.log(`[ghl-signup] Created: ${normalizedEmail} with ${creditCount} credits`);
+      return res.json({
+        success: true,
+        mode: "created",
+        email: normalizedEmail,
+        projectLimit: updated?.projectLimit ?? creditCount,
+      });
+    } catch (error: any) {
+      console.error("[ghl-signup] Error:", error);
+      return res.status(500).json({ success: false, message: "Failed to provision account" });
+    }
+  });
+
+  // Set initial password using a one-time signup token (from the welcome email).
+  // POST /api/auth/set-initial-password
+  // Body: { token: string, password: string }
+  app.post("/api/auth/set-initial-password", async (req, res) => {
+    try {
+      const { token, password } = req.body || {};
+      if (!token || typeof token !== "string") {
+        return res.status(400).json({ message: "token is required" });
+      }
+      if (!password || typeof password !== "string") {
+        return res.status(400).json({ message: "password is required" });
+      }
+
+      const passwordRequirements = [
+        { test: password.length >= 8, message: "Password must be at least 8 characters" },
+        { test: /[A-Z]/.test(password), message: "Password must contain at least one uppercase letter" },
+        { test: /[a-z]/.test(password), message: "Password must contain at least one lowercase letter" },
+        { test: /\d/.test(password), message: "Password must contain at least one number" },
+        { test: /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password), message: "Password must contain at least one special character" },
+      ];
+      const failed = passwordRequirements.find((r) => !r.test);
+      if (failed) {
+        return res.status(400).json({ message: failed.message });
+      }
+
+      const tokenData = signupTokens.get(token);
+      if (!tokenData) {
+        return res.status(401).json({ message: "Invalid or expired link. Please contact support." });
+      }
+      if (tokenData.expiry < new Date()) {
+        signupTokens.delete(token);
+        return res.status(401).json({ message: "Link has expired. Please contact support." });
+      }
+
+      const user = await storage.getInventorUserByEmail(tokenData.email);
+      if (!user) {
+        signupTokens.delete(token);
+        return res.status(404).json({ message: "Account not found." });
+      }
+
+      const hashed = await bcrypt.hash(password, SALT_ROUNDS);
+      await storage.updateInventorUserPassword(user.id, hashed);
+      signupTokens.delete(token);
+
+      // Log the user straight in — they just proved control of the email + paid for the account.
+      (req.session as any).userId = user.id;
+      (req.session as any).userKind = "paid";
+      (req.session as any).whitelistStatus = "active";
+      await new Promise<void>((resolve, reject) => {
+        req.session.save((err) => (err ? reject(err) : resolve()));
+      });
+
+      res.json({ success: true, email: user.email });
+    } catch (error: any) {
+      console.error("set-initial-password error:", error);
+      res.status(500).json({ message: "Failed to set password" });
     }
   });
 

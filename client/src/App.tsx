@@ -9,6 +9,7 @@ import { CopySelectionButton } from "@/components/copy-selection-button";
 import Login from "@/pages/login";
 import Register from "@/pages/register";
 import ForgotPassword from "@/pages/forgot-password";
+import SetPassword from "@/pages/set-password";
 
 function Router() {
   const [location] = useLocation();
@@ -21,6 +22,11 @@ function Router() {
   // Render forgot password page outside sidebar layout
   if (location === "/auth/forgot-password" || location.startsWith("/auth/forgot-password?")) {
     return <ForgotPassword />;
+  }
+
+  // Set initial password (post-checkout welcome link from GHL signup email)
+  if (location === "/auth/set-password" || location.startsWith("/auth/set-password?")) {
+    return <SetPassword />;
   }
 
   // Registration — public (freemium) and legacy hidden URL kept for admin use.
