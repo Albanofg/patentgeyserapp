@@ -1016,6 +1016,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         mode: "created",
         email: normalizedEmail,
         projectLimit: updated?.projectLimit ?? creditCount,
+        // GHL workflow can capture this and use it as the post-payment redirect URL,
+        // so the buyer lands directly on the set-password page (no email required).
+        setPasswordLink,
+        redirectUrl: setPasswordLink,
       });
     } catch (error: any) {
       console.error("[ghl-signup] Error:", error);
