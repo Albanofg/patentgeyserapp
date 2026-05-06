@@ -19,10 +19,6 @@ declare global {
   }
 }
 
-// Module-level (NOT useRef) so it survives React StrictMode's double-mount
-// in dev. Calling CollectJS.configure() twice throws "too many fields".
-let collectJsConfigured = false;
-
 type PackId = "pack_1" | "pack_5";
 const PACKS: { id: PackId; credits: number; price: string; note?: string }[] = [
   { id: "pack_1", credits: 1, price: "$299.00" },
@@ -86,17 +82,8 @@ export default function Buy() {
   useEffect(() => {
     if (!publicKey) return;
 
-    const doConfigure = () => {
-      if (collectJsConfigured) {
-        setCollectReady(true);
-        return;
-      }
-      collectJsConfigured = true;
-      // Collect.js auto-mounts iframes into elements with the default IDs
-      // (#ccnumber, #ccexp, #cvv) when `data-variant="inline"` is on the
-      // script tag. configure() accepts only `variant` + `callback` — passing
-      // a `fields` object throws "You provided too many fields".
-      window.CollectJS!.configure({
+    const configureCollect = () => {
+      window.CollectJS?.configure({
         variant: "inline",
         callback: (response: { token?: string }) => {
           const ctx = submissionRef.current;
@@ -112,36 +99,21 @@ export default function Buy() {
       setCollectReady(true);
     };
 
-    // Collect.js attaches `window.CollectJS` asynchronously after the script's
-    // own bootstrap, which can finish AFTER `script.onload` fires. So we poll.
-    let attempts = 0;
-    const waitForCollect = () => {
-      if (window.CollectJS) {
-        doConfigure();
-        return;
-      }
-      if (attempts++ > 50) {
-        setConfigError("Card form failed to initialize. Refresh the page.");
-        return;
-      }
-      setTimeout(waitForCollect, 100);
-    };
-
-    const existing = document.querySelector<HTMLScriptElement>("script[data-collectjs]");
-    if (existing) {
-      waitForCollect();
+    // On remount, the script is already loaded — re-call configure() so the
+    // freshly mounted divs get their iframes (and the callback closes over
+    // the current submissionRef). Detect by src; do NOT add a custom data-*
+    // marker attribute because Collect.js reads every data-* on its script
+    // tag as config and rejects unknown keys ("too many fields").
+    if (document.querySelector('script[src="https://secure.nmi.com/token/Collect.js"]')) {
+      configureCollect();
       return;
     }
     const s = document.createElement("script");
     s.src = "https://secure.nmi.com/token/Collect.js";
     s.async = true;
-    // Tokenization key only — NO data-variant. With data-variant set, Collect.js
-    // auto-runs its own setup and our configure() call collides with it ("too
-    // many fields"). JS-only configuration is the cleaner path.
     s.setAttribute("data-tokenization-key", publicKey);
     s.setAttribute("data-variant", "inline");
-    s.setAttribute("data-collectjs", "1");
-    s.onload = waitForCollect;
+    s.onload = configureCollect;
     s.onerror = () => setConfigError("Failed to load secure card form. Refresh and try again.");
     document.body.appendChild(s);
   }, [publicKey]);
