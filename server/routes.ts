@@ -5227,12 +5227,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Parse provisional draft to get all fields (includes user edits from specification editor)
       const parsedDraft = parseProvisionalDraft(provisionalDraft);
 
-      // Determine which claims to use based on user's selection and edits
-      const selectedClaimType = agent5DataObj?.selectedClaimType || 'specific';
+      // Always use the key concepts from the edited specification
+      // (parsedDraft.claims). These reflect user edits made via the
+      // specification section editor and match what the final DOCX/PDF
+      // export will contain — guaranteeing diagrams and the exported
+      // draft are built from identical text.
       let claimsForDiagrams = '';
-
-      // First, use the claims from the edited specification (parsedDraft.claims)
-      // These reflect user edits made via the specification section editor
       if (parsedDraft.claims) {
         if (Array.isArray(parsedDraft.claims)) {
           claimsForDiagrams = parsedDraft.claims.map((c: string, i: number) => {
@@ -5242,15 +5242,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }).filter((c: string) => c.length > 5).join('\n\n');
         } else {
           claimsForDiagrams = String(parsedDraft.claims);
-        }
-      }
-
-      // If broad claims are selected and the user hasn't edited the claims section,
-      // use the broad claims data
-      if (selectedClaimType === 'broad' && agent5DataObj?.broadKeyConcepts) {
-        const claimsArr = extractClaimsFromBroadData(agent5DataObj.broadKeyConcepts);
-        if (claimsArr.length > 0) {
-          claimsForDiagrams = claimsArr.map((c, i) => `${i + 1}. ${c}`).join('\n\n');
         }
       }
 
@@ -5272,8 +5263,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      console.log("Generating diagrams...");
-      console.log(`Using ${selectedClaimType} claims for diagrams (from edited specification)`);
+      console.log("Generating diagrams using edited specification (single source of truth for export + diagrams)...");
       
       // Build document for diagrams using the final edited specification
       const formattedDocument = [

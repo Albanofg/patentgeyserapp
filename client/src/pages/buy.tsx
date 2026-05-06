@@ -96,6 +96,24 @@ export default function Buy() {
     const configureCollect = () => {
       window.CollectJS?.configure({
         variant: "inline",
+        // Per-field validation. Collect.js fires this whenever a card field's
+        // validity changes. If any field is invalid when we hit Pay, the
+        // tokenization `callback` never runs — without surfacing this, the UI
+        // would sit on "Processing…" forever.
+        validationCallback: (field: string, status: boolean, message: string) => {
+          if (!status && submissionRef.current) {
+            // We're mid-submit and a card field is invalid — abort and tell the user.
+            submissionRef.current = null;
+            setSubmitting(false);
+            const labels: Record<string, string> = {
+              ccnumber: "card number",
+              ccexp: "expiration",
+              cvv: "CVV",
+            };
+            const label = labels[field] || field;
+            setErrorMsg(`Please check your ${label}: ${message || "invalid"}.`);
+          }
+        },
         callback: (response: { token?: string }) => {
           const ctx = submissionRef.current;
           submissionRef.current = null;
@@ -245,6 +263,28 @@ export default function Buy() {
     trimmed.country = trimmed.country.toUpperCase();
     submissionRef.current = { buyer: trimmed, packId };
     setSubmitting(true);
+
+    // Safety net: if neither the tokenization callback nor the validation
+    // callback fires (e.g. silent Collect.js failure), reset the UI after 20s
+    // so the user isn't stuck on "Processing…" forever.
+    const timeoutId = window.setTimeout(() => {
+      if (submissionRef.current) {
+        submissionRef.current = null;
+        setSubmitting(false);
+        setErrorMsg(
+          "The payment form didn't respond. Please double-check your card details and try again.",
+        );
+      }
+    }, 20000);
+    // Clear the timeout once Collect.js gets back to us (success or validation
+    // error). Both callbacks null `submissionRef`, so we just poll briefly.
+    const checkInterval = window.setInterval(() => {
+      if (!submissionRef.current) {
+        window.clearTimeout(timeoutId);
+        window.clearInterval(checkInterval);
+      }
+    }, 250);
+
     window.CollectJS.startPaymentRequest();
   }
 
