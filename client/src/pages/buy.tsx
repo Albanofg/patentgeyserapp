@@ -246,13 +246,16 @@ export default function Buy() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    console.log("[buy] submit fired", { collectReady, hasCollect: !!window.CollectJS });
     setErrorMsg(null);
     if (!collectReady || !window.CollectJS) {
+      console.log("[buy] bailed: collect not ready");
       setErrorMsg("Card form not ready yet. Wait a moment and try again.");
       return;
     }
     const v = validate();
     if (v) {
+      console.log("[buy] bailed: validation", v);
       setErrorMsg(v);
       return;
     }
@@ -285,6 +288,7 @@ export default function Buy() {
       }
     }, 250);
 
+    console.log("[buy] calling startPaymentRequest");
     window.CollectJS.startPaymentRequest();
   }
 
