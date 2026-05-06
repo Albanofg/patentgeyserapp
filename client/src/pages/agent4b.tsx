@@ -165,7 +165,7 @@ export default function Agent4b() {
   const saveSelectionMutation = useMutation({
     mutationFn: async () => {
       const selectedKeyConcepts = allConcepts.filter(c => selectedClaimIds.has(c.id));
-      await apiRequest("POST", `/api/projects/${projectId}/agent/4b/select-claims`, {
+      await apiRequest("POST", `/api/projects/${projectId}/agent/4b/select-concepts`, {
         selectedKeyConcepts,
       });
     },
@@ -189,7 +189,7 @@ export default function Agent4b() {
     mutationFn: async () => {
       // Save selections only - Pannu validation happens next
       const selectedKeyConcepts = allConcepts.filter(c => selectedClaimIds.has(c.id));
-      await apiRequest("POST", `/api/projects/${projectId}/agent/4b/select-claims`, {
+      await apiRequest("POST", `/api/projects/${projectId}/agent/4b/select-concepts`, {
         selectedKeyConcepts,
       });
     },
@@ -199,7 +199,7 @@ export default function Agent4b() {
         title: "Key concept ideas saved!",
         description: "Next: Learn about Proof of Human Conception for inventorship validation.",
       });
-      setLocation(`/project/${projectId}/agent/4-pannu-intro`);
+      setLocation(`/project/${projectId}/agent/4-conception-intro`);
     },
     onError: (error: Error) => {
       toast({

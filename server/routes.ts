@@ -811,11 +811,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Public endpoint — exposes the GHL order-form embed URL for the unauthenticated
-  // /buy page (funnel landing). Non-sensitive; same value returned to authenticated
-  // users via /api/auth/user.
-  app.get("/api/public/embed-url", (_req, res) => {
-    res.json({ embedUrl: process.env.GHL_EMBED_URL || null });
+  // Public endpoint — exposes the EPD/Collect.js tokenization key (NOT the security key)
+  // so the /buy page can mount the inline card form. Tokenization keys are designed
+  // to live in the browser; they cannot charge cards on their own.
+  app.get("/api/public/epd-config", (_req, res) => {
+    res.json({ publicKey: process.env.EPD_PUBLIC_KEY || null });
   });
 
   // Stateless signup-token helpers. Tokens are HMAC-signed strings of the form
@@ -875,120 +875,141 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return { email: payload.e };
   }
 
-  // Public webhook endpoint — create paid account from GHL after a successful purchase.
-  // GHL form collects {email, firstName?, lastName?, phone?} + credit pack — NEVER a password.
-  // After payment, GHL POSTs here, and the server emails the buyer a one-time
-  // link to set their own password.
-  //
-  // POST /api/webhook/ghl-signup
-  // Headers: x-api-key: <GHL_SIGNUP_API_KEY>
-  // Body:    { email: string, credits: number }
-  // Behavior:
-  //   - New email   → creates inventor_user with random throwaway password (user
-  //                   sets their real one via the emailed link), sets credits.
-  //   - Existing    → adds `credits` to existing project_limit (top-up, no email).
-  app.post("/api/webhook/ghl-signup", async (req, res) => {
-    const expectedKey = process.env.GHL_SIGNUP_API_KEY;
-    if (!expectedKey) {
-      return res.status(500).json({ message: "GHL signup webhook not configured on server" });
-    }
+  // EPD / NMI checkout — native order form on /buy.
+  // Browser tokenizes the card with Collect.js and POSTs us {email, packId, paymentToken}.
+  // We map packId → {amount, credits} server-side (never trust client price), charge via
+  // NMI's transact.php, and on approval provision the account exactly like the GHL webhook.
+  // POST /api/checkout/epd
+  const EPD_PACKS: Record<string, { amount: string; credits: number; label: string }> = {
+    pack_1:  { amount: "299.00",  credits: 1, label: "1 Project Credit" },
+    pack_5:  { amount: "1160.00", credits: 5, label: "5 Project Credits" },
+  };
 
-    // Accept either `x-api-key: <secret>` or `Authorization: Bearer <secret>`.
-    const apiKeyHeader = req.headers["x-api-key"];
-    const authHeader = req.headers["authorization"];
-    const bearerToken =
-      typeof authHeader === "string" && authHeader.toLowerCase().startsWith("bearer ")
-        ? authHeader.slice(7).trim()
-        : undefined;
-    const presentedKey = apiKeyHeader ?? bearerToken;
-    if (!presentedKey || presentedKey !== expectedKey) {
-      return res.status(401).json({ message: "Unauthorized — invalid or missing API key" });
-    }
-
-    const body = req.body || {};
-    // Accept top-level OR nested under common GHL shapes (contact.*, customData.*).
-    const pick = (k: string) =>
-      body?.[k] ?? body?.contact?.[k] ?? body?.customData?.[k];
-    const email = pick("email");
-    const credits = pick("credits") ?? pick("credit");
-    // firstName / lastName are accepted but currently not stored — schema has no
-    // name columns on inventors_users. If you need them later, add columns and
-    // wire them in here.
-
-    if (!email || typeof email !== "string") {
-      console.warn("[ghl-signup] Missing/invalid email. Body keys:", Object.keys(body));
-      return res.status(400).json({ message: "email is required" });
-    }
-    // GHL often sends numeric fields as strings ("1") or with surrounding text.
-    // Coerce, then validate as a positive integer.
-    const parsedCredits = parseInt(String(credits ?? "").trim(), 10);
-    if (!Number.isFinite(parsedCredits) || parsedCredits < 1) {
-      console.warn(
-        `[ghl-signup] Invalid credits. Received: ${JSON.stringify(credits)}. ` +
-          `Body keys: ${Object.keys(body).join(",")}`,
-      );
-      return res.status(400).json({
-        message: "credits must be a positive integer",
-        receivedCredits: credits ?? null,
-      });
-    }
-    const creditCount = parsedCredits;
-
-    const normalizedEmail = email.trim().toLowerCase();
-
+  app.post("/api/checkout/epd", async (req, res) => {
     try {
-      const existingInventor = await storage.getInventorUserByEmail(normalizedEmail);
-      const existingLegacy = existingInventor
-        ? null
-        : await storage.getUserByEmail(normalizedEmail);
+      const securityKey = process.env.EPD_SECURITY_KEY;
+      if (!securityKey) {
+        console.error("[epd] EPD_SECURITY_KEY not configured");
+        return res.status(500).json({ message: "Checkout not configured." });
+      }
 
+      const body = req.body || {};
+      const requiredFields = [
+        "firstName", "lastName", "email", "phone",
+        "cardholderName", "address", "city", "zip", "country",
+        "packId", "paymentToken",
+      ];
+      for (const f of requiredFields) {
+        if (typeof body[f] !== "string" || !body[f].trim()) {
+          return res.status(400).json({ message: `${f} is required` });
+        }
+      }
+      const {
+        firstName, lastName, email, phone, cardholderName,
+        address, city, zip, country, packId, paymentToken,
+      } = body as Record<string, string>;
+
+      const pack = EPD_PACKS[packId];
+      if (!pack) return res.status(400).json({ message: "Invalid pack." });
+
+      const normalizedEmail = email.trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+        return res.status(400).json({ message: "Invalid email." });
+      }
+      if (country.trim().length !== 2) {
+        return res.status(400).json({ message: "Country must be a 2-letter ISO code." });
+      }
+
+      // Block if email already exists as a legacy account — same rule as the GHL webhook.
+      const existingLegacy = await storage.getUserByEmail(normalizedEmail);
       if (existingLegacy) {
-        // Email already used by a legacy account — refuse to silently shadow it.
         return res.status(409).json({
-          success: false,
           message: "Email already exists as a legacy account. Contact support.",
         });
       }
 
+      // Charge via NMI transact.php (form-encoded). All AVS/billing fields are
+      // forwarded so NMI runs full AVS + CVV checks — anti-fraud wall.
+      const params = new URLSearchParams({
+        type: "sale",
+        security_key: securityKey,
+        amount: pack.amount,
+        payment_token: paymentToken,
+        currency: "USD",
+        order_description: pack.label,
+        first_name: firstName.trim().slice(0, 50),
+        last_name: lastName.trim().slice(0, 50),
+        email: normalizedEmail,
+        phone: phone.trim().slice(0, 30),
+        address1: address.trim().slice(0, 100),
+        city: city.trim().slice(0, 50),
+        zip: zip.trim().slice(0, 20),
+        country: country.trim().toUpperCase(),
+      });
+
+      const nmiRes = await fetch("https://secure.nmi.com/api/transact.php", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: params.toString(),
+      });
+      const nmiText = await nmiRes.text();
+      const nmi = Object.fromEntries(new URLSearchParams(nmiText));
+
+      if (nmi.response !== "1") {
+        // 2 = decline, 3 = error. Surface the gateway's reason if present, but
+        // never the auth/security details.
+        console.warn(
+          `[epd] Charge failed for ${normalizedEmail} pack=${packId} response=${nmi.response} ` +
+            `responsetext=${nmi.responsetext} response_code=${nmi.response_code}`,
+        );
+        const reason =
+          nmi.responsetext && nmi.responsetext.length < 200
+            ? nmi.responsetext
+            : "Payment declined.";
+        return res.status(402).json({ message: reason });
+      }
+
+      console.log(
+        `[epd] Approved: ${normalizedEmail} $${pack.amount} txn=${nmi.transactionid} pack=${packId}`,
+      );
+
+      // Provision/top-up account — mirror the GHL webhook flow.
+      const existingInventor = await storage.getInventorUserByEmail(normalizedEmail);
+
       if (existingInventor) {
-        // Top-up flow: increment credits, leave password untouched, no email.
         const updated = await storage.incrementInventorUserProjectLimit(
           existingInventor.id,
-          creditCount,
+          pack.credits,
         );
         console.log(
-          `[ghl-signup] Top-up: ${normalizedEmail} +${creditCount} → ${updated?.projectLimit}`,
+          `[epd] Top-up: ${normalizedEmail} +${pack.credits} → ${updated?.projectLimit}`,
         );
         return res.json({
           success: true,
           mode: "topup",
           email: normalizedEmail,
+          credits: pack.credits,
           projectLimit: updated?.projectLimit ?? null,
+          // Existing user — they already have a password, send them to login.
+          redirectUrl: "/auth/login",
         });
       }
 
-      // First-time signup. Generate an unguessable random password the user will
-      // never know — they set their real one via the emailed link.
       const throwawayPassword = crypto.randomBytes(32).toString("hex");
       const hashedPassword = await bcrypt.hash(throwawayPassword, SALT_ROUNDS);
-
       const user = await storage.createInventorUser({
         email: normalizedEmail,
         password: hashedPassword,
       });
-      const updated = await storage.setInventorUserProjectLimit(user.id, creditCount);
+      const updated = await storage.setInventorUserProjectLimit(user.id, pack.credits);
 
-      // Auto-whitelist for parity with the legacy register flow.
       try {
         const already = await storage.isEmailWhitelisted(normalizedEmail);
-        if (!already) {
-          await storage.addEmailToWhitelist(normalizedEmail, "ghl-signup");
-        }
+        if (!already) await storage.addEmailToWhitelist(normalizedEmail, "epd-checkout");
       } catch (e) {
-        console.error("[ghl-signup] Auto-whitelist failed (non-fatal):", e);
+        console.error("[epd] Auto-whitelist failed (non-fatal):", e);
       }
 
-      // Issue a stateless HMAC-signed signup token and email the user a link.
       const signupToken = issueSignupToken(normalizedEmail);
       const baseUrl = process.env.APP_BASE_URL || "https://inventor.patentgeyser.com";
       const setPasswordLink = `${baseUrl}/auth/set-password?token=${encodeURIComponent(signupToken)}`;
@@ -1002,35 +1023,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
               type: "welcome_set_password",
               subject: "Welcome to Patent Geyser — set your password",
               message:
-                `Welcome to Patent Geyser! Your account has been created with ${creditCount} credit(s).\n\n` +
+                `Welcome to Patent Geyser! Your account has been created with ${pack.credits} credit(s).\n\n` +
                 `Click the link below to set your password and get started:\n${setPasswordLink}\n\n` +
                 `This link expires in 7 days.`,
               setPasswordLink,
-              credits: creditCount,
+              credits: pack.credits,
             },
             30000,
           );
         } catch (emailError) {
-          console.error("[ghl-signup] Welcome email failed (non-fatal):", emailError);
+          console.error("[epd] Welcome email failed (non-fatal):", emailError);
         }
       } else {
-        console.log("[ghl-signup] GHL_EMAIL_WEBHOOK not configured. Set-password link:", setPasswordLink);
+        console.log("[epd] GHL_EMAIL_WEBHOOK not configured. Set-password link:", setPasswordLink);
       }
 
-      console.log(`[ghl-signup] Created: ${normalizedEmail} with ${creditCount} credits`);
       return res.json({
         success: true,
         mode: "created",
         email: normalizedEmail,
-        projectLimit: updated?.projectLimit ?? creditCount,
-        // GHL workflow can capture this and use it as the post-payment redirect URL,
-        // so the buyer lands directly on the set-password page (no email required).
-        setPasswordLink,
+        credits: pack.credits,
+        projectLimit: updated?.projectLimit ?? pack.credits,
+        // Frontend redirects here so the buyer goes straight to set-password
+        // without waiting for email delivery.
         redirectUrl: setPasswordLink,
+        setPasswordLink,
       });
     } catch (error: any) {
-      console.error("[ghl-signup] Error:", error);
-      return res.status(500).json({ success: false, message: "Failed to provision account" });
+      console.error("[epd] Error:", error);
+      return res.status(500).json({ message: "Checkout failed. Please try again." });
     }
   });
 
@@ -1112,7 +1133,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           credits: user.projectLimit,
           creditsUsed: projectsUsed,
           creditsRemaining: Math.max(0, user.projectLimit - projectsUsed),
-          embedUrl: process.env.GHL_EMBED_URL || null,
           twoFactorEnabled: user.twoFactorEnabled || false,
           twoFactorMethod: user.twoFactorMethod || null,
           twoFactorVerified,
@@ -1933,7 +1953,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
             credits: inventorUser.projectLimit,
             creditsUsed: used,
             creditsRemaining: Math.max(0, inventorUser.projectLimit - used),
-            embedUrl: process.env.GHL_EMBED_URL || null,
           });
         }
       }
@@ -4622,7 +4641,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Select individual claims (Agent 4b) - user picks what's in and what's out
-  app.post("/api/projects/:id/agent/4b/select-claims", isAuthenticated, async (req, res) => {
+  app.post("/api/projects/:id/agent/4b/select-concepts", isAuthenticated, async (req, res) => {
     try {
       const { selectedKeyConcepts } = req.body;
 
@@ -5703,7 +5722,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ============================================
 
   // Get Pannu records for a project
-  app.get("/api/projects/:id/pannu", isAuthenticated, async (req, res) => {
+  app.get("/api/projects/:id/conception", isAuthenticated, async (req, res) => {
     try {
       const records = await storage.getPannuRecords(req.params.id);
       res.json(records);
@@ -5714,7 +5733,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Generate Pannu questions for a concept
-  app.post("/api/projects/:id/pannu/generate-questions", isAuthenticated, async (req, res) => {
+  app.post("/api/projects/:id/conception/generate-questions", isAuthenticated, async (req, res) => {
     try {
       const { conceptId, keyConceptText, strategyContext } = req.body;
 
@@ -5805,7 +5824,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Validate Pannu answers for a claim
-  app.post("/api/projects/:id/pannu/validate-answers", isAuthenticated, async (req, res) => {
+  app.post("/api/projects/:id/conception/validate-answers", isAuthenticated, async (req, res) => {
     try {
       const { pannuRecordId, conceptId, keyConceptText, answers } = req.body;
       
@@ -5871,7 +5890,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get AI suggestion for Pannu test answer
-  app.post("/api/projects/:id/pannu/ai-suggestion", isAuthenticated, async (req, res) => {
+  app.post("/api/projects/:id/conception/ai-suggestion", isAuthenticated, async (req, res) => {
     try {
       const { keyConceptText, question, factor } = req.body;
 

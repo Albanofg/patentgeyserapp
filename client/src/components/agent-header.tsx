@@ -12,7 +12,7 @@ const WORKFLOW_STEPS = [
   { id: '3',  stage: 3 },
   { id: '4a', stage: 4 },
   { id: '4b', stage: 4 },
-  { id: '4-pannu', stage: 4 },
+  { id: '4-conception', stage: 4 },
   { id: '5',  stage: 5 },
   { id: '5-practitioner', stage: 5 },
 ];
@@ -44,7 +44,7 @@ export function AgentHeader({
 }: AgentHeaderProps) {
   const [location, setLocation] = useLocation();
 
-  // Detect current step from URL (e.g. "/project/abc/agent/4-pannu" → "4-pannu")
+  // Detect current step from URL (e.g. "/project/abc/agent/4-conception" → "4-conception")
   const stepMatch = location.match(/\/agent\/([^/]+)$/);
   const currentStepId = stepMatch?.[1] ?? String(agentNumber);
   const currentIndex = WORKFLOW_STEPS.findIndex((s) => s.id === currentStepId);

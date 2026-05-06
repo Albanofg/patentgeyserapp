@@ -12,6 +12,14 @@ import ForgotPassword from "@/pages/forgot-password";
 import SetPassword from "@/pages/set-password";
 import Buy from "@/pages/buy";
 
+// Selection helper (Copy / Ask AI) should only appear inside the patent
+// drafting modules, not on auth/buy/dashboard/admin pages.
+function DraftingSelectionHelper() {
+  const [location] = useLocation();
+  if (!location.startsWith("/project/")) return null;
+  return <CopySelectionButton />;
+}
+
 function Router() {
   const [location] = useLocation();
 
@@ -25,12 +33,12 @@ function Router() {
     return <ForgotPassword />;
   }
 
-  // Set initial password (post-checkout welcome link from GHL signup email)
+  // Set initial password (post-checkout welcome link from EPD signup email)
   if (location === "/auth/set-password" || location.startsWith("/auth/set-password?")) {
     return <SetPassword />;
   }
 
-  // Public checkout page — embeds the GHL order form for new buyers (and top-ups)
+  // Public checkout page — native EPD/NMI card form for new buyers (and top-ups)
   if (location === "/buy" || location.startsWith("/buy?")) {
     return <Buy />;
   }
@@ -53,7 +61,7 @@ function App() {
       <ThemeProvider defaultTheme="light" storageKey="patent-geyser-theme">
         <TooltipProvider>
           <Toaster />
-          <CopySelectionButton />
+          <DraftingSelectionHelper />
           <Router />
         </TooltipProvider>
       </ThemeProvider>

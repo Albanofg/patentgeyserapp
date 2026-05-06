@@ -22,7 +22,7 @@ import {
 import type { Project } from "@shared/schema";
 
 export default function Agent4PannuIntro() {
-  const [, params] = useRoute("/project/:id/agent/4-pannu-intro");
+  const [, params] = useRoute("/project/:id/agent/4-conception-intro");
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const projectId = params?.id;
@@ -386,7 +386,7 @@ export default function Agent4PannuIntro() {
               <Button
                 variant="default"
                 size="lg"
-                onClick={() => setLocation(`/project/${projectId}/agent/4-pannu`)}
+                onClick={() => setLocation(`/project/${projectId}/agent/4-conception`)}
                 data-testid="button-start-pannu"
               >
                 Start Proof of Human Conception

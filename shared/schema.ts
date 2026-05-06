@@ -70,6 +70,10 @@ export const projects = pgTable("projects", {
   sourceCodeFiles: jsonb("source_code_files").$type<SourceCodeFile[]>(), // Array of source code files
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
+  // Soft-delete marker. Stage-5+ projects are soft-deleted (deletedAt set) so
+  // their consumed credit is preserved; pre-stage-5 deletes are hard-deletes
+  // and the credit is refunded.
+  deletedAt: timestamp("deleted_at"),
 });
 
 // Agent data table - stores outputs from each agent stage as JSON

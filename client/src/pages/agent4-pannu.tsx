@@ -59,7 +59,7 @@ const PROCESSING_STEPS = [
 ];
 
 export default function Agent4Pannu() {
-  const [, params] = useRoute("/project/:id/agent/4-pannu");
+  const [, params] = useRoute("/project/:id/agent/4-conception");
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const projectId = params?.id;
@@ -95,7 +95,7 @@ export default function Agent4Pannu() {
   });
 
   const { data: pannuRecords } = useQuery<PannuRecord[]>({
-    queryKey: ["/api/projects", projectId, "pannu"],
+    queryKey: ["/api/projects", projectId, "conception"],
     enabled: !!projectId,
   });
 
@@ -177,7 +177,7 @@ export default function Agent4Pannu() {
 
   const generateQuestionsMutation = useMutation({
     mutationFn: async (claim: ClaimForValidation) => {
-      const response = await apiRequest("POST", `/api/projects/${projectId}/pannu/generate-questions`, {
+      const response = await apiRequest("POST", `/api/projects/${projectId}/conception/generate-questions`, {
         conceptId: claim.conceptId,
         keyConceptText: claim.claimText,
         strategyContext: claim.strategyContext,
@@ -212,7 +212,7 @@ export default function Agent4Pannu() {
   const validateAnswersMutation = useMutation({
     mutationFn: async ({ claim, answers }: { claim: ClaimForValidation; answers: { factor: string; answer: string }[] }) => {
       const state = validationStates[claim.conceptId];
-      const response = await apiRequest("POST", `/api/projects/${projectId}/pannu/validate-answers`, {
+      const response = await apiRequest("POST", `/api/projects/${projectId}/conception/validate-answers`, {
         pannuRecordId: state?.pannuRecordId,
         conceptId: claim.conceptId,
         keyConceptText: claim.claimText,
@@ -366,7 +366,7 @@ export default function Agent4Pannu() {
 
   const getAiSuggestionMutation = useMutation({
     mutationFn: async ({ claim, question, factor }: { claim: ClaimForValidation; question: string; factor: string }) => {
-      const response = await apiRequest("POST", `/api/projects/${projectId}/pannu/ai-suggestion`, {
+      const response = await apiRequest("POST", `/api/projects/${projectId}/conception/ai-suggestion`, {
         keyConceptText: claim.claimText,
         question,
         factor,
@@ -840,7 +840,7 @@ export default function Agent4Pannu() {
             <div className="flex items-center justify-between gap-4 pt-4">
               <Button
                 variant="outline"
-                onClick={() => setLocation(`/project/${projectId}/agent/4-pannu-intro`)}
+                onClick={() => setLocation(`/project/${projectId}/agent/4-conception-intro`)}
                 data-testid="button-back"
               >
                 Back to Introduction

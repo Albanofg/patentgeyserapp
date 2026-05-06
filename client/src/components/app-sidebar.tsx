@@ -40,7 +40,7 @@ const agentStages = [
   { number: 4, name: "Provisional", icon: TrendingUp, description: "Strategy & Key Concepts", substages: [
     { id: '4a', name: "White Space Strategy", description: "White space analysis" },
     { id: '4b', name: "Key Concepts", description: "Draft key concept ideas" },
-    { id: '4-pannu', name: "Proof of Human Conception", description: "Inventorship validation" },
+    { id: '4-conception', name: "Proof of Human Conception", description: "Inventorship validation" },
   ]},
   { number: 5, name: "The Showcase", icon: Image, description: "Download Your Patent", substages: [
     { id: '5', name: "Provisional Patent Draft", description: "Draft & diagrams" },

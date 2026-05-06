@@ -37,7 +37,6 @@ interface AuthUser {
   credits?: number;
   creditsUsed?: number;
   creditsRemaining?: number;
-  embedUrl?: string | null;
   twoFactorEnabled: boolean;
   twoFactorVerified: boolean;
   subscriptionStatus: string;
@@ -55,7 +54,6 @@ export default function Dashboard() {
   const [limitInfo, setLimitInfo] = useState<null | {
     credits: number;
     creditsUsed: number;
-    embedUrl: string | null;
   }>(null);
   const [buyDialogOpen, setBuyDialogOpen] = useState(false);
 
@@ -102,7 +100,6 @@ export default function Dashboard() {
         setLimitInfo({
           credits: error.body.credits,
           creditsUsed: error.body.creditsUsed,
-          embedUrl: error.body.embedUrl || null,
         });
         setShowCreateDialog(false);
         setNewProjectName("");
@@ -412,18 +409,14 @@ export default function Dashboard() {
           </DialogContent>
         </Dialog>
 
-        {/* Buy Credits Dialog (embedded GHL order form) */}
+        {/* Buy Credits Dialog — sends user to the dedicated /buy checkout page. */}
         {(() => {
           const open = buyDialogOpen || !!limitInfo;
-          const embedUrl = limitInfo?.embedUrl ?? user?.embedUrl ?? null;
           const close = () => { setBuyDialogOpen(false); setLimitInfo(null); };
           return (
             <Dialog open={open} onOpenChange={(v) => !v && close()}>
-              <DialogContent
-                data-testid="dialog-buy-credits"
-                className="max-w-5xl w-[95vw] sm:w-[90vw] max-h-[92vh] flex flex-col p-0 gap-0 overflow-hidden"
-              >
-                <DialogHeader className="p-6 pb-3 shrink-0">
+              <DialogContent data-testid="dialog-buy-credits" className="max-w-md">
+                <DialogHeader>
                   <DialogTitle>{limitInfo ? "You're out of credits" : "Buy project credits"}</DialogTitle>
                   <DialogDescription>
                     {limitInfo
@@ -431,23 +424,11 @@ export default function Dashboard() {
                       : "Each credit lets you create one project. Single or 5-pack bundle available."}
                   </DialogDescription>
                 </DialogHeader>
-                {/* Fixed beige background so the GHL form (designed for a light neutral) renders
-                    correctly in both light and dark app themes. */}
-                <div className="flex-1 overflow-auto bg-[#f5efe4] p-4">
-                  {embedUrl ? (
-                    <iframe
-                      src={embedUrl}
-                      title="Payment Form Patent Credits"
-                      className="w-full min-h-[70vh] border-none bg-transparent block"
-                    />
-                  ) : (
-                    <p className="text-sm text-neutral-700">
-                      Order form not yet configured. Please contact support.
-                    </p>
-                  )}
-                </div>
-                <DialogFooter className="p-4 shrink-0 border-t">
+                <DialogFooter>
                   <Button variant="outline" onClick={close}>Close</Button>
+                  <Button onClick={() => { close(); setLocation("/buy"); }} data-testid="button-go-to-buy">
+                    Go to checkout
+                  </Button>
                 </DialogFooter>
               </DialogContent>
             </Dialog>

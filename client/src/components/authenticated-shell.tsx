@@ -138,8 +138,8 @@ export function AuthenticatedShell() {
   const [, agent4Params] = useRoute("/project/:id/agent/4");
   const [, agent4aParams] = useRoute("/project/:id/agent/4a");
   const [, agent4bParams] = useRoute("/project/:id/agent/4b");
-  const [, agent4PannuIntroParams] = useRoute("/project/:id/agent/4-pannu-intro");
-  const [, agent4PannuParams] = useRoute("/project/:id/agent/4-pannu");
+  const [, agent4PannuIntroParams] = useRoute("/project/:id/agent/4-conception-intro");
+  const [, agent4PannuParams] = useRoute("/project/:id/agent/4-conception");
   const [, agent4cParams] = useRoute("/project/:id/agent/4c");
   const [, agent5Params] = useRoute("/project/:id/agent/5");
   const [, agent5PractitionerParams] = useRoute("/project/:id/agent/5-practitioner");
@@ -250,8 +250,8 @@ export function AuthenticatedShell() {
             <Route path="/project/:id/agent/3" component={Agent3} />
             <Route path="/project/:id/agent/4a" component={Agent4} />
             <Route path="/project/:id/agent/4b" component={Agent4b} />
-            <Route path="/project/:id/agent/4-pannu-intro" component={Agent4PannuIntro} />
-            <Route path="/project/:id/agent/4-pannu" component={Agent4Pannu} />
+            <Route path="/project/:id/agent/4-conception-intro" component={Agent4PannuIntro} />
+            <Route path="/project/:id/agent/4-conception" component={Agent4Pannu} />
             <Route path="/project/:id/agent/4c" component={Agent4c} />
             <Route path="/project/:id/agent/4" component={Agent4Redirect} />
             <Route path="/project/:id/agent/5" component={Agent5} />

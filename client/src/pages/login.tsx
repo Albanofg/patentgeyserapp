@@ -146,10 +146,10 @@ export default function Login() {
               <button
                 type="button"
                 data-testid="link-register"
-                onClick={() => setLocation("/auth/register")}
+                onClick={() => setLocation("/buy")}
                 className="text-primary hover:underline font-medium"
               >
-                Create one
+                Buy credits to get started
               </button>
             </div>
           </div>
