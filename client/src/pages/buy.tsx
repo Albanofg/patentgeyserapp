@@ -101,6 +101,7 @@ export default function Buy() {
         // tokenization `callback` never runs — without surfacing this, the UI
         // would sit on "Processing…" forever.
         validationCallback: (field: string, status: boolean, message: string) => {
+          console.log("[collect validation]", field, status, message);
           if (!status && submissionRef.current) {
             // We're mid-submit and a card field is invalid — abort and tell the user.
             submissionRef.current = null;
@@ -115,6 +116,7 @@ export default function Buy() {
           }
         },
         callback: (response: { token?: string }) => {
+          console.log("[collect callback]", response);
           const ctx = submissionRef.current;
           submissionRef.current = null;
           if (!response?.token || !ctx) {
