@@ -60,6 +60,17 @@ export default function Buy() {
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Two-step flow: pay → set password (inline on the same page).
+  // After /api/checkout/epd succeeds for a new user, the server returns a
+  // signup token. We swap the UI to a password+confirm form and finish the
+  // signup in-place. For a top-up (existing user), there's nothing to set —
+  // we just redirect to /auth/login.
+  const [signupToken, setSignupToken] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordSubmitting, setPasswordSubmitting] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+
   // Collect.js callback runs globally — stash the in-flight submission so it
   // sees the latest values without re-registering on every render.
   const submissionRef = useRef<{ buyer: Buyer; packId: PackId } | null>(null);
@@ -134,10 +145,63 @@ export default function Buy() {
         setSubmitting(false);
         return;
       }
-      window.location.href = data.redirectUrl || "/auth/login";
+      // Top-up of an existing account — they already have a password.
+      if (data.mode === "topup") {
+        window.location.href = "/auth/login";
+        return;
+      }
+      // New account — extract the signup token from the set-password URL the
+      // server issued. The /buy page swaps to the password form inline; no
+      // email, no separate page.
+      const link: string = data.setPasswordLink || data.redirectUrl || "";
+      const tokenMatch = link.match(/[?&]token=([^&]+)/);
+      const token = tokenMatch ? decodeURIComponent(tokenMatch[1]) : null;
+      if (!token) {
+        setErrorMsg("Payment succeeded but signup link is missing. Contact support.");
+        setSubmitting(false);
+        return;
+      }
+      setSignupToken(token);
+      setSubmitting(false);
     } catch {
       setErrorMsg("Network error. Please try again.");
       setSubmitting(false);
+    }
+  }
+
+  async function handlePasswordSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setPasswordError(null);
+    if (password.length < 8) {
+      setPasswordError("Password must be at least 8 characters.");
+      return;
+    }
+    if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/\d/.test(password) || !/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) {
+      setPasswordError("Password must include upper, lower, number, and special character.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setPasswordError("Passwords don't match.");
+      return;
+    }
+    setPasswordSubmitting(true);
+    try {
+      const res = await fetch("/api/auth/set-initial-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: signupToken, password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setPasswordError(data?.message || "Could not set password.");
+        setPasswordSubmitting(false);
+        return;
+      }
+      // Server logged the user in via session cookie; jump to dashboard.
+      window.location.href = "/";
+    } catch {
+      setPasswordError("Network error. Please try again.");
+      setPasswordSubmitting(false);
     }
   }
 
@@ -196,6 +260,49 @@ export default function Buy() {
 
       <main className="flex-1 flex items-start justify-center px-4 pb-12">
         <Card className="max-w-2xl w-full overflow-hidden">
+          {signupToken ? (
+            <>
+              <div className="p-6 pb-3">
+                <h1 className="text-2xl font-semibold">Payment received — set your password</h1>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Welcome aboard. Choose a password to finish setting up your account. You'll be
+                  signed in and taken to your dashboard right after.
+                </p>
+              </div>
+              <form onSubmit={handlePasswordSubmit} className="p-6 pt-3 space-y-4">
+                <div>
+                  <Label htmlFor="newPassword">Password</Label>
+                  <Input
+                    id="newPassword"
+                    type="password"
+                    autoComplete="new-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    At least 8 characters with upper, lower, number, and special character.
+                  </p>
+                </div>
+                <div>
+                  <Label htmlFor="confirmPassword">Confirm password</Label>
+                  <Input
+                    id="confirmPassword"
+                    type="password"
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    required
+                  />
+                </div>
+                {passwordError && <p className="text-sm text-destructive">{passwordError}</p>}
+                <Button type="submit" className="w-full" disabled={passwordSubmitting}>
+                  {passwordSubmitting ? "Saving…" : "Set password and continue"}
+                </Button>
+              </form>
+            </>
+          ) : (
+          <>
           <div className="p-6 pb-3">
             <h1 className="text-2xl font-semibold">Welcome to Patent Geyser</h1>
             <p className="text-sm text-muted-foreground mt-1">
@@ -317,6 +424,8 @@ export default function Buy() {
               Card details are sent directly to our payment processor — they never touch our servers.
             </p>
           </form>
+          </>
+          )}
         </Card>
       </main>
     </div>
