@@ -26,6 +26,20 @@ export default function Login() {
     sessionStorage.removeItem('intentionalLogout');
   }, []);
 
+  // If a session already exists, skip the form and send the user to the dashboard.
+  // Without this, anyone arriving at /auth/login from a marketing link sees the
+  // sign-in form even though they're already authenticated.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/auth/user", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((user) => {
+        if (!cancelled && user?.id) setLocation("/");
+      })
+      .catch(() => { /* not logged in — stay on form */ });
+    return () => { cancelled = true; };
+  }, [setLocation]);
+
   const loginMutation = useMutation({
     mutationFn: async () => {
       const response = await apiRequest("POST", "/api/auth/login", { email, password });
