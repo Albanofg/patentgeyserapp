@@ -71,7 +71,7 @@ export function AgentHeader({
             <Button
               variant="ghost"
               size="sm"
-              className="h-7 sm:h-8 px-2 sm:px-3 flex-shrink-0"
+              className="h-7 sm:h-8 px-2 sm:px-3 shrink-0"
               data-testid="button-back-dashboard"
               onClick={() => setLocation("/")}
             >
@@ -85,7 +85,7 @@ export function AgentHeader({
           </div>
 
           {/* Previous / Next */}
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
             <Button
               variant="outline"
               size="sm"

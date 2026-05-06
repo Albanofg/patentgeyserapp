@@ -101,7 +101,7 @@ export function CopySelectionButton() {
   return (
     <div
       data-copy-button
-      className="fixed z-[9999] transform -translate-x-1/2 -translate-y-full flex gap-1"
+      className="fixed z-9999 transform -translate-x-1/2 -translate-y-full flex gap-1"
       style={{ left: position.x, top: position.y }}
     >
       <Button

@@ -122,11 +122,11 @@ export default function Agent4PannuIntro() {
                     >
                       {i < visibleSteps ? (
                         <CheckCircle2
-                          className="h-4 w-4 flex-shrink-0 transition-colors duration-500 text-green-600 dark:text-green-400"
+                          className="h-4 w-4 shrink-0 transition-colors duration-500 text-green-600 dark:text-green-400"
                         />
                       ) : (
                         <Circle
-                          className="h-4 w-4 flex-shrink-0 transition-colors duration-500 text-muted-foreground"
+                          className="h-4 w-4 shrink-0 transition-colors duration-500 text-muted-foreground"
                         />
                       )}
                       <span className={`text-sm transition-colors duration-500 ${
@@ -288,20 +288,20 @@ export default function Agent4PannuIntro() {
                 <h3 className="text-lg font-semibold">Why It Matters</h3>
                 <div className="space-y-3">
                   <div className="flex items-start gap-3">
-                    <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
+                    <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5 shrink-0" />
                     <p className="text-sm">
                       <strong>Accurate Inventorship:</strong> Accurate inventorship documentation in your draft helps satisfy USPTO disclosure requirements and supports practitioner review.
                     </p>
                   </div>
                   <div className="flex items-start gap-3">
-                    <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
+                    <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5 shrink-0" />
                     <p className="text-sm">
                       <strong>USPTO Compliance:</strong> The USPTO requires accurate inventorship disclosure. 
                       Errors can lead to patent rejection or invalidation.
                     </p>
                   </div>
                   <div className="flex items-start gap-3">
-                    <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
+                    <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5 shrink-0" />
                     <p className="text-sm">
                       <strong>Ownership Clarity:</strong> Clear documentation prevents disputes about who 
                       owns the rights to the invention.

@@ -509,7 +509,7 @@ export default function Agent5() {
           <Card>
             <CardHeader className="px-4 sm:px-6">
               <div className="flex items-center gap-2">
-                <FileText className="h-5 w-5 sm:h-6 sm:w-6 text-primary flex-shrink-0" />
+                <FileText className="h-5 w-5 sm:h-6 sm:w-6 text-primary shrink-0" />
                 <CardTitle className="text-lg sm:text-2xl">Provisional Draft</CardTitle>
               </div>
               <CardDescription className="text-sm">
@@ -545,7 +545,7 @@ export default function Agent5() {
                     </div>
                   ) : (
                     <div className="flex flex-col md:flex-row gap-4">
-                      <div className="md:w-56 flex-shrink-0">
+                      <div className="md:w-56 shrink-0">
                         <div className="block md:hidden">
                           <select
                             data-testid="select-spec-section-mobile"
@@ -708,7 +708,7 @@ export default function Agent5() {
             <div className="space-y-4 sm:space-y-6">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <ImageIcon className="h-5 w-5 sm:h-6 sm:w-6 text-primary flex-shrink-0" />
+                  <ImageIcon className="h-5 w-5 sm:h-6 sm:w-6 text-primary shrink-0" />
                   <h3 className="text-lg sm:text-2xl font-bold">Technical Diagrams</h3>
                   <span className="text-xs sm:text-sm text-muted-foreground">({diagrams.length} {diagrams.length === 1 ? 'diagram' : 'diagrams'})</span>
                 </div>
@@ -815,7 +815,7 @@ export default function Agent5() {
             data-testid="button-find-practitioner-link"
           >
             <div className="flex items-center gap-3">
-              <div className="flex items-center justify-center w-9 h-9 rounded-full bg-primary/10 flex-shrink-0">
+              <div className="flex items-center justify-center w-9 h-9 rounded-full bg-primary/10 shrink-0">
                 <Users className="h-4 w-4 text-primary" />
               </div>
               <div>
@@ -827,7 +827,7 @@ export default function Agent5() {
                 </div>
               </div>
             </div>
-            <ArrowRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+            <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0" />
           </div>
         </div>
       </main>

@@ -194,7 +194,7 @@ export default function Dashboard() {
       <main className="max-w-7xl mx-auto">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
           <div className="flex items-center gap-3 sm:gap-4">
-            <img src={logoUrl} alt="Patent Geyser Logo" className="h-10 w-10 sm:h-12 sm:w-12 flex-shrink-0" />
+            <img src={logoUrl} alt="Patent Geyser Logo" className="h-10 w-10 sm:h-12 sm:w-12 shrink-0" />
             <div className="min-w-0">
               <h2 className="text-2xl sm:text-3xl font-bold leading-tight">Your Patent Projects</h2>
               <p className="text-muted-foreground text-sm sm:text-base mt-1 sm:mt-2">

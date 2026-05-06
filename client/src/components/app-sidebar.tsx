@@ -301,7 +301,7 @@ export function AppSidebar({ projectId }: AppSidebarProps) {
                               data-testid={`nav-agent-${stage.number}`}
                               className="group-data-[collapsible=icon]:justify-center"
                             >
-                              <Icon className={`h-4 w-4 flex-shrink-0 ${isCompleted ? 'text-green-600 dark:text-green-400' : ''}`} />
+                              <Icon className={`h-4 w-4 shrink-0 ${isCompleted ? 'text-green-600 dark:text-green-400' : ''}`} />
                               <span className="text-sm font-medium truncate flex-1 group-data-[collapsible=icon]:hidden">
                                 {stage.name}
                               </span>

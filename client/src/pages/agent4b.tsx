@@ -324,7 +324,7 @@ export default function Agent4b() {
                               {selectedCount}/{claims.length}
                             </Badge>
                           </div>
-                          <div className="flex items-center gap-1 flex-shrink-0">
+                          <div className="flex items-center gap-1 shrink-0">
                             <Button
                               variant="ghost"
                               size="sm"
@@ -387,7 +387,7 @@ export default function Agent4b() {
                                 </p>
                               </div>
                               <CheckCircle2
-                                className={`h-5 w-5 flex-shrink-0 mt-0.5 transition-all duration-200 ${
+                                className={`h-5 w-5 shrink-0 mt-0.5 transition-all duration-200 ${
                                   isSelected
                                     ? "text-primary opacity-100"
                                     : "text-muted-foreground/20 opacity-0"

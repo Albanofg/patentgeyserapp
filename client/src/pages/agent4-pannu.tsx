@@ -446,11 +446,11 @@ export default function Agent4Pannu() {
                     >
                       {i < visibleSteps ? (
                         <CheckCircle2
-                          className="h-4 w-4 flex-shrink-0 transition-colors duration-500 text-green-600 dark:text-green-400"
+                          className="h-4 w-4 shrink-0 transition-colors duration-500 text-green-600 dark:text-green-400"
                         />
                       ) : (
                         <Circle
-                          className="h-4 w-4 flex-shrink-0 transition-colors duration-500 text-muted-foreground"
+                          className="h-4 w-4 shrink-0 transition-colors duration-500 text-muted-foreground"
                         />
                       )}
                       <span className={`text-sm transition-colors duration-500 ${
@@ -735,7 +735,7 @@ export default function Agent4Pannu() {
                                   {suggestion && (
                                     <div className="bg-primary/5 border border-primary/20 p-3 rounded-md">
                                       <div className="flex items-start gap-2 mb-2">
-                                        <Sparkles className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
+                                        <Sparkles className="h-4 w-4 text-primary mt-0.5 shrink-0" />
                                         <span className="text-xs font-semibold text-primary">AI Suggestion</span>
                                       </div>
                                       <p className="text-sm text-muted-foreground whitespace-pre-wrap">{suggestion}</p>

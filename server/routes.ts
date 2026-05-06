@@ -5659,44 +5659,53 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       const parsedDraft = parseProvisionalDraft(provisionalDraft);
 
-      // Get selected key concepts directly from Agent 4 data
-      const agent4Data = await storage.getAgentData(req.params.id, 4);
-      const agent4Obj = agent4Data?.data as any;
-      const selectedKeyConcepts = agent4Obj?.selectedKeyConcepts || agent4Obj?.selectedClaims || [];
-
       let keyConceptsContent = '';
 
-      // Format selected key concepts grouped by variation
-      if (Array.isArray(selectedKeyConcepts) && selectedKeyConcepts.length > 0) {
-        // Group by variationId to maintain group structure
-        const groupedByVariation: Record<string, any[]> = {};
-        selectedKeyConcepts.forEach((concept: any) => {
-          const variationId = concept.variationId || 'default';
-          if (!groupedByVariation[variationId]) {
-            groupedByVariation[variationId] = [];
-          }
-          groupedByVariation[variationId].push(concept);
-        });
+      // Prefer the user's edited key-concept text if /update-specification-section
+      // has saved one. Without this, GET would silently overwrite edits with the
+      // auto-formatted Agent 4 selections every time the page reloads.
+      const savedKeyConcepts =
+        (Array.isArray(parsedDraft.keyConcepts) && parsedDraft.keyConcepts) ||
+        (Array.isArray(parsedDraft.claims) && parsedDraft.claims) ||
+        null;
+      if (savedKeyConcepts && savedKeyConcepts.length > 0) {
+        keyConceptsContent = savedKeyConcepts.join('\n\n');
+      } else {
+        // No edits yet — render the auto-formatted version from Agent 4.
+        const agent4Data = await storage.getAgentData(req.params.id, 4);
+        const agent4Obj = agent4Data?.data as any;
+        const selectedKeyConcepts = agent4Obj?.selectedKeyConcepts || agent4Obj?.selectedClaims || [];
 
-        const formattedConcepts: string[] = [];
-        let groupNumber = 1;
-
-        Object.keys(groupedByVariation).forEach((variationId) => {
-          const groupConcepts = groupedByVariation[variationId];
-          groupConcepts.forEach((concept: any, conceptIndex: number) => {
-            formattedConcepts.push(`Group ${groupNumber} / Key Concept ${conceptIndex + 1}: ${concept.text || ''}`);
+        if (Array.isArray(selectedKeyConcepts) && selectedKeyConcepts.length > 0) {
+          const groupedByVariation: Record<string, any[]> = {};
+          selectedKeyConcepts.forEach((concept: any) => {
+            const variationId = concept.variationId || 'default';
+            if (!groupedByVariation[variationId]) groupedByVariation[variationId] = [];
+            groupedByVariation[variationId].push(concept);
           });
-          groupNumber++;
-        });
 
-        keyConceptsContent = formattedConcepts.join('\n\n');
+          const formattedConcepts: string[] = [];
+          let groupNumber = 1;
+          Object.keys(groupedByVariation).forEach((variationId) => {
+            const groupConcepts = groupedByVariation[variationId];
+            groupConcepts.forEach((concept: any, conceptIndex: number) => {
+              formattedConcepts.push(`Group ${groupNumber} / Key Concept ${conceptIndex + 1}: ${concept.text || ''}`);
+            });
+            groupNumber++;
+          });
+          keyConceptsContent = formattedConcepts.join('\n\n');
+        }
       }
 
-      const selectedClaimType = agent5Obj?.selectedClaimType || 'specific';
-      if (selectedClaimType === 'broad' && agent5Obj?.broadKeyConcepts) {
-        const claimsArr = extractClaimsFromBroadData(agent5Obj.broadKeyConcepts);
-        if (claimsArr.length > 0) {
-          keyConceptsContent = claimsArr.map((c, i) => `${i + 1}. ${c}`).join('\n\n');
+      // Broad-mode auto-formatting also runs only if the user has not yet
+      // saved a manual edit; otherwise we'd clobber their changes on reload.
+      if (!savedKeyConcepts) {
+        const selectedClaimType = agent5Obj?.selectedClaimType || 'specific';
+        if (selectedClaimType === 'broad' && agent5Obj?.broadKeyConcepts) {
+          const claimsArr = extractClaimsFromBroadData(agent5Obj.broadKeyConcepts);
+          if (claimsArr.length > 0) {
+            keyConceptsContent = claimsArr.map((c, i) => `${i + 1}. ${c}`).join('\n\n');
+          }
         }
       }
       
@@ -6449,15 +6458,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ message: "Project or draft not found" });
       }
 
-      const rawDraft = (agent4cData.data as any)?.provisionalDraft || {};
+      // Edits made via /update-specification-section land in agent 5; prefer
+      // that draft so PDF exports reflect user edits. Fall back to agent 4's
+      // draft only if no edits have been saved yet.
+      const editedDraft = (agent5DataForPdf?.data as any)?.provisionalDraft;
+      const originalDraft = (agent4cData.data as any)?.provisionalDraft;
+      const rawDraft = editedDraft || originalDraft || {};
       const parsedDraft = parseProvisionalDraft(rawDraft);
-      
-      // Check if user has selected broad claims
+
       const agent5DataObj = agent5DataForPdf?.data as any;
       const selectedClaimType = agent5DataObj?.selectedClaimType || 'specific';
-      
+
+      // Prefer claims the user saved via /update-specification-section. Only
+      // fall back to broad/specific auto-derivation when no edits exist.
       let claimsToUse: any[] = [];
-      if (selectedClaimType === 'broad' && agent5DataObj?.broadKeyConcepts) {
+      const savedEditedClaims = Array.isArray(parsedDraft.claims) && parsedDraft.claims.length > 0
+        ? parsedDraft.claims
+        : null;
+      if (savedEditedClaims) {
+        claimsToUse = savedEditedClaims;
+      } else if (selectedClaimType === 'broad' && agent5DataObj?.broadKeyConcepts) {
         claimsToUse = extractClaimsFromBroadData(agent5DataObj.broadKeyConcepts);
         if (!claimsToUse || claimsToUse.length === 0) {
           claimsToUse = parsedDraft.claims || [];
@@ -6637,43 +6657,61 @@ export async function registerRoutes(app: Express): Promise<Server> {
         doc.moveDown(0.5);
       }
 
-      // Key Concepts - use user-selected key concepts grouped by variation
-      const selectedKeyConcepts = (agent4cData.data as any)?.selectedKeyConcepts || (agent4cData.data as any)?.selectedClaims || [];
-      if (Array.isArray(selectedKeyConcepts) && selectedKeyConcepts.length > 0) {
+      // Key Concepts — prefer user edits saved via /update-specification-section,
+      // fall back to the original grouped Agent 4 selections.
+      const editedKeyConceptsPdf =
+        (Array.isArray((parsedDraft as any).keyConcepts) && (parsedDraft as any).keyConcepts.length > 0
+          ? (parsedDraft as any).keyConcepts
+          : null) ||
+        (Array.isArray(parsedDraft.claims) && parsedDraft.claims.length > 0 && typeof parsedDraft.claims[0] === 'string'
+          ? parsedDraft.claims
+          : null);
+
+      if (editedKeyConceptsPdf) {
         doc.addPage();
         doc.fontSize(14).font('Helvetica-Bold').text('KEY CONCEPTS');
         doc.moveDown(0.5);
-
-        // Group by variationId
-        const groupedByVariation: Record<string, any[]> = {};
-        selectedKeyConcepts.forEach((concept: any) => {
-          const variationId = concept.variationId || 'default';
-          if (!groupedByVariation[variationId]) {
-            groupedByVariation[variationId] = [];
-          }
-          groupedByVariation[variationId].push(concept);
-        });
-
-        let groupNumber = 1;
-        Object.keys(groupedByVariation).forEach((variationId) => {
-          const groupConcepts = groupedByVariation[variationId];
-          doc.moveDown(0.3);
-          doc.font('Helvetica-Bold').fontSize(12).text(`Group ${groupNumber}`, { lineGap: 4 });
-          doc.moveDown(0.3);
-
-          groupConcepts.forEach((concept: any, conceptIndex: number) => {
-            const cleanedText = sanitizeForPDF(String(concept.text || '')).trim();
-            const label = `Key Concept ${conceptIndex + 1}: `;
-            doc.font('Helvetica').fontSize(11).text(label + cleanedText, {
-              lineGap: 4,
-              align: 'left'
-            });
-            doc.moveDown(0.5);
-          });
-
-          groupNumber++;
+        editedKeyConceptsPdf.forEach((entry: string) => {
+          const cleaned = sanitizeForPDF(String(entry || '')).trim();
+          if (!cleaned) return;
+          doc.font('Helvetica').fontSize(11).text(cleaned, { lineGap: 4, align: 'left' });
+          doc.moveDown(0.5);
         });
         doc.moveDown(0.5);
+      } else {
+        const selectedKeyConcepts = (agent4cData.data as any)?.selectedKeyConcepts || (agent4cData.data as any)?.selectedClaims || [];
+        if (Array.isArray(selectedKeyConcepts) && selectedKeyConcepts.length > 0) {
+          doc.addPage();
+          doc.fontSize(14).font('Helvetica-Bold').text('KEY CONCEPTS');
+          doc.moveDown(0.5);
+
+          const groupedByVariation: Record<string, any[]> = {};
+          selectedKeyConcepts.forEach((concept: any) => {
+            const variationId = concept.variationId || 'default';
+            if (!groupedByVariation[variationId]) groupedByVariation[variationId] = [];
+            groupedByVariation[variationId].push(concept);
+          });
+
+          let groupNumber = 1;
+          Object.keys(groupedByVariation).forEach((variationId) => {
+            const groupConcepts = groupedByVariation[variationId];
+            doc.moveDown(0.3);
+            doc.font('Helvetica-Bold').fontSize(12).text(`Group ${groupNumber}`, { lineGap: 4 });
+            doc.moveDown(0.3);
+
+            groupConcepts.forEach((concept: any, conceptIndex: number) => {
+              const cleanedText = sanitizeForPDF(String(concept.text || '')).trim();
+              const label = `Key Concept ${conceptIndex + 1}: `;
+              doc.font('Helvetica').fontSize(11).text(label + cleanedText, {
+                lineGap: 4,
+                align: 'left'
+              });
+              doc.moveDown(0.5);
+            });
+            groupNumber++;
+          });
+          doc.moveDown(0.5);
+        }
       }
 
       // Abstract - MUST be the absolute final section with zero images after it
@@ -6698,7 +6736,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Export DOCX
   app.get("/api/projects/:id/export-docx", isAuthenticated, async (req, res) => {
     try {
-      const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } = await import('docx');
+      const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, Footer, PageNumber } = await import('docx');
       const { marked } = await import('marked');
       const project = await storage.getProject(req.params.id);
       const agent4cData = await storage.getAgentData(req.params.id, 4);
@@ -6747,8 +6785,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const agent5DocxObj = agent5DataForDocx?.data as any;
       const selectedClaimType = agent5DocxObj?.selectedClaimType || 'specific';
       
+      // Prefer edits the user saved via /update-specification-section (which
+      // land in parsedDraft.claims). Only fall back to broad/specific
+      // auto-derivation when no edits exist.
       let claimsToUse: any[] = [];
-      if (selectedClaimType === 'broad' && agent5DocxObj?.broadKeyConcepts) {
+      const savedEditedClaims = Array.isArray(parsedDraft.claims) && parsedDraft.claims.length > 0
+        ? parsedDraft.claims
+        : null;
+      if (savedEditedClaims) {
+        claimsToUse = savedEditedClaims;
+      } else if (selectedClaimType === 'broad' && agent5DocxObj?.broadKeyConcepts) {
         claimsToUse = extractClaimsFromBroadData(agent5DocxObj.broadKeyConcepts);
         if (!claimsToUse || claimsToUse.length === 0) {
           claimsToUse = parsedDraft.claims || [];
@@ -7145,54 +7191,80 @@ export async function registerRoutes(app: Express): Promise<Server> {
         );
       }
 
-      // Key Concepts - use user-selected key concepts grouped by variation
-      const selectedKeyConceptsDocx = (agent4cData.data as any)?.selectedKeyConcepts || (agent4cData.data as any)?.selectedClaims || [];
-      if (Array.isArray(selectedKeyConceptsDocx) && selectedKeyConceptsDocx.length > 0) {
+      // Key Concepts — prefer the user's edits saved via
+      // /update-specification-section (which land in parsedDraft.claims /
+      // parsedDraft.keyConcepts). If no edits exist, render the original
+      // grouped Agent 4 selections.
+      const editedKeyConcepts =
+        (Array.isArray((parsedDraft as any).keyConcepts) && (parsedDraft as any).keyConcepts.length > 0
+          ? (parsedDraft as any).keyConcepts
+          : null) ||
+        (Array.isArray(parsedDraft.claims) && parsedDraft.claims.length > 0 && typeof parsedDraft.claims[0] === 'string'
+          ? parsedDraft.claims
+          : null);
+
+      if (editedKeyConcepts) {
         paragraphs.push(
-          new Paragraph({
-            children: [new PageBreak()],
-          }),
+          new Paragraph({ children: [new PageBreak()] }),
           new Paragraph({
             text: 'KEY CONCEPTS',
             heading: HeadingLevel.HEADING_1,
             spacing: { before: 400, after: 240, line: lineSpacing },
           })
         );
-
-        // Group by variationId
-        const groupedByVariationDocx: Record<string, any[]> = {};
-        selectedKeyConceptsDocx.forEach((concept: any) => {
-          const variationId = concept.variationId || 'default';
-          if (!groupedByVariationDocx[variationId]) {
-            groupedByVariationDocx[variationId] = [];
-          }
-          groupedByVariationDocx[variationId].push(concept);
-        });
-
-        let groupNumberDocx = 1;
-        Object.keys(groupedByVariationDocx).forEach((variationId) => {
-          const groupConcepts = groupedByVariationDocx[variationId];
-
+        editedKeyConcepts.forEach((entry: string) => {
+          const cleaned = processTextForDocx(String(entry || '')).trim();
+          if (!cleaned) return;
           paragraphs.push(
             new Paragraph({
-              children: [new TextRun({ text: `Group ${groupNumberDocx}`, size: bodyFontSize, bold: true })],
-              spacing: { before: 240, after: 120, line: lineSpacing },
+              children: [new TextRun({ text: cleaned, size: bodyFontSize })],
+              spacing: { after: 240, line: lineSpacing },
+            })
+          );
+        });
+      } else {
+        const selectedKeyConceptsDocx = (agent4cData.data as any)?.selectedKeyConcepts || (agent4cData.data as any)?.selectedClaims || [];
+        if (Array.isArray(selectedKeyConceptsDocx) && selectedKeyConceptsDocx.length > 0) {
+          paragraphs.push(
+            new Paragraph({ children: [new PageBreak()] }),
+            new Paragraph({
+              text: 'KEY CONCEPTS',
+              heading: HeadingLevel.HEADING_1,
+              spacing: { before: 400, after: 240, line: lineSpacing },
             })
           );
 
-          groupConcepts.forEach((concept: any, conceptIndex: number) => {
-            const cleanedText = processTextForDocx(String(concept.text || '')).trim();
-            const label = `Key Concept ${conceptIndex + 1}: `;
-            paragraphs.push(
-              new Paragraph({
-                children: [new TextRun({ text: label + cleanedText, size: bodyFontSize })],
-                spacing: { after: 240, line: lineSpacing },
-              })
-            );
+          const groupedByVariationDocx: Record<string, any[]> = {};
+          selectedKeyConceptsDocx.forEach((concept: any) => {
+            const variationId = concept.variationId || 'default';
+            if (!groupedByVariationDocx[variationId]) {
+              groupedByVariationDocx[variationId] = [];
+            }
+            groupedByVariationDocx[variationId].push(concept);
           });
 
-          groupNumberDocx++;
-        });
+          let groupNumberDocx = 1;
+          Object.keys(groupedByVariationDocx).forEach((variationId) => {
+            const groupConcepts = groupedByVariationDocx[variationId];
+            paragraphs.push(
+              new Paragraph({
+                children: [new TextRun({ text: `Group ${groupNumberDocx}`, size: bodyFontSize, bold: true })],
+                spacing: { before: 240, after: 120, line: lineSpacing },
+              })
+            );
+            groupConcepts.forEach((concept: any, conceptIndex: number) => {
+              const cleanedText = processTextForDocx(String(concept.text || '')).trim();
+              const label = `Key Concept ${conceptIndex + 1}: `;
+              paragraphs.push(
+                new Paragraph({
+                  children: [new TextRun({ text: label + cleanedText, size: bodyFontSize })],
+                  spacing: { after: 240, line: lineSpacing },
+                })
+              );
+            });
+            groupNumberDocx++;
+          });
+        }
       }
 
       // Abstract - MUST be the absolute final section with zero images after it
@@ -7213,6 +7285,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const doc = new Document({
         sections: [{
           properties: {},
+          // Page X of Y in the footer of every page.
+          footers: {
+            default: new Footer({
+              children: [
+                new Paragraph({
+                  alignment: AlignmentType.CENTER,
+                  children: [
+                    new TextRun({ text: "Page ", size: 20 }),
+                    new TextRun({ children: [PageNumber.CURRENT], size: 20 }),
+                    new TextRun({ text: " of ", size: 20 }),
+                    new TextRun({ children: [PageNumber.TOTAL_PAGES], size: 20 }),
+                  ],
+                }),
+              ],
+            }),
+          },
           children: paragraphs,
         }],
       });

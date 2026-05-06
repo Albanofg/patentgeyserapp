@@ -280,7 +280,7 @@ export default function PriorArtCheck() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="flex-shrink-0"
+                        className="shrink-0"
                         onClick={() => deleteMutation.mutate(search.id)}
                         data-testid={`button-delete-search-${search.id}`}
                       >
@@ -332,7 +332,7 @@ export default function PriorArtCheck() {
                         <ul className="space-y-2">
                           {keyDifferentiators.map((item, idx) => (
                             <li key={idx} className="text-sm flex items-start gap-2">
-                              <ChevronRight className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
+                              <ChevronRight className="h-4 w-4 text-primary shrink-0 mt-0.5" />
                               <span>{item}</span>
                             </li>
                           ))}
@@ -353,7 +353,7 @@ export default function PriorArtCheck() {
                         <ul className="space-y-2">
                           {claimsFocus.map((item, idx) => (
                             <li key={idx} className="text-sm flex items-start gap-2">
-                              <ChevronRight className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
+                              <ChevronRight className="h-4 w-4 text-primary shrink-0 mt-0.5" />
                               <span>{item}</span>
                             </li>
                           ))}
@@ -527,7 +527,7 @@ export default function PriorArtCheck() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            className="h-6 w-6 flex-shrink-0"
+                            className="h-6 w-6 shrink-0"
                             onClick={(e) => {
                               e.stopPropagation();
                               deleteMutation.mutate(search.id);
@@ -599,7 +599,7 @@ export default function PriorArtCheck() {
                             <ul className="space-y-2">
                               {keyDifferentiators.map((item, idx) => (
                                 <li key={idx} className="text-sm flex items-start gap-2">
-                                  <ChevronRight className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
+                                  <ChevronRight className="h-4 w-4 text-primary shrink-0 mt-0.5" />
                                   <span>{item}</span>
                                 </li>
                               ))}
@@ -623,7 +623,7 @@ export default function PriorArtCheck() {
                             <ul className="space-y-2">
                               {claimsFocus.map((item, idx) => (
                                 <li key={idx} className="text-sm flex items-start gap-2">
-                                  <ChevronRight className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
+                                  <ChevronRight className="h-4 w-4 text-primary shrink-0 mt-0.5" />
                                   <span>{item}</span>
                                 </li>
                               ))}
