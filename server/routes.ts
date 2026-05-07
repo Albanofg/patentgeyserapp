@@ -973,7 +973,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
         `[epd] Approved: ${normalizedEmail} $${pack.amount} txn=${nmi.transactionid} pack=${packId}`,
       );
 
-      // Provision/top-up account — mirror the GHL webhook flow.
+      // Post-purchase webhook payload — personal info and order details only.
+      // Sensitive payment data (card, CVV, token, security key) is intentionally
+      // excluded. Fire-and-forget; failures must NOT break the checkout.
+      const POST_PURCHASE_WEBHOOK = process.env.POST_PURCHASE_WEBHOOK || "";
+      const firePostPurchaseWebhook = async (mode: "created" | "topup", userId: string) => {
+        if (!POST_PURCHASE_WEBHOOK) {
+          console.log("[epd] POST_PURCHASE_WEBHOOK not configured — skipping.");
+          return;
+        }
+        try {
+          await sendWebhook(
+            POST_PURCHASE_WEBHOOK,
+            {
+              event: "purchase_completed",
+              mode, // "created" (new account) or "topup" (existing account)
+              user: {
+                id: userId,
+                email: normalizedEmail,
+                firstName: firstName.trim(),
+                lastName: lastName.trim(),
+                phone: phone.trim(),
+                address: address.trim(),
+                city: city.trim(),
+                zip: zip.trim(),
+                country: country.trim().toUpperCase(),
+              },
+              order: {
+                packId,
+                packLabel: pack.label,
+                credits: pack.credits,
+                amount: pack.amount,
+                currency: "USD",
+                transactionId: nmi.transactionid || null,
+                authCode: nmi.authcode || null,
+              },
+              timestamp: new Date().toISOString(),
+            },
+            30000,
+          );
+          console.log(`[epd] Post-purchase webhook fired (${mode}) for ${normalizedEmail}`);
+        } catch (e) {
+          console.error("[epd] Post-purchase webhook failed (non-fatal):", e);
+        }
+      };
+
+      // Provision/top-up account.
       const existingInventor = await storage.getInventorUserByEmail(normalizedEmail);
 
       if (existingInventor) {
@@ -984,6 +1029,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(
           `[epd] Top-up: ${normalizedEmail} +${pack.credits} → ${updated?.projectLimit}`,
         );
+        await firePostPurchaseWebhook("topup", existingInventor.id);
         return res.json({
           success: true,
           mode: "topup",
@@ -1010,33 +1056,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.error("[epd] Auto-whitelist failed (non-fatal):", e);
       }
 
+      // Issue the signup token so the inline /buy password form can authenticate
+      // the just-paid user. We deliberately do NOT email a "set your password"
+      // link — the user sets their password inline on /buy immediately after
+      // payment, so emailing a setup link is redundant and confusing.
       const signupToken = issueSignupToken(normalizedEmail);
       const baseUrl = process.env.APP_BASE_URL || "https://inventor.patentgeyser.com";
       const setPasswordLink = `${baseUrl}/auth/set-password?token=${encodeURIComponent(signupToken)}`;
 
-      if (GHL_EMAIL_WEBHOOK) {
-        try {
-          await sendWebhook(
-            GHL_EMAIL_WEBHOOK,
-            {
-              email: normalizedEmail,
-              type: "welcome_set_password",
-              subject: "Welcome to Patent Geyser — set your password",
-              message:
-                `Welcome to Patent Geyser! Your account has been created with ${pack.credits} credit(s).\n\n` +
-                `Click the link below to set your password and get started:\n${setPasswordLink}\n\n` +
-                `This link expires in 7 days.`,
-              setPasswordLink,
-              credits: pack.credits,
-            },
-            30000,
-          );
-        } catch (emailError) {
-          console.error("[epd] Welcome email failed (non-fatal):", emailError);
-        }
-      } else {
-        console.log("[epd] GHL_EMAIL_WEBHOOK not configured. Set-password link:", setPasswordLink);
-      }
+      await firePostPurchaseWebhook("created", user.id);
 
       return res.json({
         success: true,
