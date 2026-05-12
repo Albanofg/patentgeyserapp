@@ -12,7 +12,15 @@ import session from "express-session";
 import connectPg from "connect-pg-simple";
 import { generateSecret, generateURI, verify as verifyTOTP } from "otplib";
 import QRCode from "qrcode";
-import { runQAAssistant } from "./modules/module0/qa-assistant";
+import {
+  runQAAssistant,
+  getQAMessages,
+  getQALog,
+  getQAOpenQuestions,
+  addManualLogEntry,
+  patchLogEntry,
+  patchOpenQuestion,
+} from "./modules/module0/qa-assistant";
 import { runDebate } from "./modules/module1/1a/debate";
 import { runReanalyze } from "./modules/module1/1b/reanalyze";
 import { runR3Fixes } from "./modules/module1/1c/r3-fixes";
@@ -5948,18 +5956,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/projects/:id/qa-assistant", isAuthenticated, async (req, res) => {
     try {
       const { message, conversationHistory, currentLocation } = req.body;
-      
       if (!message || typeof message !== 'string') {
         return res.status(400).json({ message: "Message is required" });
       }
-      
-      // Get project context for the assistant
+
       const project = await storage.getProject(req.params.id);
-      if (!project) {
-        return res.status(404).json({ message: "Project not found" });
-      }
-      
-      // Get agent data for context
+      if (!project) return res.status(404).json({ message: "Project not found" });
+
       const [agent1Data, agent2Data, agent3Data, agent4Data, agent5Data] = await Promise.all([
         storage.getAgentData(req.params.id, 1),
         storage.getAgentData(req.params.id, 2),
@@ -5967,60 +5970,138 @@ export async function registerRoutes(app: Express): Promise<Server> {
         storage.getAgentData(req.params.id, 4),
         storage.getAgentData(req.params.id, 5),
       ]);
-      
       const agent1Obj = agent1Data?.data as any;
       const agent2Obj = agent2Data?.data as any;
       const agent3Obj = agent3Data?.data as any;
       const agent4Obj = agent4Data?.data as any;
       const agent5Obj = agent5Data?.data as any;
-      
-      // Build comprehensive project context for the assistant
+
       const projectContext = {
+        projectId: req.params.id,
         projectTitle: project.title,
         currentStage: project.currentStage,
-        // Module 1 data
         ideaSummary: agent1Obj?.ideaSummary || agent1Obj?.currentIdea || '',
         advocatePoints: agent1Obj?.advocatePoints || [],
         examinerPoints: agent1Obj?.examinerPoints || [],
         extractedIdeas: agent1Obj?.extractedIdeas || agent1Obj?.unifiedIdeas || [],
         approvedIdeas: agent1Obj?.approvedIdeas || [],
-        // Module 2 data
         expandedConcepts: agent2Obj?.expandedConcepts || [],
         selectedConcepts: agent2Obj?.selectedConcepts || [],
-        // Module 3 data
         priorArtResults: agent3Obj?.priorArtResults ? 'Prior art research completed' : 'Not yet completed',
-        // Module 4 data
         whiteSpaceAnalysis: agent4Obj?.nuggetAnalyses ? 'White space analysis completed' : 'Not yet completed',
         claimsGenerated: agent4Obj?.selectedKeyConcepts?.length || 0,
         provisionalDraftStatus: agent4Obj?.provisionalDraft ? 'Draft generated' : 'Not yet generated',
-        // Module 5 data
         hasProvisionalDraft: !!agent5Obj?.provisionalDraft,
         specificKeyConcepts: agent5Obj?.specificKeyConcepts || [],
         broaderClaims: agent5Obj?.broaderClaims || [],
         hasDiagrams: !!(agent5Obj?.diagrams?.length > 0),
         diagramCount: agent5Obj?.diagrams?.length || 0,
       };
-      
-      const webhookPayload = {
-        message,
-        conversationHistory: conversationHistory || [],
-        projectContext,
-        currentLocation: currentLocation || 'Unknown',
-        sessionId: req.session?.id || '',
+
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      (res as any).flushHeaders?.();
+
+      const send = (event: string, data: any) => {
+        res.write(`event: ${event}\n`);
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
       };
-      
-      console.log("Calling Q&A Assistant AI with currentLocation:", currentLocation);
-      const response = await runQAAssistant(webhookPayload);
-      console.log("✅ YES IS THIS ONE — QA Assistant responded via direct AI call");
-      console.log("Q&A Assistant response:", response?.substring(0, 100));
-      
-      res.json({
-        success: true,
-        response,
-      });
+
+      try {
+        for await (const ev of runQAAssistant({
+          message,
+          conversationHistory: conversationHistory || [],
+          projectContext,
+          currentLocation: currentLocation || 'Unknown',
+          sessionId: req.session?.id || '',
+        })) {
+          send(ev.type, ev.data);
+          if (ev.type === "done" || (ev.type === "error" && !ev.data?.recoverable)) break;
+        }
+      } catch (streamErr: any) {
+        console.error("Q&A Assistant stream error:", streamErr);
+        send("error", { message: streamErr?.message ?? "Stream error", recoverable: false });
+      }
+      res.end();
     } catch (error: any) {
       console.error("Q&A Assistant error:", error);
-      res.status(500).json({ message: error.message || "Failed to get response from Q&A Assistant" });
+      if (!res.headersSent) {
+        res.status(500).json({ message: error.message || "Failed to get response from Q&A Assistant" });
+      } else {
+        res.write(`event: error\ndata: ${JSON.stringify({ message: error?.message ?? "Internal error", recoverable: false })}\n\n`);
+        res.end();
+      }
+    }
+  });
+
+  // GET messages — chat rehydration
+  app.get("/api/projects/:id/qa-assistant/messages", isAuthenticated, async (req, res) => {
+    try {
+      const limit = Math.min(parseInt((req.query.limit as string) ?? "50", 10) || 50, 200);
+      res.json(await getQAMessages(req.params.id, limit));
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message });
+    }
+  });
+
+  // GET POHC + Leap log
+  app.get("/api/projects/:id/qa-assistant/log", isAuthenticated, async (req, res) => {
+    try {
+      const includeDismissed = (req.query.includeDismissed as string) === "true";
+      res.json(await getQALog(req.params.id, includeDismissed));
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message });
+    }
+  });
+
+  // GET open questions
+  app.get("/api/projects/:id/qa-assistant/open-questions", isAuthenticated, async (req, res) => {
+    try {
+      const includeAnswered = (req.query.includeAnswered as string) === "true";
+      res.json(await getQAOpenQuestions(req.params.id, includeAnswered));
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message });
+    }
+  });
+
+  // POST manual log entry
+  app.post("/api/projects/:id/qa-assistant/log", isAuthenticated, async (req, res) => {
+    try {
+      const { entryType, verbatimText, tags } = req.body as {
+        entryType?: "pohc" | "leap" | "both"; verbatimText?: string; tags?: string[];
+      };
+      if (!entryType || !["pohc", "leap", "both"].includes(entryType)) {
+        return res.status(400).json({ message: "entryType must be 'pohc' | 'leap' | 'both'" });
+      }
+      if (typeof verbatimText !== "string" || !verbatimText.trim()) {
+        return res.status(400).json({ message: "verbatimText required" });
+      }
+      res.json(await addManualLogEntry(req.params.id, entryType, verbatimText, tags));
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message });
+    }
+  });
+
+  // PATCH log entry (edit / dismiss / re-tag)
+  app.patch("/api/projects/:id/qa-assistant/log/:entryId", isAuthenticated, async (req, res) => {
+    try {
+      const row = await patchLogEntry(req.params.id, req.params.entryId, req.body ?? {});
+      if (!row) return res.status(404).json({ message: "Not found" });
+      res.json(row);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message });
+    }
+  });
+
+  // PATCH open question (dismiss)
+  app.patch("/api/projects/:id/qa-assistant/open-questions/:qId", isAuthenticated, async (req, res) => {
+    try {
+      const row = await patchOpenQuestion(req.params.id, req.params.qId, req.body ?? {});
+      if (!row) return res.status(404).json({ message: "Not found" });
+      res.json(row);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message });
     }
   });
 

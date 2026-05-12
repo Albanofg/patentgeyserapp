@@ -72,7 +72,7 @@ export function AppSidebar({ projectId }: AppSidebarProps) {
   const [qaModalOpen, setQaModalOpen] = useState(false);
   const [qaInitialText, setQaInitialText] = useState("");
   
-  // Get human-readable location for Q&A Assistant context
+  // Get human-readable location for AI Helper context
   const currentLocationDescription = getLocationDescription(location);
 
   // Listen for Ask AI events from text selection
@@ -248,10 +248,10 @@ export function AppSidebar({ projectId }: AppSidebarProps) {
                         className="group-data-[collapsible=icon]:justify-center bg-accent/50 border border-accent text-foreground font-medium hover:bg-accent"
                       >
                         <MessageCircleQuestion className="h-4 w-4" />
-                        <span className="group-data-[collapsible=icon]:hidden">Q&A Assistant</span>
+                        <span className="group-data-[collapsible=icon]:hidden">AI Helper</span>
                       </SidebarMenuButton>
                     </TooltipTrigger>
-                    {!open && <TooltipContent side="right">Q&A Assistant</TooltipContent>}
+                    {!open && <TooltipContent side="right">AI Helper</TooltipContent>}
                   </Tooltip>
                 </SidebarMenuItem>
               </SidebarMenu>
@@ -430,7 +430,7 @@ export function AppSidebar({ projectId }: AppSidebarProps) {
         />
       )}
       
-      {/* Q&A Assistant Modal */}
+      {/* AI Helper Modal */}
       {projectId && (
         <QAAssistantModal
           projectId={projectId}

@@ -1,16 +1,36 @@
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Lightbulb, RefreshCw, Loader2 } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { Lightbulb, Plus, Edit2, X, RefreshCw, Loader2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 interface CurrentIdeaData {
   currentIdea: string | null;
   currentVersion: number;
   snapshots: any[];
+}
+
+interface LogEntry {
+  id: string;
+  entryType: "pohc" | "leap" | "both";
+  verbatimText: string;
+  editedText: string | null;
+  capturedAt: string;
+  capturedBy: "auto" | "manual";
+  tags: string[] | null;
+  dismissedAt: string | null;
+  sourceMessageId: string | null;
+}
+
+interface OpenQ {
+  id: string;
+  question: string;
+  createdAt: string;
+  askedInMessageId: string | null;
 }
 
 interface CurrentIdeaModalProps {
@@ -21,60 +41,115 @@ interface CurrentIdeaModalProps {
 
 export function CurrentIdeaModal({ projectId, open, onOpenChange }: CurrentIdeaModalProps) {
   const { toast } = useToast();
-  
-  const { data, isLoading } = useQuery<CurrentIdeaData>({
+  const qc = useQueryClient();
+
+  const [filter, setFilter] = useState<"all" | "pohc" | "leap" | "both">("all");
+  const [adding, setAdding] = useState(false);
+  const [newEntryType, setNewEntryType] = useState<"pohc" | "leap" | "both">("pohc");
+  const [newEntryText, setNewEntryText] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+
+  const idea = useQuery<CurrentIdeaData>({
     queryKey: ["/api/projects", projectId, "current-idea"],
+    enabled: !!projectId && open,
+  });
+  const log = useQuery<LogEntry[]>({
+    queryKey: ["/api/projects", projectId, "qa-assistant/log"],
+    queryFn: async () =>
+      (await fetch(`/api/projects/${projectId}/qa-assistant/log`, { credentials: "include" })).json(),
+    enabled: !!projectId && open,
+  });
+  const openQs = useQuery<OpenQ[]>({
+    queryKey: ["/api/projects", projectId, "qa-assistant/open-questions"],
+    queryFn: async () =>
+      (await fetch(`/api/projects/${projectId}/qa-assistant/open-questions`, { credentials: "include" })).json(),
     enabled: !!projectId && open,
   });
 
   const backfillMutation = useMutation({
-    mutationFn: async () => {
-      return await apiRequest("POST", `/api/projects/${projectId}/backfill-snapshots`);
+    mutationFn: async () => apiRequest("POST", `/api/projects/${projectId}/backfill-snapshots`),
+    onSuccess: () => {
+      toast({ title: "Idea Loaded", description: "Your idea has been loaded successfully." });
+      qc.invalidateQueries({ queryKey: ["/api/projects", projectId, "current-idea"] });
     },
-    onSuccess: (result: any) => {
-      toast({
-        title: "Idea Loaded",
-        description: "Your idea has been loaded successfully.",
-      });
-      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "current-idea"] });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Failed to Load",
-        description: error.message,
-        variant: "destructive",
-      });
+    onError: (err: Error) => {
+      toast({ title: "Failed to Load", description: err.message, variant: "destructive" });
     },
   });
 
-  const hasIdea = data?.currentIdea || (data?.snapshots && data.snapshots.length > 0);
+  const addEntry = useMutation({
+    mutationFn: async () =>
+      apiRequest("POST", `/api/projects/${projectId}/qa-assistant/log`, {
+        entryType: newEntryType,
+        verbatimText: newEntryText,
+      }),
+    onSuccess: () => {
+      setAdding(false);
+      setNewEntryText("");
+      qc.invalidateQueries({ queryKey: ["/api/projects", projectId, "qa-assistant/log"] });
+    },
+  });
+
+  const editEntry = useMutation({
+    mutationFn: async ({ entryId, editedText }: { entryId: string; editedText: string }) =>
+      apiRequest("PATCH", `/api/projects/${projectId}/qa-assistant/log/${entryId}`, { editedText }),
+    onSuccess: () => {
+      setEditingId(null);
+      setEditText("");
+      qc.invalidateQueries({ queryKey: ["/api/projects", projectId, "qa-assistant/log"] });
+    },
+  });
+
+  const dismissEntry = useMutation({
+    mutationFn: async (entryId: string) =>
+      apiRequest("PATCH", `/api/projects/${projectId}/qa-assistant/log/${entryId}`, { dismissed: true }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/projects", projectId, "qa-assistant/log"] }),
+  });
+
+  const dismissQ = useMutation({
+    mutationFn: async (qId: string) =>
+      apiRequest("PATCH", `/api/projects/${projectId}/qa-assistant/open-questions/${qId}`, { dismissed: true }),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ["/api/projects", projectId, "qa-assistant/open-questions"] }),
+  });
+
+  const hasArticulation = !!idea.data?.currentIdea || (idea.data?.snapshots && idea.data.snapshots.length > 0);
+  const filteredLog = (log.data ?? []).filter((e) => (filter === "all" ? true : e.entryType === filter));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Lightbulb className="h-5 w-5 text-primary" />
-            Your Current Idea
+            Invention Record
           </DialogTitle>
         </DialogHeader>
-        
-        <div className="max-h-[60vh] overflow-y-auto pr-2">
-          {isLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <div className="animate-pulse text-muted-foreground">Loading...</div>
+
+        {/* Current Articulation */}
+        <section className="mt-4">
+          <div className="flex items-baseline justify-between mb-2">
+            <h3 className="font-semibold">Current Articulation</h3>
+            <div className="text-xs text-muted-foreground">v{idea.data?.currentVersion ?? 0}</div>
+          </div>
+          {idea.isLoading ? (
+            <div className="border rounded-md p-4 bg-muted/30 text-sm text-muted-foreground animate-pulse">
+              Loading...
             </div>
-          ) : !hasIdea ? (
-            <div className="text-center py-8">
-              <Lightbulb className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-              <p className="text-muted-foreground mb-4">No idea recorded yet.</p>
-              <p className="text-sm text-muted-foreground mb-4">
+          ) : !hasArticulation ? (
+            <div className="border rounded-md p-6 text-center bg-muted/20">
+              <p className="text-sm text-muted-foreground mb-3">
+                No articulation yet. Open the AI Helper to start the conversation.
+              </p>
+              <p className="text-xs text-muted-foreground mb-3">
                 If this is an older project, click below to load your idea.
               </p>
               <Button
                 onClick={() => backfillMutation.mutate()}
                 disabled={backfillMutation.isPending}
                 variant="outline"
+                size="sm"
                 data-testid="button-reconstruct-timeline"
               >
                 {backfillMutation.isPending ? (
@@ -91,11 +166,142 @@ export function CurrentIdeaModal({ projectId, open, onOpenChange }: CurrentIdeaM
               </Button>
             </div>
           ) : (
-            <div className="prose prose-sm dark:prose-invert max-w-none">
-              <ReactMarkdown>{data?.currentIdea || ''}</ReactMarkdown>
+            <div className="border rounded-md p-4 bg-muted/30">
+              <div className="prose prose-sm dark:prose-invert max-w-none">
+                <ReactMarkdown>{idea.data?.currentIdea ?? ""}</ReactMarkdown>
+              </div>
             </div>
           )}
-        </div>
+        </section>
+
+        {/* Idea Log */}
+        <section className="mt-6">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-semibold">Idea Log ({log.data?.length ?? 0})</h3>
+            <div className="flex gap-2 items-center">
+              <select
+                value={filter}
+                onChange={(e) => setFilter(e.target.value as any)}
+                className="text-xs border rounded px-2 py-1 bg-background"
+              >
+                <option value="all">all</option>
+                <option value="pohc">POHC</option>
+                <option value="leap">leap</option>
+                <option value="both">both</option>
+              </select>
+              <Button size="sm" variant="outline" onClick={() => setAdding((v) => !v)}>
+                <Plus className="h-4 w-4 mr-1" /> add entry
+              </Button>
+            </div>
+          </div>
+
+          {adding && (
+            <div className="border rounded-md p-3 mb-3 space-y-2">
+              <select
+                value={newEntryType}
+                onChange={(e) => setNewEntryType(e.target.value as any)}
+                className="text-sm border rounded px-2 py-1 bg-background"
+              >
+                <option value="pohc">POHC</option>
+                <option value="leap">leap</option>
+                <option value="both">both</option>
+              </select>
+              <Textarea
+                value={newEntryText}
+                onChange={(e) => setNewEntryText(e.target.value)}
+                placeholder="The exact words to log..."
+                className="h-20"
+              />
+              <div className="flex gap-2 justify-end">
+                <Button size="sm" variant="ghost" onClick={() => setAdding(false)}>
+                  cancel
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => addEntry.mutate()}
+                  disabled={!newEntryText.trim() || addEntry.isPending}
+                >
+                  {addEntry.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "save"}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {filteredLog.map((e) => (
+              <div key={e.id} className="border rounded-md p-3">
+                <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
+                  <div>
+                    <span className="inline-block px-2 py-0.5 rounded bg-primary/10 text-primary font-medium mr-2">
+                      {e.entryType === "both" ? "LEAP · POHC" : e.entryType.toUpperCase()}
+                    </span>
+                    {new Date(e.capturedAt).toLocaleString()} · {e.capturedBy}
+                  </div>
+                  <div className="flex gap-1">
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      onClick={() => {
+                        setEditingId(e.id);
+                        setEditText(e.editedText ?? e.verbatimText);
+                      }}
+                    >
+                      <Edit2 className="h-3 w-3" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      onClick={() => dismissEntry.mutate(e.id)}
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </div>
+                </div>
+                {editingId === e.id ? (
+                  <div className="space-y-2">
+                    <Textarea value={editText} onChange={(ev) => setEditText(ev.target.value)} className="h-20" />
+                    <div className="flex gap-2 justify-end">
+                      <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>
+                        cancel
+                      </Button>
+                      <Button size="sm" onClick={() => editEntry.mutate({ entryId: e.id, editedText: editText })}>
+                        save edit
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Editing preserves the original verbatim text.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-sm">{e.editedText ?? e.verbatimText}</p>
+                )}
+              </div>
+            ))}
+            {filteredLog.length === 0 && (
+              <p className="text-sm text-muted-foreground text-center py-4">No entries yet.</p>
+            )}
+          </div>
+        </section>
+
+        {/* Open Questions */}
+        <section className="mt-6">
+          <h3 className="font-semibold mb-2">Open Questions ({openQs.data?.length ?? 0})</h3>
+          <div className="space-y-2">
+            {openQs.data?.map((q) => (
+              <div key={q.id} className="border rounded-md p-3 flex items-start gap-2">
+                <span className="text-sm flex-1">{q.question}</span>
+                <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => dismissQ.mutate(q.id)}>
+                  <X className="h-3 w-3" />
+                </Button>
+              </div>
+            ))}
+            {(openQs.data?.length ?? 0) === 0 && (
+              <p className="text-sm text-muted-foreground text-center py-4">No open questions.</p>
+            )}
+          </div>
+        </section>
       </DialogContent>
     </Dialog>
   );
@@ -108,7 +314,6 @@ export function CurrentIdeaButton({ projectId }: { projectId: string }) {
   });
 
   const hasIdea = data?.currentIdea || (data?.snapshots && data.snapshots.length > 0);
-  const snapshotCount = data?.snapshots?.length || 0;
 
   return (
     <Button
@@ -117,8 +322,8 @@ export function CurrentIdeaButton({ projectId }: { projectId: string }) {
       className="w-full justify-start gap-2"
       data-testid="button-view-current-idea"
     >
-      <Lightbulb className={`h-4 w-4 ${hasIdea ? 'text-primary' : 'text-muted-foreground'}`} />
-      <span>Current Idea</span>
+      <Lightbulb className={`h-4 w-4 ${hasIdea ? "text-primary" : "text-muted-foreground"}`} />
+      <span>Invention Record</span>
     </Button>
   );
 }

@@ -25,6 +25,66 @@ const PACKS: { id: PackId; credits: number; price: string; note?: string }[] = [
   { id: "pack_5", credits: 5, price: "$1,160.00", note: "20% discount" },
 ];
 
+// ISO-3166 alpha-2 country codes for the billing country dropdown. NMI's
+// transact.php expects 2-letter codes; this list is alphabetized by name with
+// the most common buyer countries pinned at the top for convenience.
+const COUNTRY_OPTIONS: { code: string; name: string }[] = [
+  { code: "US", name: "United States" },
+  { code: "CA", name: "Canada" },
+  { code: "GB", name: "United Kingdom" },
+  { code: "AU", name: "Australia" },
+  { code: "—", name: "──────────" },
+  { code: "AR", name: "Argentina" },
+  { code: "AT", name: "Austria" },
+  { code: "BE", name: "Belgium" },
+  { code: "BR", name: "Brazil" },
+  { code: "CH", name: "Switzerland" },
+  { code: "CL", name: "Chile" },
+  { code: "CN", name: "China" },
+  { code: "CO", name: "Colombia" },
+  { code: "CZ", name: "Czechia" },
+  { code: "DE", name: "Germany" },
+  { code: "DK", name: "Denmark" },
+  { code: "EE", name: "Estonia" },
+  { code: "ES", name: "Spain" },
+  { code: "FI", name: "Finland" },
+  { code: "FR", name: "France" },
+  { code: "GR", name: "Greece" },
+  { code: "HK", name: "Hong Kong" },
+  { code: "HU", name: "Hungary" },
+  { code: "ID", name: "Indonesia" },
+  { code: "IE", name: "Ireland" },
+  { code: "IL", name: "Israel" },
+  { code: "IN", name: "India" },
+  { code: "IS", name: "Iceland" },
+  { code: "IT", name: "Italy" },
+  { code: "JP", name: "Japan" },
+  { code: "KR", name: "South Korea" },
+  { code: "LT", name: "Lithuania" },
+  { code: "LU", name: "Luxembourg" },
+  { code: "LV", name: "Latvia" },
+  { code: "MX", name: "Mexico" },
+  { code: "MY", name: "Malaysia" },
+  { code: "NL", name: "Netherlands" },
+  { code: "NO", name: "Norway" },
+  { code: "NZ", name: "New Zealand" },
+  { code: "PE", name: "Peru" },
+  { code: "PH", name: "Philippines" },
+  { code: "PL", name: "Poland" },
+  { code: "PT", name: "Portugal" },
+  { code: "RO", name: "Romania" },
+  { code: "SE", name: "Sweden" },
+  { code: "SG", name: "Singapore" },
+  { code: "SK", name: "Slovakia" },
+  { code: "TH", name: "Thailand" },
+  { code: "TR", name: "Türkiye" },
+  { code: "TW", name: "Taiwan" },
+  { code: "UA", name: "Ukraine" },
+  { code: "UY", name: "Uruguay" },
+  { code: "VN", name: "Vietnam" },
+  { code: "ZA", name: "South Africa" },
+];
+
 type Buyer = {
   firstName: string;
   lastName: string;
@@ -454,7 +514,20 @@ export default function Buy() {
                 </div>
                 <div>
                   <Label htmlFor="country">Country</Label>
-                  <Input id="country" autoComplete="country" maxLength={2} value={buyer.country} onChange={(e) => setField("country", e.target.value.toUpperCase())} placeholder="US" required />
+                  <select
+                    id="country"
+                    autoComplete="country"
+                    value={buyer.country}
+                    onChange={(e) => setField("country", e.target.value)}
+                    required
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  >
+                    {COUNTRY_OPTIONS.map((c) => (
+                      <option key={c.code} value={c.code} disabled={c.code === "—"}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
             </div>

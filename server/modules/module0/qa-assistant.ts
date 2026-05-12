@@ -261,7 +261,7 @@ interface QAPayload {
   message: string;
   conversationHistory: Array<{ role: string; content: string }>;
   projectContext: {
-    projectId?: string; // route appends this so the module can persist; if omitted, persistence is skipped
+    projectId?: string;
     projectTitle?: string;
     currentStage?: number;
     ideaSummary?: string;
@@ -283,6 +283,89 @@ interface QAPayload {
   sessionId?: string;
 }
 
+export type QAEvent =
+  | { type: "token"; data: { delta: string } }
+  | { type: "tool-result"; data: ToolResult }
+  | { type: "done"; data: { userMessageId: string | null; assistantMessageId: string | null; usedFallback: boolean } }
+  | { type: "error"; data: { message: string; recoverable: boolean } };
+
+// Read-helpers used by the route's GET endpoints — keep DB access inside module 0.
+export async function getQAMessages(projectId: string, limit = 50) {
+  return await db
+    .select()
+    .from(coachMessages)
+    .where(eq(coachMessages.projectId, projectId))
+    .orderBy(desc(coachMessages.createdAt))
+    .limit(limit)
+    .then((rows) => rows.reverse());
+}
+
+export async function getQALog(projectId: string, includeDismissed = false) {
+  const cond = includeDismissed
+    ? eq(coachLogEntries.projectId, projectId)
+    : and(eq(coachLogEntries.projectId, projectId), isNull(coachLogEntries.dismissedAt));
+  return await db.select().from(coachLogEntries).where(cond).orderBy(coachLogEntries.capturedAt);
+}
+
+export async function getQAOpenQuestions(projectId: string, includeAnswered = false) {
+  const cond = includeAnswered
+    ? eq(coachOpenQuestions.projectId, projectId)
+    : and(
+        eq(coachOpenQuestions.projectId, projectId),
+        isNull(coachOpenQuestions.answeredAt),
+        isNull(coachOpenQuestions.dismissedAt),
+      );
+  return await db.select().from(coachOpenQuestions).where(cond).orderBy(coachOpenQuestions.createdAt);
+}
+
+export async function addManualLogEntry(
+  projectId: string,
+  entryType: "pohc" | "leap" | "both",
+  verbatimText: string,
+  tags?: string[],
+) {
+  const [row] = await db
+    .insert(coachLogEntries)
+    .values({ projectId, entryType, verbatimText, capturedBy: "manual", tags: tags ?? null })
+    .returning();
+  return row;
+}
+
+export async function patchLogEntry(
+  projectId: string,
+  entryId: string,
+  patch: { editedText?: string; entryType?: "pohc" | "leap" | "both"; dismissed?: boolean; tags?: string[] },
+) {
+  const update: any = {};
+  if (typeof patch.editedText === "string") {
+    update.editedText = patch.editedText;
+    update.editedAt = new Date();
+  }
+  if (patch.entryType) update.entryType = patch.entryType;
+  if (typeof patch.dismissed === "boolean") update.dismissedAt = patch.dismissed ? new Date() : null;
+  if (Array.isArray(patch.tags)) update.tags = patch.tags;
+  const [row] = await db
+    .update(coachLogEntries)
+    .set(update)
+    .where(and(eq(coachLogEntries.id, entryId), eq(coachLogEntries.projectId, projectId)))
+    .returning();
+  return row ?? null;
+}
+
+export async function patchOpenQuestion(
+  projectId: string,
+  questionId: string,
+  patch: { dismissed?: boolean },
+) {
+  if (typeof patch.dismissed !== "boolean") return null;
+  const [row] = await db
+    .update(coachOpenQuestions)
+    .set({ dismissedAt: patch.dismissed ? new Date() : null })
+    .where(and(eq(coachOpenQuestions.id, questionId), eq(coachOpenQuestions.projectId, projectId)))
+    .returning();
+  return row ?? null;
+}
+
 /**
  * Run the Q&A Assistant. Same shape the route handler has always used.
  *
@@ -301,7 +384,7 @@ interface QAPayload {
  * call becomes a stateless Q&A turn (the route can opt in to persistence by
  * adding `projectId: req.params.id` to projectContext).
  */
-export async function runQAAssistant(payload: QAPayload): Promise<string> {
+export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEvent> {
   const projectId = payload.projectContext?.projectId;
   const persistent = typeof projectId === "string" && projectId.length > 0;
 
@@ -427,9 +510,10 @@ export async function runQAAssistant(payload: QAPayload): Promise<string> {
     parts: [{ text: m.content }],
   }));
 
-  // 5. Stream from Gemini, collect prose + tool calls
+  // 5. Stream from Gemini, yielding tokens as they arrive
   const collectedTokens: string[] = [];
   const collectedToolCalls: ToolCall[] = [];
+  let usedFallback = false;
 
   try {
     const stream = await gemini.models.generateContentStream({
@@ -449,7 +533,10 @@ export async function runQAAssistant(payload: QAPayload): Promise<string> {
 
     for await (const chunk of stream) {
       const t = (chunk as any).text;
-      if (t) collectedTokens.push(t);
+      if (t) {
+        collectedTokens.push(t);
+        yield { type: "token", data: { delta: t } };
+      }
       const calls = (chunk as any).functionCalls;
       if (Array.isArray(calls)) {
         for (const c of calls) collectedToolCalls.push({ name: c.name, args: c.args ?? {} });
@@ -457,6 +544,7 @@ export async function runQAAssistant(payload: QAPayload): Promise<string> {
     }
   } catch (geminiErr: any) {
     console.warn(`[QA-Assistant] Gemini failed, falling back to ${CONFIG.fallback}:`, geminiErr?.message);
+    usedFallback = true;
     try {
       const completion = await openai.chat.completions.create({
         model: CONFIG.fallback,
@@ -471,17 +559,25 @@ export async function runQAAssistant(payload: QAPayload): Promise<string> {
         temperature: CONFIG.temperature,
         max_tokens: Math.min(CONFIG.maxTokens, 16384),
       });
-      collectedTokens.push(completion.choices[0]?.message?.content ?? "");
+      const text = completion.choices[0]?.message?.content ?? "";
+      collectedTokens.push(text);
+      yield { type: "token", data: { delta: text } };
     } catch (fallbackErr: any) {
-      throw new Error(
-        `Both Gemini and fallback failed: ${fallbackErr?.message ?? String(fallbackErr)}`,
-      );
+      yield {
+        type: "error",
+        data: {
+          message: `Both Gemini and fallback failed: ${fallbackErr?.message ?? String(fallbackErr)}`,
+          recoverable: false,
+        },
+      };
+      return;
     }
   }
 
   const fullText = collectedTokens.join("").trim();
 
   // 6. Persist the assistant message (and execute tool calls against its id)
+  let assistantMessageId: string | null = null;
   if (persistent) {
     const [assistantMsg] = await db
       .insert(coachMessages)
@@ -492,11 +588,13 @@ export async function runQAAssistant(payload: QAPayload): Promise<string> {
         toolCalls: collectedToolCalls.length ? (collectedToolCalls as any) : null,
       })
       .returning();
+    assistantMessageId = assistantMsg.id;
 
     const results: ToolResult[] = [];
     for (const call of collectedToolCalls) {
       const r = await executeTool(call, projectId!, assistantMsg.id);
       results.push(r);
+      yield { type: "tool-result", data: r };
     }
     if (results.length) {
       await db
@@ -508,5 +606,12 @@ export async function runQAAssistant(payload: QAPayload): Promise<string> {
     }
   }
 
-  return fullText;
+  yield {
+    type: "done",
+    data: {
+      userMessageId: userMsgId,
+      assistantMessageId,
+      usedFallback,
+    },
+  };
 }
