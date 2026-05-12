@@ -23,7 +23,6 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { CurrentIdeaModal } from "@/components/current-idea-modal";
 import { Home, LogOut, Sparkles, Wrench, Search, TrendingUp, Image, Lightbulb, Code, FileSearch, MessageCircleQuestion, Settings } from "lucide-react";
 import { CodeModal } from "@/components/code-modal";
-import { QAAssistantModal } from "@/components/qa-assistant-modal";
 import type { Project, User } from "@shared/schema";
 import geyserLogo from "@/assets/geyser-logo.png";
 
@@ -50,6 +49,11 @@ const agentStages = [
 
 interface AppSidebarProps {
   projectId?: string;
+  /**
+   * Called when the user clicks the AI Helper trigger. Optionally carries a
+   * pre-fill string (e.g. selected text from an Ask AI event).
+   */
+  onOpenAIHelper?: (initialText?: string) => void;
 }
 
 // Map routes to human-readable location descriptions
@@ -64,24 +68,23 @@ function getLocationDescription(path: string): string {
   return "Patent Geyser Application";
 }
 
-export function AppSidebar({ projectId }: AppSidebarProps) {
+export function AppSidebar({ projectId, onOpenAIHelper }: AppSidebarProps) {
   const [location, setLocation] = useLocation();
   const { open } = useSidebar();
   const [ideaModalOpen, setIdeaModalOpen] = useState(false);
   const [codeModalOpen, setCodeModalOpen] = useState(false);
-  const [qaModalOpen, setQaModalOpen] = useState(false);
-  const [qaInitialText, setQaInitialText] = useState("");
-  
-  // Get human-readable location for AI Helper context
+  // currentLocationDescription is intentionally retained for future panel-aware
+  // wiring; suppress the lint warning by referencing it explicitly below.
   const currentLocationDescription = getLocationDescription(location);
+  void currentLocationDescription;
 
-  // Listen for Ask AI events from text selection
+  // Listen for Ask AI events from text selection — forward the selected text
+  // to the panel via the shared open handler.
   useEffect(() => {
     const handleAskAI = (event: Event) => {
       const customEvent = event as CustomEvent<AskAIEventDetail>;
       if (customEvent.detail?.selectedText && projectId) {
-        setQaInitialText(customEvent.detail.selectedText);
-        setQaModalOpen(true);
+        onOpenAIHelper?.(customEvent.detail.selectedText);
       }
     };
 
@@ -89,12 +92,7 @@ export function AppSidebar({ projectId }: AppSidebarProps) {
     return () => {
       window.removeEventListener(ASK_AI_EVENT, handleAskAI);
     };
-  }, [projectId]);
-
-  // Callback to clear initial text after it's been consumed
-  const handleInitialTextConsumed = useCallback(() => {
-    setQaInitialText("");
-  }, []);
+  }, [projectId, onOpenAIHelper]);
 
   const { data: user } = useQuery<User>({
     queryKey: ["/api/auth/user"],
@@ -243,7 +241,7 @@ export function AppSidebar({ projectId }: AppSidebarProps) {
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <SidebarMenuButton
-                        onClick={() => setQaModalOpen(true)}
+                        onClick={() => onOpenAIHelper?.()}
                         data-testid="button-qa-assistant"
                         className="group-data-[collapsible=icon]:justify-center bg-accent/50 border border-accent text-foreground font-medium hover:bg-accent"
                       >
@@ -329,7 +327,10 @@ export function AppSidebar({ projectId }: AppSidebarProps) {
                         const isClickable = isSubstageAccessible && !prereqsLocked;
                         
                         return (
-                          <SidebarMenuItem key={substage.id} className="ml-6">
+                          <SidebarMenuItem
+                            key={substage.id}
+                            className="ml-6 group-data-[collapsible=icon]:hidden"
+                          >
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <SidebarMenuButton
@@ -430,17 +431,6 @@ export function AppSidebar({ projectId }: AppSidebarProps) {
         />
       )}
       
-      {/* AI Helper Modal */}
-      {projectId && (
-        <QAAssistantModal
-          projectId={projectId}
-          open={qaModalOpen}
-          onOpenChange={setQaModalOpen}
-          currentLocation={currentLocationDescription}
-          initialText={qaInitialText}
-          onInitialTextConsumed={handleInitialTextConsumed}
-        />
-      )}
     </TooltipProvider>
   );
 }

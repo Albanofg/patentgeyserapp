@@ -1,8 +1,9 @@
-import { useEffect, useState, lazy, Suspense } from "react";
+import { useEffect, useState, useRef, lazy, Suspense } from "react";
 import { useLocation, useRoute, Switch, Route } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
+import { QAAssistantPanel } from "@/components/qa-assistant-modal";
 import { Loader2, Menu, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -214,21 +215,19 @@ export function AuthenticatedShell() {
 
   return (
     <SidebarProvider defaultOpen={true} style={style as React.CSSProperties}>
-      <div className="flex h-screen w-full">
-        <AppSidebar projectId={projectId} />
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <MobileHeader />
-          {isReadOnly && (
-            <div className="flex items-center gap-3 px-4 py-2.5 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800 text-sm text-amber-800 dark:text-amber-300 shrink-0" data-testid="banner-subscription-lapsed">
-              <AlertTriangle className="h-4 w-4 shrink-0" />
-              <span>
-                Your subscription has lapsed. You can view your existing projects, but AI features are paused until you renew.{" "}
-                <a href="https://patentgeyser.com/pricing" className="font-medium underline underline-offset-2">
-                  Renew here
-                </a>
-              </span>
-            </div>
-          )}
+      <ShellWithHelperPanel projectId={projectId} isReadOnly={isReadOnly}>
+        <MobileHeader />
+        {isReadOnly && (
+          <div className="flex items-center gap-3 px-4 py-2.5 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800 text-sm text-amber-800 dark:text-amber-300 shrink-0" data-testid="banner-subscription-lapsed">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span>
+              Your subscription has lapsed. You can view your existing projects, but AI features are paused until you renew.{" "}
+              <a href="https://patentgeyser.com/pricing" className="font-medium underline underline-offset-2">
+                Renew here
+              </a>
+            </span>
+          </div>
+        )}
           <main className="flex-1 overflow-y-auto">
             <Suspense fallback={<RouteLoader />}>
             <Switch>
@@ -260,8 +259,153 @@ export function AuthenticatedShell() {
             </Switch>
             </Suspense>
           </main>
-        </div>
-      </div>
+      </ShellWithHelperPanel>
     </SidebarProvider>
+  );
+}
+
+/**
+ * Inner layout component that has access to `useSidebar()`. Holds the AI
+ * Helper docked-panel state and enforces mutual exclusivity with the left
+ * sidebar: opening the panel collapses the sidebar; expanding the sidebar
+ * closes the panel.
+ */
+const HELPER_PANEL_WIDTH_KEY = "ai-helper-panel-width";
+const HELPER_PANEL_MIN_WIDTH = 360;
+const HELPER_PANEL_MAX_WIDTH = 900;
+const HELPER_PANEL_DEFAULT_WIDTH = 520;
+
+function ShellWithHelperPanel({
+  projectId,
+  isReadOnly: _isReadOnly,
+  children,
+}: {
+  projectId?: string;
+  isReadOnly: boolean;
+  children: React.ReactNode;
+}) {
+  const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
+  const [helperOpen, setHelperOpen] = useState(false);
+  const [helperInitialText, setHelperInitialText] = useState<string | undefined>(undefined);
+  const sidebarWasOpenWhenHelperOpenedRef = useRef(false);
+
+  // User-resizable panel width (persisted across sessions).
+  const [panelWidth, setPanelWidth] = useState<number>(() => {
+    if (typeof window === "undefined") return HELPER_PANEL_DEFAULT_WIDTH;
+    const stored = Number(window.localStorage.getItem(HELPER_PANEL_WIDTH_KEY));
+    if (!Number.isFinite(stored) || stored < HELPER_PANEL_MIN_WIDTH) return HELPER_PANEL_DEFAULT_WIDTH;
+    return Math.min(stored, HELPER_PANEL_MAX_WIDTH);
+  });
+  const [isResizing, setIsResizing] = useState(false);
+
+  // Track lg breakpoint so the inline width only applies on desktop;
+  // on mobile the panel is a full-screen overlay.
+  const [isDesktop, setIsDesktop] = useState<boolean>(() =>
+    typeof window === "undefined" ? true : window.matchMedia("(min-width: 1024px)").matches,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const handler = (e: MediaQueryListEvent) => setIsDesktop(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  // Save width to localStorage on commit (mouseup).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(HELPER_PANEL_WIDTH_KEY, String(panelWidth));
+  }, [panelWidth]);
+
+  // Drag handler: dragging LEFT widens the panel (since it's docked on the right).
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = panelWidth;
+    setIsResizing(true);
+
+    const onMove = (ev: MouseEvent) => {
+      const next = startWidth - (ev.clientX - startX);
+      const clamped = Math.max(HELPER_PANEL_MIN_WIDTH, Math.min(HELPER_PANEL_MAX_WIDTH, next));
+      setPanelWidth(clamped);
+    };
+    const onUp = () => {
+      setIsResizing(false);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
+
+  // Opening the helper collapses the left sidebar.
+  useEffect(() => {
+    if (helperOpen) {
+      sidebarWasOpenWhenHelperOpenedRef.current = sidebarOpen;
+      if (sidebarOpen) setSidebarOpen(false);
+    }
+    // We intentionally only run this when helperOpen flips; sidebarOpen is
+    // captured in the ref.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [helperOpen]);
+
+  // Re-expanding the left sidebar closes the helper.
+  useEffect(() => {
+    if (sidebarOpen && helperOpen) setHelperOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebarOpen]);
+
+  const openHelper = (initialText?: string) => {
+    setHelperInitialText(initialText);
+    setHelperOpen(true);
+  };
+
+  const closeHelper = () => {
+    setHelperOpen(false);
+    setHelperInitialText(undefined);
+  };
+
+  return (
+    <div className="flex h-screen w-full">
+      <AppSidebar projectId={projectId} onOpenAIHelper={openHelper} />
+      <div className="flex-1 flex flex-col overflow-hidden">{children}</div>
+      {helperOpen && projectId && (
+        <aside
+          className="border-l bg-background shrink-0 fixed lg:static inset-0 z-40 lg:z-auto flex flex-row w-full lg:w-auto"
+          style={{
+            // Tailwind handles mobile full-width; on lg+ we apply the pixel width.
+            // CSS variable approach so a parent can override later if needed.
+          }}
+          data-testid="ai-helper-aside"
+        >
+          {/* Drag handle (desktop only). 6px wide hit area with a 1px visual stripe on hover/active. */}
+          <div
+            onMouseDown={startResize}
+            className={`hidden lg:block w-1.5 cursor-col-resize select-none group ${
+              isResizing ? "bg-primary/40" : "hover:bg-primary/20"
+            }`}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize AI Helper panel"
+            data-testid="ai-helper-resize-handle"
+          />
+          <div
+            className="flex flex-col flex-1 min-w-0 lg:flex-none"
+            style={isDesktop ? { width: `${panelWidth}px` } : undefined}
+          >
+            <QAAssistantPanel
+              projectId={projectId}
+              onClose={closeHelper}
+              initialText={helperInitialText}
+              onInitialTextConsumed={() => setHelperInitialText(undefined)}
+            />
+          </div>
+        </aside>
+      )}
+    </div>
   );
 }
