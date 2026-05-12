@@ -79,8 +79,23 @@ export function QAAssistantModal({
   const [streamingText, setStreamingText] = useState("");
   const [streamingChips, setStreamingChips] = useState<Array<{ kind: string; label: string }>>([]);
   const [isSending, setIsSending] = useState(false);
+  const [thinkingElapsedSec, setThinkingElapsedSec] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Tick an elapsed-seconds counter while the AI is working so the user gets
+  // visible progress instead of just a spinner.
+  useEffect(() => {
+    if (!isSending) {
+      setThinkingElapsedSec(0);
+      return;
+    }
+    const startedAt = Date.now();
+    const interval = setInterval(() => {
+      setThinkingElapsedSec(Math.floor((Date.now() - startedAt) / 1000));
+    }, 500);
+    return () => clearInterval(interval);
+  }, [isSending]);
 
   const { data: messages = [] } = useQuery<CoachMessage[]>({
     queryKey: ["/api/projects", projectId, "qa-assistant/messages"],
@@ -223,14 +238,7 @@ export function QAAssistantModal({
                   </div>
                 ))}
                 {isSending && !streamingText && (
-                  <div className="flex gap-3 justify-start">
-                    <div className="shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                      <Bot className="h-4 w-4 text-primary" />
-                    </div>
-                    <div className="bg-muted rounded-lg px-4 py-2">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    </div>
-                  </div>
+                  <ThinkingBubble elapsedSec={thinkingElapsedSec} />
                 )}
               </div>
             )}
@@ -321,6 +329,46 @@ function MessageBubble({ m }: { m: CoachMessage }) {
           <User className="h-4 w-4 text-primary-foreground" />
         </div>
       )}
+    </div>
+  );
+}
+
+function ThinkingBubble({ elapsedSec }: { elapsedSec: number }) {
+  // Progressive labels: short turns get a short message; longer turns get
+  // increasingly specific reassurance so the user knows the bot is still alive.
+  let label = "Thinking";
+  if (elapsedSec >= 3 && elapsedSec < 10) label = "Reading your project context";
+  else if (elapsedSec >= 10 && elapsedSec < 25) label = "Working through your idea";
+  else if (elapsedSec >= 25 && elapsedSec < 60) label = "Still working — this is a complex one";
+  else if (elapsedSec >= 60) label = "Hang tight — large context, deep pass";
+
+  return (
+    <div className="flex gap-3 justify-start" data-testid="ai-thinking-bubble">
+      <div className="shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+        <Bot className="h-4 w-4 text-primary animate-pulse" />
+      </div>
+      <div className="bg-muted rounded-lg px-4 py-3 flex items-center gap-3 min-w-[220px]">
+        <span className="flex items-end gap-1 h-4">
+          <span
+            className="block w-2 h-2 rounded-full bg-primary/70 animate-bounce"
+            style={{ animationDelay: "0ms" }}
+          />
+          <span
+            className="block w-2 h-2 rounded-full bg-primary/70 animate-bounce"
+            style={{ animationDelay: "150ms" }}
+          />
+          <span
+            className="block w-2 h-2 rounded-full bg-primary/70 animate-bounce"
+            style={{ animationDelay: "300ms" }}
+          />
+        </span>
+        <span className="text-sm text-muted-foreground">
+          {label}
+          {elapsedSec >= 3 && (
+            <span className="ml-2 text-xs opacity-60">({elapsedSec}s)</span>
+          )}
+        </span>
+      </div>
     </div>
   );
 }
