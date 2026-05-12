@@ -183,7 +183,7 @@ export function QAAssistantModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[600px] lg:max-w-[1100px] h-[70vh] lg:h-[85vh] flex flex-col gap-0 p-0">
+      <DialogContent className="sm:max-w-150 lg:max-w-275 h-[70vh] lg:h-[85vh] flex flex-col gap-0 p-0">
         <DialogHeader className="px-6 py-4 border-b shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <Bot className="h-5 w-5 text-primary" />
@@ -264,7 +264,7 @@ export function QAAssistantModal({
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder="Ask a question..."
-              className="resize-none h-[44px] overflow-y-auto"
+              className="resize-none h-11 overflow-y-auto"
               disabled={isSending}
               data-testid="input-qa-message"
             />
