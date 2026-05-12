@@ -213,7 +213,7 @@ export function AppSidebar({ projectId, onOpenAIHelper }: AppSidebarProps) {
                       <SidebarMenuButton
                         onClick={() => setIdeaModalOpen(true)}
                         data-testid="button-view-current-idea"
-                        className="group-data-[collapsible=icon]:justify-center bg-primary/10 border border-primary/30 text-primary font-medium hover:bg-primary/20"
+                        className="group-data-[collapsible=icon]:justify-center bg-primary/10 border border-primary/30 text-primary font-medium hover:bg-primary/20 group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:hover:bg-sidebar-accent"
                       >
                         <Lightbulb className="h-4 w-4 text-primary fill-primary/20" />
                         <span className="group-data-[collapsible=icon]:hidden">Your Current Idea</span>
@@ -228,7 +228,7 @@ export function AppSidebar({ projectId, onOpenAIHelper }: AppSidebarProps) {
                       <SidebarMenuButton
                         onClick={() => setCodeModalOpen(true)}
                         data-testid="button-add-custom-code"
-                        className="group-data-[collapsible=icon]:justify-center bg-accent/50 border border-accent text-foreground font-medium hover:bg-accent"
+                        className="group-data-[collapsible=icon]:justify-center bg-accent/50 border border-accent text-foreground font-medium hover:bg-accent group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:hover:bg-sidebar-accent"
                       >
                         <Code className="h-4 w-4" />
                         <span className="group-data-[collapsible=icon]:hidden">Add Custom Code</span>
@@ -243,7 +243,7 @@ export function AppSidebar({ projectId, onOpenAIHelper }: AppSidebarProps) {
                       <SidebarMenuButton
                         onClick={() => onOpenAIHelper?.()}
                         data-testid="button-qa-assistant"
-                        className="group-data-[collapsible=icon]:justify-center bg-accent/50 border border-accent text-foreground font-medium hover:bg-accent"
+                        className="group-data-[collapsible=icon]:justify-center bg-accent/50 border border-accent text-foreground font-medium hover:bg-accent group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:hover:bg-sidebar-accent"
                       >
                         <MessageCircleQuestion className="h-4 w-4" />
                         <span className="group-data-[collapsible=icon]:hidden">AI Helper</span>
@@ -384,7 +384,7 @@ export function AppSidebar({ projectId, onOpenAIHelper }: AppSidebarProps) {
               <Button
                 variant="ghost"
                 size={open ? "sm" : "icon"}
-                className="w-full justify-start"
+                className={open ? "w-full justify-start" : "w-full justify-center"}
                 onClick={() => setLocation("/settings")}
                 data-testid="button-settings"
               >
@@ -397,9 +397,9 @@ export function AppSidebar({ projectId, onOpenAIHelper }: AppSidebarProps) {
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
-                variant="outline"
+                variant={open ? "outline" : "ghost"}
                 size={open ? "sm" : "icon"}
-                className="w-full"
+                className={open ? "w-full" : "w-full justify-center"}
                 onClick={() => logoutMutation.mutate()}
                 disabled={logoutMutation.isPending}
                 data-testid="button-logout"
