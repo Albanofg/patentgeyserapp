@@ -1,7 +1,10 @@
 {
-  "model": "gemini-flash-latest",
-  "fallback": "gpt-4o-mini",
+  "model": "gemini-pro-latest",
+  "fallback": "gpt-4o",
   "temperature": 0.3,
   "topP": 0.9,
-  "maxTokens": 16000
+  "maxTokens": 16000,
+  "historyCap": 20,
+  "streaming": true,
+  "toolsEnabled": true
 }
