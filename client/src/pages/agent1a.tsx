@@ -237,12 +237,12 @@ export default function Agent1a() {
 
   return (
     <div className="h-full flex flex-col bg-background">
-      <div className="border-b p-4 flex-shrink-0">
+      <div className="border-b p-4 shrink-0">
         <div className="max-w-4xl mx-auto space-y-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <h1 className="text-lg sm:text-xl font-bold flex items-center gap-2">
-                <MessageSquare className="h-5 w-5 text-primary flex-shrink-0" />
+                <MessageSquare className="h-5 w-5 text-primary shrink-0" />
                 <span>Round 1: Advocate / Examiner Debate</span>
               </h1>
               <p className="text-xs sm:text-sm text-muted-foreground mt-1">
@@ -255,7 +255,7 @@ export default function Agent1a() {
                 size="sm"
                 onClick={() => setLocation(`/project/${projectId}/agent/1a-audit`)}
                 data-testid="button-view-round2"
-                className="flex-shrink-0"
+                className="shrink-0"
               >
                 <span className="hidden sm:inline">View Round 2 Audit</span>
                 <span className="sm:hidden">Round 2</span>
@@ -372,7 +372,7 @@ export default function Agent1a() {
         </div>
       </div>
 
-      <div className="border-t p-4 bg-background flex-shrink-0">
+      <div className="border-t p-4 bg-background shrink-0">
         <div className="max-w-4xl mx-auto">
           {/* Mobile: Stack buttons vertically */}
           <div className="flex flex-col gap-3 sm:hidden">

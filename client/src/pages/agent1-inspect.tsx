@@ -433,12 +433,12 @@ const handleApplyAiSuggestion = (id: string) => {
 
   return (
     <div className="h-full flex flex-col bg-background">
-      <div className="border-b p-4 flex-shrink-0">
+      <div className="border-b p-4 shrink-0">
         <div className="max-w-4xl mx-auto space-y-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <h1 className="text-lg sm:text-xl font-bold flex items-center gap-2">
-                <ListChecks className="h-5 w-5 text-primary flex-shrink-0" />
+                <ListChecks className="h-5 w-5 text-primary shrink-0" />
                 <span className="truncate sm:whitespace-normal">Inspect & Refine Ideas</span>
               </h1>
               <p className="text-xs sm:text-sm text-muted-foreground mt-1">
@@ -451,7 +451,7 @@ const handleApplyAiSuggestion = (id: string) => {
               onClick={() => setShowAddForm(true)}
               disabled={showAddForm}
               data-testid="button-add-idea"
-              className="flex-shrink-0"
+              className="shrink-0"
             >
               <Plus className="h-4 w-4 sm:mr-1" />
               <span className="hidden sm:inline">Add Idea</span>
@@ -512,7 +512,7 @@ const handleApplyAiSuggestion = (id: string) => {
                   value={newIdeaContent}
                   onChange={(e) => setNewIdeaContent(e.target.value)}
                   placeholder="Describe your idea..."
-                  className="min-h-[100px]"
+                  className="min-h-25"
                   data-testid="input-new-idea"
                 />
                 <div className="flex items-center gap-2 justify-end">
@@ -575,7 +575,7 @@ const handleApplyAiSuggestion = (id: string) => {
                 <CardHeader className="pb-2">
                   <div className="flex items-start justify-between gap-2">
                     <CardTitle className="text-base font-semibold flex items-center gap-2">
-                      <span className="inline-flex items-center justify-center min-w-[1.75rem] h-7 px-2 rounded-md bg-primary/10 text-primary font-bold text-sm">
+                      <span className="inline-flex items-center justify-center min-w-7 h-7 px-2 rounded-md bg-primary/10 text-primary font-bold text-sm">
                         {idx + 1}
                       </span>
                       {idea.autoApproved && idea.status === "approved" ? (
@@ -635,7 +635,7 @@ const handleApplyAiSuggestion = (id: string) => {
                     </div>
                     <div className="p-3 rounded-md bg-red-50 dark:bg-red-950/30 border-l-4 border-red-500">
                       <p className="font-medium text-red-700 dark:text-red-400 mb-1">From Examiner:</p>
-                      <p className="text-foreground text-muted-foreground italic">{idea.fromExaminer}</p>
+                      <p className="text-muted-foreground italic">{idea.fromExaminer}</p>
                     </div>
                   </div>
 
@@ -659,7 +659,7 @@ const handleApplyAiSuggestion = (id: string) => {
                           size="sm"
                           variant="default"
                           onClick={() => handleApprove(idea.id, idea.aiFix!)}
-                          className="flex-shrink-0"
+                          className="shrink-0"
                           data-testid={`button-apply-fix-${idx}`}
                         >
                           <Check className="h-3 w-3 mr-1" />
@@ -693,7 +693,7 @@ const handleApplyAiSuggestion = (id: string) => {
                           size="sm"
                           variant="outline"
                           onClick={() => handleApplyAiSuggestion(idea.id)}
-                          className="flex-shrink-0"
+                          className="shrink-0"
                           data-testid={`button-apply-ai-${idx}`}
                         >
                           Apply
@@ -763,12 +763,12 @@ const handleApplyAiSuggestion = (id: string) => {
         </div>
       </div>
 
-      <div className="border-t p-4 bg-background flex-shrink-0">
+      <div className="border-t p-4 bg-background shrink-0">
         <div className="max-w-4xl mx-auto space-y-3">
           {/* Warning when there are still pending ideas */}
           {!allResolved && ideas.length > 0 && (
             <div className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 p-3 rounded-md">
-              <AlertCircle className="h-4 w-4 flex-shrink-0" />
+              <AlertCircle className="h-4 w-4 shrink-0" />
               <span>Please resolve all pending ideas (approve, edit, or discard each one) before continuing.</span>
             </div>
           )}

@@ -380,9 +380,9 @@ function MessageBubble({ m }: { m: CoachMessage }) {
           <span className="text-xs font-medium">{label}</span>
         </div>
         {isUser ? (
-          <p className="text-sm whitespace-pre-wrap break-words">{m.content}</p>
+          <p className="text-sm whitespace-pre-wrap wrap-break-word">{m.content}</p>
         ) : (
-          <div className="text-sm prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0.5 prose-headings:my-2 break-words">
+          <div className="text-sm prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0.5 prose-headings:my-2 wrap-break-word">
             <ReactMarkdown components={{ pre: CopyablePre }}>{m.content}</ReactMarkdown>
           </div>
         )}
