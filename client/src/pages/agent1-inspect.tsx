@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Project } from "@shared/schema";
+import { usePageSnapshot } from "@/lib/page-snapshot";
 
 interface UnifiedIdea {
   id: string;
@@ -321,6 +322,55 @@ export default function Agent1Inspect() {
     }
     addIdeaMutation.mutate(newIdeaContent.trim());
   };
+
+  usePageSnapshot({
+    pageName: "Inspect & Refine Ideas (Stage 1b)",
+    route: typeof window !== "undefined" ? window.location.pathname : "",
+    description:
+      "User is reviewing extracted ideas from their original disclosure. Each idea has a status (pending/approved/edited/discarded). " +
+      "Pending ideas can be approved as-is, edited, discarded, or sent to the AI modifier for an improved rewrite. " +
+      "Once all ideas are resolved, the user advances to Stage 2.",
+    items: [
+      ...(agent1Data?.data?.ideaSummary
+        ? [{
+            id: "idea_summary",
+            type: "idea_summary",
+            content: agent1Data.data.ideaSummary.slice(0, 1200),
+          }]
+        : []),
+      ...ideas.map((idea, i) => {
+        const isFocused = editingId === idea.id;
+        const content: Record<string, any> = {
+          item: idea.editedContent || idea.item,
+        };
+        if (idea.autoApproved) content.autoApproved = true;
+        if (idea.needsWork) content.needsWork = true;
+        if (idea.improvedIdea) content.improvedIdea = idea.improvedIdea;
+        if (idea.isLoadingAi) content.isLoadingAi = true;
+        // Heavy fields only for the item the user is actively working on.
+        if (isFocused) {
+          if (idea.fromOriginal) content.fromOriginal = idea.fromOriginal;
+          if (idea.fromAdvocate) content.fromAdvocate = idea.fromAdvocate;
+          if (idea.fromExaminer) content.fromExaminer = idea.fromExaminer;
+          if (idea.aiFix) content.aiFix = idea.aiFix;
+          if (idea.improvementsMade) content.improvementsMade = idea.improvementsMade;
+        }
+        return {
+          id: `Concept ${i + 1}`,
+          type: "extracted_idea",
+          status: idea.status,
+          content,
+        };
+      }),
+    ],
+    drafts: {
+      ...(editingId ? { [`edit_${editingId}`]: editContent } : {}),
+      ...(showAddForm && newIdeaContent ? { new_idea: newIdeaContent } : {}),
+    },
+    focused: editingId
+      ? `Concept ${ideas.findIndex((i) => i.id === editingId) + 1}`
+      : undefined,
+  });
 
   if (projectLoading || dataLoading || ideasLoading) {
     return (

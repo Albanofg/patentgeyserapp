@@ -5955,7 +5955,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/projects/:id/qa-assistant", isAuthenticated, async (req, res) => {
     try {
-      const { message, conversationHistory, currentLocation } = req.body;
+      const { message, conversationHistory, currentLocation, pageSnapshot } = req.body;
       if (!message || typeof message !== 'string') {
         return res.status(400).json({ message: "Message is required" });
       }
@@ -6015,6 +6015,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           projectContext,
           currentLocation: currentLocation || 'Unknown',
           sessionId: req.session?.id || '',
+          pageSnapshot: pageSnapshot ?? null,
         })) {
           send(ev.type, ev.data);
           if (ev.type === "done" || (ev.type === "error" && !ev.data?.recoverable)) break;

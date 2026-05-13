@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Send, Bot, User, Loader2, X, Copy, Check, Brain, ChevronDown, ChevronUp } from "lucide-react";
+import { getCurrentPageSnapshot } from "@/lib/page-snapshot";
 
 interface CoachMessage {
   id: string;
@@ -24,7 +25,12 @@ interface QAAssistantPanelProps {
 // SSE consumer for the qa-assistant streaming endpoint.
 async function* streamQAAssistant(
   projectId: string,
-  body: { message: string; conversationHistory: any[]; currentLocation: string },
+  body: {
+    message: string;
+    conversationHistory: any[];
+    currentLocation: string;
+    pageSnapshot: ReturnType<typeof getCurrentPageSnapshot>;
+  },
 ) {
   const res = await fetch(`/api/projects/${projectId}/qa-assistant`, {
     method: "POST",
@@ -146,6 +152,9 @@ export function QAAssistantPanel({
         message,
         conversationHistory: messages.map((m) => ({ role: m.role, content: m.content })),
         currentLocation: currentLocation || "Unknown",
+        // Grab the latest page snapshot at send time so the model always sees
+        // exactly what the user is looking at right now.
+        pageSnapshot: getCurrentPageSnapshot(),
       })) {
         if (ev.type === "token") {
           setStreamingText((prev) => prev + ev.data.delta);

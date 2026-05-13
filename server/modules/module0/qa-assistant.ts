@@ -288,6 +288,22 @@ interface QAPayload {
   };
   currentLocation: string;
   sessionId?: string;
+  /**
+   * Snapshot of what's currently rendered on the page the user is chatting from.
+   * Built client-side via the page-snapshot registry (lib/page-snapshot.ts).
+   * Either a "structured" snapshot from a page that registered itself, or a
+   * "fallback" scrape of `<main>` text for pages that haven't been wired up yet.
+   */
+  pageSnapshot?: {
+    pageName: string;
+    route: string;
+    description?: string;
+    items?: Array<{ id: string; type: string; status?: string; content: any }>;
+    drafts?: Record<string, string>;
+    focused?: string;
+    source?: "structured" | "fallback";
+    capturedAt?: string;
+  } | null;
 }
 
 export type QAEvent =
@@ -340,6 +356,62 @@ function arrayFieldPrefix(field: string): string {
   if (f.includes("nugget")) return "Nugget";
   if (f.includes("concept") || f.includes("idea")) return "Concept";
   return "Item";
+}
+
+/**
+ * Render the per-page snapshot the client captured at send time. The model
+ * uses this to answer "what's on my screen" without asking the user to
+ * paste it in. Structured snapshots get item-by-item formatting with stable
+ * ids; fallback scrapes are rendered as a single labeled blob and flagged
+ * so the model knows reliability is limited.
+ */
+function renderPageSnapshot(snap: NonNullable<QAPayload["pageSnapshot"]>): string {
+  const lines: string[] = [];
+  lines.push(`Page: ${snap.pageName}${snap.route ? ` (${snap.route})` : ""}`);
+  if (snap.source) lines.push(`Source: ${snap.source}`);
+  if (snap.capturedAt) lines.push(`Captured: ${snap.capturedAt}`);
+  if (snap.description) lines.push(`\n${snap.description}`);
+
+  const items = snap.items ?? [];
+  if (items.length > 0) {
+    lines.push(`\n### Items on page (${items.length})`);
+    for (const it of items) {
+      const head = `- [${it.id}] (${it.type}${it.status ? `, ${it.status}` : ""})`;
+      let body: string;
+      if (it.content == null) body = "(empty)";
+      else if (typeof it.content === "string") body = it.content;
+      else {
+        try {
+          body = JSON.stringify(it.content, null, 2);
+        } catch {
+          body = String(it.content);
+        }
+      }
+      // Indent body lines so the bullet list stays readable.
+      const indented = body.split("\n").map((l) => `    ${l}`).join("\n");
+      lines.push(`${head}\n${indented}`);
+    }
+  } else {
+    lines.push(`\n### Items on page\n(none captured)`);
+  }
+
+  const draftEntries = Object.entries(snap.drafts ?? {});
+  if (draftEntries.length > 0) {
+    lines.push(`\n### Unsaved drafts`);
+    for (const [k, v] of draftEntries) {
+      lines.push(`- ${k}: ${v}`);
+    }
+  }
+
+  if (snap.focused) lines.push(`\nFocused item: ${snap.focused}`);
+
+  if (snap.source === "fallback") {
+    lines.push(
+      `\n(Note: this page has not registered a structured snapshot — the body above is a best-effort scrape. Treat ids as approximate and prefer asking the user to clarify when precision matters.)`,
+    );
+  }
+
+  return lines.join("\n");
 }
 
 /**
@@ -589,6 +661,13 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     }`,
   );
   sections.push(`## AGENT MODULE STATE\n${renderProjectContext(pc)}`);
+
+  // Snapshot of what's on the user's screen right now (registered per-page,
+  // or a fallback `<main>` scrape). Always present — there's no scenario where
+  // the user isn't looking at *something*.
+  if (payload.pageSnapshot) {
+    sections.push(`## CURRENT PAGE\n${renderPageSnapshot(payload.pageSnapshot)}`);
+  }
 
   const fullUserMessage = `${sections.join("\n\n")}\n\n## NEW USER MESSAGE\n${payload.message}`;
 
