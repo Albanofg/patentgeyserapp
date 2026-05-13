@@ -4,6 +4,11 @@ import fs from "fs";
 import path from "path";
 
 const gemini = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+// Optional secondary Gemini client backed by a key from a different GCP project
+// so we get a separate quota bucket to fail over to when the primary throws.
+const geminiSecondary = process.env.GEMINI_API_SECOND_KEY
+  ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_SECOND_KEY })
+  : null;
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
 export interface AgentConfig {
@@ -65,13 +70,17 @@ const GEMINI_SAFETY_OFF = [
 const EMPTY_RESPONSE_GUARD =
   "\n\nCRITICAL: You must never return an empty response. If you cannot process an item due to safety or content restrictions, you must output the exact string 'ITEM_FILTERED' instead of returning nothing.";
 
-async function callGemini(opts: AgentCallOptions, model: string): Promise<string> {
+async function callGemini(
+  opts: AgentCallOptions,
+  model: string,
+  client: GoogleGenAI = gemini,
+): Promise<string> {
   const systemInstruction = (opts.systemPrompt || "") + EMPTY_RESPONSE_GUARD;
   const maxOutputTokens = Math.max(opts.config.maxTokens || 0, 2048);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
 
   const response = await withTimeout(
-    gemini.models.generateContent({
+    client.models.generateContent({
       model,
       contents: opts.userMessage,
       config: {
@@ -153,12 +162,17 @@ export async function callAgent(opts: AgentCallOptions): Promise<string> {
     console.error(`[AI] ${model} failed after ${Date.now() - started}ms:`, error.message);
 
     // Retry Gemini once before falling back — most failures are tail-latency
-    // timeouts or transient throttling that resolve on a second attempt.
+    // timeouts or transient throttling that resolve on a second attempt. If a
+    // secondary API key is configured, the retry uses it so we get a fresh
+    // quota bucket instead of hitting the same throttle again.
     if (isGemini(model)) {
       const retryStarted = Date.now();
-      console.log(`[AI] -> retry ${model}`);
+      const useSecondary = geminiSecondary !== null;
+      console.log(`[AI] -> retry ${model}${useSecondary ? " (secondary key)" : ""}`);
       try {
-        const result = await callModel(opts, model);
+        const result = useSecondary
+          ? await callGemini(opts, model, geminiSecondary!)
+          : await callModel(opts, model);
         console.log(`[AI] <- ${model} ok on retry (${Date.now() - retryStarted}ms, ${result.length} chars)`);
         return result;
       } catch (retryError: any) {

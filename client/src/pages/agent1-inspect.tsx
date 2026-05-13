@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -103,10 +103,6 @@ export default function Agent1Inspect() {
             }
           : idea
       ));
-      toast({
-        title: "AI suggestion received",
-        description: "Review the AI's recommendation for improving this idea.",
-      });
     },
     onError: (error: Error, ideaId: string) => {
       setIdeas(prev => prev.map(idea => 
@@ -212,6 +208,50 @@ export default function Agent1Inspect() {
     }
   }, [extractedIdeas?.ideas]);
 
+  // Auto-generate the AI suggestion for every pending, non-auto-approved idea
+  // that doesn't already have one. The per-idea endpoint persists each result,
+  // so reloads/relogs see the saved suggestion and the sweep does not re-fire
+  // (the no-re-fire-on-reload rule).
+  const aiSweepAttempted = useRef<Set<string>>(new Set());
+  const aiSweepRunningRef = useRef(false);
+  useEffect(() => {
+    if (!ideas.length || aiSweepRunningRef.current) return;
+
+    const candidates = ideas.filter(
+      (i) =>
+        i.status === "pending" &&
+        !i.autoApproved &&
+        !i.improvedIdea &&
+        !i.isLoadingAi &&
+        !aiSweepAttempted.current.has(i.id),
+    );
+    if (candidates.length === 0) return;
+
+    aiSweepRunningRef.current = true;
+    // Reserve all candidates up-front so re-renders during the sweep don't
+    // re-enqueue them, and so the UI immediately shows the per-card spinner.
+    for (const c of candidates) aiSweepAttempted.current.add(c.id);
+    setIdeas((prev) =>
+      prev.map((i) =>
+        candidates.find((c) => c.id === i.id) ? { ...i, isLoadingAi: true } : i,
+      ),
+    );
+
+    (async () => {
+      try {
+        for (const c of candidates) {
+          try {
+            await askAiMutation.mutateAsync(c.id);
+          } catch {
+            // mutation's onError already clears the spinner + toasts the user.
+          }
+        }
+      } finally {
+        aiSweepRunningRef.current = false;
+      }
+    })();
+  }, [ideas, askAiMutation]);
+
   const handleApprove = (id: string, approvedContent: string) => {
     setIdeas(prev => prev.map(idea => 
       idea.id === id ? { ...idea, editedContent: approvedContent, status: "approved" as const } : idea
@@ -253,14 +293,7 @@ export default function Agent1Inspect() {
     saveIdeaMutation.mutate({ ideaId: id, updates: { status: "discarded" } });
   };
 
-  const handleAskAi = (id: string) => {
-    setIdeas(prev => prev.map(idea => 
-      idea.id === id ? { ...idea, isLoadingAi: true } : idea
-    ));
-    askAiMutation.mutate(id);
-  };
-
-  const handleApplyAiSuggestion = (id: string) => {
+const handleApplyAiSuggestion = (id: string) => {
     const idea = ideas.find(i => i.id === id);
     if (idea?.improvedIdea) {
       setIdeas(prev => prev.map(i => 
@@ -707,23 +740,13 @@ export default function Agent1Inspect() {
                       >
                         <Pencil className="h-3 w-3" />
                       </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleAskAi(idea.id)}
-                        disabled={idea.isLoadingAi}
-                        data-testid={`button-ask-ai-${idx}`}
-                      >
-                        {idea.isLoadingAi ? (
+                      {idea.isLoadingAi && (
+                        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground px-2">
                           <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : (
-                          <>
-                            <Sparkles className="h-3 w-3 mr-1" />
-                            Ask AI
-                          </>
-                        )}
-                      </Button>
-                      <Button
+                          Generating AI suggestion…
+                        </span>
+                      )}
+<Button
                         size="sm"
                         variant="outline"
                         onClick={() => handleDiscard(idea.id)}

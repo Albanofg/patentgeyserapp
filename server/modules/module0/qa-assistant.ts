@@ -101,6 +101,12 @@ const CONFIG: QAConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
 const SYSTEM_PROMPT = fs.readFileSync(PROMPT_PATH, "utf-8");
 
 const gemini = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+// Secondary key (separate GCP project = separate quota bucket). Used as a
+// failover when the primary throws — keeps the AI Helper alive through
+// rate-limit hiccups without falling back to gpt-4o.
+const geminiSecondary = process.env.GEMINI_API_SECOND_KEY
+  ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_SECOND_KEY })
+  : null;
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
 const GEMINI_SAFETY_OFF = [
@@ -731,21 +737,36 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     // the next request with INVALID_ARGUMENT.
     const turnFunctionCallParts: any[] = [];
 
+    const streamConfig = {
+      model: CONFIG.model,
+      contents,
+      config: {
+        systemInstruction: SYSTEM_PROMPT,
+        temperature: CONFIG.temperature,
+        topP: CONFIG.topP,
+        maxOutputTokens: CONFIG.maxTokens,
+        safetySettings: GEMINI_SAFETY_OFF,
+        ...(CONFIG.toolsEnabled
+          ? { tools: [{ functionDeclarations: TOOL_DECLARATIONS as any }] }
+          : {}),
+      },
+    };
+
     try {
-      const stream = await gemini.models.generateContentStream({
-        model: CONFIG.model,
-        contents,
-        config: {
-          systemInstruction: SYSTEM_PROMPT,
-          temperature: CONFIG.temperature,
-          topP: CONFIG.topP,
-          maxOutputTokens: CONFIG.maxTokens,
-          safetySettings: GEMINI_SAFETY_OFF,
-          ...(CONFIG.toolsEnabled
-            ? { tools: [{ functionDeclarations: TOOL_DECLARATIONS as any }] }
-            : {}),
-        },
-      });
+      let stream;
+      try {
+        stream = await gemini.models.generateContentStream(streamConfig);
+      } catch (primaryErr: any) {
+        // Try the secondary key (separate quota bucket) before giving up on
+        // Gemini entirely. Only swap on stream-open errors — once tokens are
+        // flowing, a mid-stream failure goes straight to the gpt-4o fallback.
+        if (geminiSecondary) {
+          console.warn(`[QA-Assistant] Primary Gemini key failed, trying secondary key:`, primaryErr?.message);
+          stream = await geminiSecondary.models.generateContentStream(streamConfig);
+        } else {
+          throw primaryErr;
+        }
+      }
 
       for await (const chunk of stream) {
         const t = (chunk as any).text;
