@@ -356,6 +356,21 @@ export function QAAssistantPanel({
   );
 }
 
+// Collapse runs of identical tool calls into one chip with a count, so the
+// model invoking recordEntry 11 times shows as "↳ recordEntry × 11" instead
+// of 11 separate chips that dominate the bubble.
+function groupToolCalls(
+  calls: Array<{ name: string }>,
+): Array<{ name: string; count: number }> {
+  const out: Array<{ name: string; count: number }> = [];
+  for (const c of calls) {
+    const last = out[out.length - 1];
+    if (last && last.name === c.name) last.count += 1;
+    else out.push({ name: c.name, count: 1 });
+  }
+  return out;
+}
+
 function MessageBubble({ m }: { m: CoachMessage }) {
   const isUser = m.role === "user";
   const label = isUser ? "You" : "AI Helper";
@@ -388,9 +403,10 @@ function MessageBubble({ m }: { m: CoachMessage }) {
         )}
         {m.toolCalls?.length ? (
           <div className="mt-2 space-y-1">
-            {m.toolCalls.map((c, i) => (
+            {groupToolCalls(m.toolCalls).map((g, i) => (
               <div key={i} className="text-xs opacity-70">
-                ↳ {c.name}
+                ↳ {g.name}
+                {g.count > 1 ? ` × ${g.count}` : ""}
               </div>
             ))}
           </div>

@@ -249,7 +249,7 @@ export default function Dashboard() {
               >
                 <div 
                   className="cursor-pointer flex-1"
-                  onClick={() => setLocation(`/project/${project.id}/agent/${project.currentStage}`)}
+                  onClick={() => setLocation(`/project/${project.id}/agent/${project.currentSubstage || project.currentStage}`)}
                 >
                   <CardHeader>
                     {project.completed === 1 && (
