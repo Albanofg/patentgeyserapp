@@ -309,7 +309,7 @@ export async function runClaims(payload: ClaimsPayload) {
             whiteSpaceContext: contextBlock,
             nugget: perConcept[index] || null,
           });
-          const raw = await callAgent({ systemPrompt, userMessage, config });
+          const raw = await callAgent({ systemPrompt, userMessage, config, usage: { agentCode: "module4/4b-claims" } });
           return parseClaimsOutput(raw, conceptId, conceptText, category, index);
         } catch (err: any) {
           console.error(`>>> [M4-4b CLAIMS] <<< concept "${conceptId}" failed:`, err.message);

@@ -33,6 +33,7 @@ export async function runExtractConcepts(payload: ExtractConceptsPayload) {
       systemPrompt: extractorSystem,
       userMessage: extractorUserMessage,
       config: extractorConfig,
+      usage: { agentCode: "module2/2b-extractor" },
     });
     const extracted = normalizeIdeas(extractorRaw);
 
@@ -56,6 +57,7 @@ export async function runExtractConcepts(payload: ExtractConceptsPayload) {
       systemPrompt: refinerSystem,
       userMessage: refinerUserMessage,
       config: refinerConfig,
+      usage: { agentCode: "module2/2b-refiner" },
     });
     const refined = normalizeIdeas(refinerRaw);
 

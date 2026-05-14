@@ -86,7 +86,7 @@ async function filterItem(item: UnifiedItem, systemPrompt: string, config: any):
     `Respond with ONLY "KEEP" or "REMOVE" (one word only).`;
 
   try {
-    const decision = (await callAgent({ systemPrompt, userMessage, config })).trim().toUpperCase();
+    const decision = (await callAgent({ systemPrompt, userMessage, config, usage: { agentCode: "module1/1d-filter" } })).trim().toUpperCase();
     return decision.startsWith("KEEP");
   } catch (err: any) {
     console.error(`[M1-1d/Filter] Item "${item.label}" failed:`, err.message);
@@ -118,6 +118,7 @@ export async function runListCreator(payload: ListCreatorPayload) {
       systemPrompt: listSystem,
       userMessage: listUserMessage,
       config: listConfig,
+      usage: { agentCode: "module1/1d-list-maker" },
     });
 
     const items = parseUnifiedList(rawList);

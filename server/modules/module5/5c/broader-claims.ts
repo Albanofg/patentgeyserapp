@@ -224,6 +224,7 @@ export async function runBroaderClaims(payload: BroaderClaimsPayload) {
       systemPrompt: readerSystem,
       userMessage: readerPrompt,
       config: readerConfig,
+      usage: { agentCode: "module5/5c-spec-reader" },
     });
 
     // Stage 2: Claim Strategist
@@ -234,6 +235,7 @@ export async function runBroaderClaims(payload: BroaderClaimsPayload) {
       systemPrompt: strategistSystem,
       userMessage: buildStrategistPrompt(prepared, specAnalysis),
       config: strategistConfig,
+      usage: { agentCode: "module5/5c-claim-strategist" },
     });
 
     // Stage 3: Claim Drafter
@@ -244,6 +246,7 @@ export async function runBroaderClaims(payload: BroaderClaimsPayload) {
       systemPrompt: drafterSystem,
       userMessage: buildDrafterPrompt(prepared, blueprint),
       config: drafterConfig,
+      usage: { agentCode: "module5/5c-claim-drafter" },
     });
 
     const parsed = parseClaims(rawClaims);

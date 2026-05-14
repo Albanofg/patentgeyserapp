@@ -35,6 +35,7 @@ export async function runPannuQuestions(payload: PannuQuestionsPayload) {
       systemPrompt,
       userMessage,
       config,
+      usage: { agentCode: "module4/4c-pannu-questions" },
     });
 
     if (!Array.isArray(parsed.questions) || parsed.questions.length === 0) {
@@ -96,6 +97,7 @@ export async function runPannuScorer(payload: PannuScorerPayload) {
       systemPrompt,
       userMessage,
       config,
+      usage: { agentCode: "module4/4c-pannu-scorer" },
     });
 
     if (!VALID_STATUSES.has(parsed.certification_status)) {

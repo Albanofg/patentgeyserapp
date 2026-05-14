@@ -75,7 +75,7 @@ async function reviewFix(
 
   let parsed: ExaminerVerdict;
   try {
-    parsed = await callAgentJSON<ExaminerVerdict>({ systemPrompt, userMessage, config });
+    parsed = await callAgentJSON<ExaminerVerdict>({ systemPrompt, userMessage, config, usage: { agentCode: "module1/1f-examiner-review" } });
   } catch (err: any) {
     console.error(`>>> [M1-1f ADDRESS-CONCERNS] <<< Concern "${concern.id}" review failed:`, err.message);
     parsed = {

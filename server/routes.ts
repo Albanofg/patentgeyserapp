@@ -5,6 +5,7 @@ import crypto from "crypto";
 import { storage } from "./storage";
 import { pool, db } from "./db";
 import { insertProjectSchema, aiUsageLog } from "@shared/schema";
+import { runWithUsageContext } from "./ai/request-context";
 import { and as drizzleAnd, gte as drizzleGte, lte as drizzleLte, eq as drizzleEq, desc as drizzleDesc, sql as drizzleSql } from "drizzle-orm";
 import { TERMS_VERSION } from "@shared/terms";
 import { z } from "zod";
@@ -178,12 +179,48 @@ function getSession() {
   });
 }
 
-// Authentication middleware
+// Authentication middleware. Also seeds the per-request usage-attribution
+// context so any AI call made during this request gets logged with the
+// correct user/project/request identifiers, regardless of how deep the
+// call stack runs. Email is best-effort (cached on the session after the
+// first lookup to keep the hot path cheap).
 const isAuthenticated = (req: Request, res: Response, next: NextFunction) => {
-  if (req.session && (req.session as any).userId) {
-    return next();
+  const sess = req.session as any;
+  if (!sess?.userId) {
+    return res.status(401).json({ message: "Unauthorized" });
   }
-  return res.status(401).json({ message: "Unauthorized" });
+
+  const projectIdParam = (req.params?.id as string | undefined) ?? null;
+  const requestId = (req.headers["x-vercel-id"] as string | undefined) ?? null;
+
+  // Look up email at most once per session, then cache. Skip the lookup
+  // entirely if it's already on the session — most requests will hit
+  // this fast path.
+  const finish = (userEmail: string | null) => {
+    runWithUsageContext(
+      {
+        userId: sess.userId,
+        userEmail,
+        projectId: projectIdParam,
+        requestId,
+      },
+      () => next(),
+    );
+  };
+
+  if (sess.userEmail) {
+    return finish(sess.userEmail);
+  }
+  const kind = sess.userKind === "paid" ? "paid" : "legacy";
+  (kind === "paid"
+    ? storage.getInventorUser(sess.userId)
+    : storage.getUser(sess.userId)
+  )
+    .then((u: any) => {
+      if (u?.email) sess.userEmail = u.email;
+      finish(u?.email ?? null);
+    })
+    .catch(() => finish(null));
 };
 
 // Phase 1 paid-projects: session may carry a userKind discriminator.

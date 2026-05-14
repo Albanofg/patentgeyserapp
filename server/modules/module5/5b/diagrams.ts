@@ -214,6 +214,7 @@ export async function runDiagrams(payload: DiagramsPayload) {
       systemPrompt,
       userMessage,
       config,
+      usage: { agentCode: "module5/5b-planner" },
     });
 
     let diagrams = Array.isArray(plan.diagrams) ? plan.diagrams : [];

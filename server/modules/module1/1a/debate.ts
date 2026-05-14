@@ -59,7 +59,7 @@ async function runAdvocate(idea: string): Promise<string> {
   console.log("[M1-1a/Advocate] Running...");
   const config = loadAgentConfig("module1/1a/advocate.config.json");
   const systemPrompt = loadPrompt("module1/1a/advocate.md", { idea });
-  const result = await callAgent({ systemPrompt, userMessage: idea, config });
+  const result = await callAgent({ systemPrompt, userMessage: idea, config, usage: { agentCode: "module1/1a-debate-advocate" } });
   console.log("[M1-1a/Advocate] Done");
   return result;
 }
@@ -68,7 +68,7 @@ async function runExaminer(idea: string): Promise<string> {
   console.log("[M1-1a/Examiner] Running...");
   const config = loadAgentConfig("module1/1a/examiner.config.json");
   const systemPrompt = loadPrompt("module1/1a/examiner.md", { idea });
-  const result = await callAgent({ systemPrompt, userMessage: idea, config });
+  const result = await callAgent({ systemPrompt, userMessage: idea, config, usage: { agentCode: "module1/1a-debate-examiner" } });
   console.log("[M1-1a/Examiner] Done");
   return result;
 }

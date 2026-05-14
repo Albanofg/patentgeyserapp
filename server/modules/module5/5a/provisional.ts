@@ -94,7 +94,12 @@ function parsePayload(payload: ProvisionalPayload): ParsedInput {
 async function runAgent(agentName: string, userMessage: string): Promise<string> {
   const config = loadAgentConfig(`module5/5a/${agentName}.config.json`);
   const systemPrompt = loadPrompt(`module5/5a/${agentName}.md`);
-  const result = await callAgent({ systemPrompt, userMessage, config });
+  const result = await callAgent({
+    systemPrompt,
+    userMessage,
+    config,
+    usage: { agentCode: `module5/5a-${agentName}` },
+  });
   return (result || "").trim();
 }
 

@@ -31,7 +31,7 @@ export async function runPannuSuggestion(payload: SuggestionPayload) {
       `Question to Answer:\n${payload.question || ""}\n\n` +
       `Please provide a professional, thoughtful response that directly addresses this specific Pannu factor. Your response should be clear, concise, and helpful for patent documentation purposes.`;
 
-    const response = await callAgent({ systemPrompt, userMessage, config });
+    const response = await callAgent({ systemPrompt, userMessage, config, usage: { agentCode: "module4/4d-suggestion" } });
 
     return {
       success: true as const,

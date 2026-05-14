@@ -285,6 +285,7 @@ export async function runWhitespace(payload: WhitespacePayload) {
             userMessage,
             config,
             responseSchema: WHITESPACE_RESPONSE_SCHEMA as unknown as Record<string, any>,
+            usage: { agentCode: "module4/4a-whitespace" },
             // Per-call cap so a single hung Gemini stream cannot burn the whole
             // 300s function budget (see prior orphaned-timeout incident).
             timeoutMs: 90_000,

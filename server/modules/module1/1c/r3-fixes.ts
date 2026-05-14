@@ -37,7 +37,7 @@ export async function runR3Fixes(payload: R3FixesPayload) {
         `Generate a SHORT fix (max 2-3 sentences). Address the examiner's concerns while maintaining claim strength.`;
 
       try {
-        const ai_fix = (await callAgent({ systemPrompt, userMessage, config })).trim();
+        const ai_fix = (await callAgent({ systemPrompt, userMessage, config, usage: { agentCode: "module1/1c-r3-fixes" } })).trim();
         return { ...item, ai_fix };
       } catch (err: any) {
         console.error(`>>> [M1-1c R3-FIXES] <<< Item ${idx} failed:`, err.message);

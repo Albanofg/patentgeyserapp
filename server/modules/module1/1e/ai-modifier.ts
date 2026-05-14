@@ -30,7 +30,7 @@ export async function runAiModifier(payload: AiModifierPayload) {
       `• **Format:** Single dense paragraph. Patent English.\n\n` +
       `Output strictly the rewritten text, followed by a line "Improvements Made:" and a short bulleted list of the specific changes applied.`;
 
-    const raw = await callAgent({ systemPrompt, userMessage, config });
+    const raw = await callAgent({ systemPrompt, userMessage, config, usage: { agentCode: "module1/1e-ai-modifier" } });
 
     // Parse: split on "Improvements Made:" — improvedIdea is above, improvementsMade is below.
     const parts = raw.split(/Improvements Made:/i);

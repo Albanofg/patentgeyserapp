@@ -61,7 +61,7 @@ Perform a "Value Preservation Audit" of the New Consolidated Idea against My Pre
 Adhere strictly to the "Discard Rule": If a topic is in the User Discards list, mark it DISMISSED.
 Return the audit log in strict JSON.`;
 
-  const result = await callAgent({ systemPrompt, userMessage, config, jsonMode: true });
+  const result = await callAgent({ systemPrompt, userMessage, config, jsonMode: true, usage: { agentCode: "module1/1b-reanalyze-advocate" } });
   console.log("[M1-1b/Advocate] Done");
   return result;
 }
@@ -82,7 +82,7 @@ Perform a "Rigorous Technical Audit" of the New Consolidated Idea against My Pre
 Adhere strictly to the "Discard Rule": If a topic is in the User Discards list, mark it DISMISSED.
 Return the audit log in strict JSON.`;
 
-  const result = await callAgent({ systemPrompt, userMessage, config, jsonMode: true });
+  const result = await callAgent({ systemPrompt, userMessage, config, jsonMode: true, usage: { agentCode: "module1/1b-reanalyze-examiner" } });
   console.log("[M1-1b/Examiner] Done");
   return result;
 }

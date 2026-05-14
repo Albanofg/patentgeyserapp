@@ -35,7 +35,7 @@ export async function runDraft(payload: DraftPayload) {
       `REFINEMENT FEEDBACK:\n${stringify(payload.refinementFeedback)}\n\n` +
       `Your task is to evaluate all five sections.\nUse them exactly as provided.\nDo not infer priority.\nThe system message contains the authority rules and conflict resolution logic.`;
 
-    const provisionalDraft = await callAgent({ systemPrompt, userMessage, config });
+    const provisionalDraft = await callAgent({ systemPrompt, userMessage, config, usage: { agentCode: "module2/2a-draft" } });
 
     console.log(`>>> [M2 DRAFT] <<< Done — ${provisionalDraft.length} chars`);
 

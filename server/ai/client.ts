@@ -8,6 +8,7 @@ import {
   extractOpenAIUsage,
   type UsageStatus,
 } from "./usage-log";
+import { getUsageContext } from "./request-context";
 
 const gemini = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
 // Optional secondary Gemini client backed by a key from a different GCP project
@@ -215,12 +216,17 @@ function logUsage(
     errorMessage?: string;
   },
 ): void {
+  // Pull user/project/requestId from the AsyncLocalStorage request context
+  // when the call site hasn't passed them explicitly. Lets module agents
+  // record attribution without threading user identity through every
+  // function signature — only the `agentCode` needs to come from the caller.
+  const ctx = getUsageContext();
   void recordUsage({
-    userId: opts.usage?.userId ?? null,
-    userEmail: opts.usage?.userEmail ?? null,
-    projectId: opts.usage?.projectId ?? null,
+    userId: opts.usage?.userId ?? ctx?.userId ?? null,
+    userEmail: opts.usage?.userEmail ?? ctx?.userEmail ?? null,
+    projectId: opts.usage?.projectId ?? ctx?.projectId ?? null,
     agentCode: opts.usage?.agentCode ?? "unknown",
-    requestId: opts.usage?.requestId ?? null,
+    requestId: opts.usage?.requestId ?? ctx?.requestId ?? null,
     model: args.model,
     inputTokens: args.result?.inputTokens ?? null,
     outputTokens: args.result?.outputTokens ?? null,
