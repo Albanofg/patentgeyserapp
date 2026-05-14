@@ -22,8 +22,8 @@ export async function runPannuQuestions(payload: PannuQuestionsPayload) {
   console.log(">>> [M4-4c PANNU/QUESTIONS] <<< generating questions for", payload.concept_id);
 
   try {
-    const config = loadAgentConfig("module4/4c/questions.config.json");
-    const systemPrompt = loadPrompt("module4/4c/questions.md");
+    const config = loadAgentConfig("module4/4c-pannu/questions.config.json");
+    const systemPrompt = loadPrompt("module4/4c-pannu/questions.md");
 
     const userMessage =
       `Claim Text: ${payload.claim_text}\n\n` +
@@ -84,8 +84,8 @@ export async function runPannuScorer(payload: PannuScorerPayload) {
   console.log(">>> [M4-4c PANNU/SCORER] <<< scoring answers for", payload.concept_id);
 
   try {
-    const config = loadAgentConfig("module4/4c/scorer.config.json");
-    const systemPrompt = loadPrompt("module4/4c/scorer.md");
+    const config = loadAgentConfig("module4/4c-pannu/scorer.config.json");
+    const systemPrompt = loadPrompt("module4/4c-pannu/scorer.md");
 
     const userMessage =
       `Claim Text: ${payload.claim_text}\n\n` +

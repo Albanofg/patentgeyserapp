@@ -23,8 +23,8 @@ export async function runExtractConcepts(payload: ExtractConceptsPayload) {
 
   try {
     // Stage 1: extract atomic technical concepts
-    const extractorConfig = loadAgentConfig("module2/2b/extractor.config.json");
-    const extractorSystem = loadPrompt("module2/2b/extractor.md");
+    const extractorConfig = loadAgentConfig("module2/2b-extract-concepts/extractor.config.json");
+    const extractorSystem = loadPrompt("module2/2b-extract-concepts/extractor.md");
     const extractorUserMessage =
       `Here's the detailed concept:\n${payload.detailedConcept}\n\n` +
       `Here's some code the user gives you so you can understand how it works (if it's empty, it means the user did not add any code):\n${payload.codeFromTheUser || " "}`;
@@ -47,8 +47,8 @@ export async function runExtractConcepts(payload: ExtractConceptsPayload) {
     }
 
     // Stage 2: refine to the strongest big ideas
-    const refinerConfig = loadAgentConfig("module2/2b/refiner.config.json");
-    const refinerSystem = loadPrompt("module2/2b/refiner.md");
+    const refinerConfig = loadAgentConfig("module2/2b-extract-concepts/refiner.config.json");
+    const refinerSystem = loadPrompt("module2/2b-extract-concepts/refiner.md");
     const refinerUserMessage =
       `PROPOSED CONCEPTS (JSON):\n${JSON.stringify({ ideas: extracted })}\n\n` +
       `ORIGINAL DETAILED CONCEPT (for context only — do not add new ideas):\n${payload.detailedConcept}`;

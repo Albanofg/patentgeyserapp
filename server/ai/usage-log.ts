@@ -31,7 +31,7 @@ const AGENT_LABELS: Record<string, string> = {
   "module2/2b-extractor": "Concept Extractor (Stage 2b)",
   "module2/2b-refiner": "Concept Refiner (Stage 2b)",
   "module4/4a-whitespace": "Whitespace Analysis (Stage 4a)",
-  "module4/4b-claims": "Key Concept Generation (Stage 4b)",
+  "module4/4b-key-concepts": "Key Concept Generation (Stage 4b)",
   "module4/4c-pannu-questions": "Pannu Questions (Stage 4c)",
   "module4/4c-pannu-scorer": "Pannu Scorer (Stage 4c)",
   "module4/4d-suggestion": "Pannu Suggestion (Stage 4d)",
@@ -47,8 +47,8 @@ const AGENT_LABELS: Record<string, string> = {
   "module5/5a-summary": "Summary (Stage 5a)",
   "module5/5b-planner": "Diagram Planner (Stage 5b)",
   "module5/5c-spec-reader": "Spec Reader (Stage 5c)",
-  "module5/5c-claim-strategist": "Key Concept Strategist (Stage 5c)",
-  "module5/5c-claim-drafter": "Key Concept Drafter (Stage 5c)",
+  "module5/5c-strategist": "Key Concept Strategist (Stage 5c)",
+  "module5/5c-drafter": "Key Concept Drafter (Stage 5c)",
 };
 
 /** Map a stable code to a human-readable label. Unknown codes pass through. */

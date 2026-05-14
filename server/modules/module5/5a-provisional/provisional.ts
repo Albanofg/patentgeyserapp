@@ -92,8 +92,8 @@ function parsePayload(payload: ProvisionalPayload): ParsedInput {
 
 // --- Agent wrapper: loads config/prompt from disk and calls the model ---
 async function runAgent(agentName: string, userMessage: string): Promise<string> {
-  const config = loadAgentConfig(`module5/5a/${agentName}.config.json`);
-  const systemPrompt = loadPrompt(`module5/5a/${agentName}.md`);
+  const config = loadAgentConfig(`module5/5a-provisional/${agentName}.config.json`);
+  const systemPrompt = loadPrompt(`module5/5a-provisional/${agentName}.md`);
   const result = await callAgent({
     systemPrompt,
     userMessage,

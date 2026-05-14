@@ -23,20 +23,20 @@ import {
   patchLogEntry,
   patchOpenQuestion,
 } from "./modules/module0/qa-assistant";
-import { runDebate } from "./modules/module1/1a/debate";
-import { runReanalyze } from "./modules/module1/1b/reanalyze";
-import { runR3Fixes } from "./modules/module1/1c/r3-fixes";
-import { runListCreator } from "./modules/module1/1d/list-creator";
-import { runAiModifier } from "./modules/module1/1e/ai-modifier";
-import { runDraft } from "./modules/module2/2a/draft";
-import { runExtractConcepts } from "./modules/module2/2b/extract-concepts";
-import { runWhitespace } from "./modules/module4/4a/whitespace";
-import { runClaims } from "./modules/module4/4b/claims";
-import { runPannuQuestions, runPannuScorer } from "./modules/module4/4c/pannu";
-import { runPannuSuggestion } from "./modules/module4/4d/suggestion";
-import { runDiagrams } from "./modules/module5/5b/diagrams";
-import { runBroaderClaims } from "./modules/module5/5c/broader-claims";
-import { runProvisional } from "./modules/module5/5a/provisional";
+import { runDebate } from "./modules/module1/1a-debate/debate";
+import { runReanalyze } from "./modules/module1/1b-reanalyze/reanalyze";
+import { runR3Fixes } from "./modules/module1/1c-mechanical-fixes/r3-fixes";
+import { runListCreator } from "./modules/module1/1d-list-creator/list-creator";
+import { runAiModifier } from "./modules/module1/1e-ai-modifier/ai-modifier";
+import { runDraft } from "./modules/module2/2a-draft/draft";
+import { runExtractConcepts } from "./modules/module2/2b-extract-concepts/extract-concepts";
+import { runWhitespace } from "./modules/module4/4a-whitespace/whitespace";
+import { runClaims } from "./modules/module4/4b-key-concepts/claims";
+import { runPannuQuestions, runPannuScorer } from "./modules/module4/4c-pannu/pannu";
+import { runPannuSuggestion } from "./modules/module4/4d-suggestion/suggestion";
+import { runDiagrams } from "./modules/module5/5b-diagrams/diagrams";
+import { runBroaderClaims } from "./modules/module5/5c-broader-key-concepts/broader-claims";
+import { runProvisional } from "./modules/module5/5a-provisional/provisional";
 
 const SALT_ROUNDS = 10;
 

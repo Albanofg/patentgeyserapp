@@ -225,21 +225,21 @@ export default function Agent4() {
                       <>
                         <div className="flex items-center gap-2">
                           <Shield className="h-4 w-4 text-green-500" />
-                          <span className="text-sm">{summary.riskDistribution.green || 0} Green</span>
+                          <span className="text-sm">{summary.riskDistribution.green || 0} Green Match</span>
                         </div>
                         <div className="flex items-center gap-2">
                           <AlertTriangle className="h-4 w-4 text-yellow-500" />
-                          <span className="text-sm">{summary.riskDistribution.yellow || 0} Yellow</span>
+                          <span className="text-sm">{summary.riskDistribution.yellow || 0} Yellow Match</span>
                         </div>
                         <div className="flex items-center gap-2">
                           <AlertTriangle className="h-4 w-4 text-red-500" />
-                          <span className="text-sm">{summary.riskDistribution.red || 0} Red</span>
+                          <span className="text-sm">{summary.riskDistribution.red || 0} Red Match</span>
                         </div>
                       </>
                     )}
                     {summary.totalHighThreats > 0 && (
                       <div className="flex items-center gap-2 ml-auto">
-                        <Badge variant="destructive">{summary.totalHighThreats} High Threat{summary.totalHighThreats !== 1 ? 's' : ''}</Badge>
+                        <Badge variant="destructive">{summary.totalHighThreats} Direct Match{summary.totalHighThreats !== 1 ? 'es' : ''}</Badge>
                       </div>
                     )}
                   </div>
@@ -293,7 +293,7 @@ export default function Agent4() {
                             {concept.totalPatentsAnalyzed} patents analyzed
                             {anyThreats && (
                               <span className="ml-2">
-                                ({threats.high || 0} high, {threats.medium || 0} medium, {threats.low || 0} low threats)
+                                ({threats.high || 0} direct, {threats.medium || 0} adjacent, {threats.low || 0} unrelated)
                               </span>
                             )}
                           </CardDescription>
@@ -305,7 +305,7 @@ export default function Agent4() {
                             data-testid={`risk-badge-${index}`}
                           >
                             {getRiskIcon(concept.overallRiskLevel)}
-                            {concept.overallRiskLevel} Risk
+                            {concept.overallRiskLevel} Match
                           </Badge>
                         )}
                       </div>
@@ -421,10 +421,10 @@ export default function Agent4() {
                         if (!ws && diffs.length === 0 && !guidance) return null;
                         return (
                           <div className="mt-4 space-y-3">
-                            <h4 className="font-semibold text-sm text-primary">Strategic Guidance</h4>
+                            <h4 className="font-semibold text-sm text-primary">Strategic Synthesis</h4>
                             {ws && (
                               <div>
-                                <h5 className="text-xs font-medium text-muted-foreground mb-1">White Space Strategy</h5>
+                                <h5 className="text-xs font-medium text-muted-foreground mb-1">Open Landscape Analysis</h5>
                                 <div className="bg-primary/5 border border-primary/20 p-3 rounded-md text-sm">
                                   {ws}
                                 </div>
@@ -432,7 +432,7 @@ export default function Agent4() {
                             )}
                             {diffs.length > 0 && (
                               <div>
-                                <h5 className="text-xs font-medium text-muted-foreground mb-1">Primary Differentiators</h5>
+                                <h5 className="text-xs font-medium text-muted-foreground mb-1">Primary Distinguishing Features</h5>
                                 <ul className="list-disc list-inside text-sm space-y-1">
                                   {diffs.map((diff, dIdx) => (
                                     <li key={dIdx}>{diff}</li>
@@ -442,7 +442,7 @@ export default function Agent4() {
                             )}
                             {guidance && (
                               <div>
-                                <h5 className="text-xs font-medium text-muted-foreground mb-1">Drafting Notes</h5>
+                                <h5 className="text-xs font-medium text-muted-foreground mb-1">Key Concept Development Guidance</h5>
                                 <p className="text-sm text-muted-foreground">{guidance}</p>
                               </div>
                             )}

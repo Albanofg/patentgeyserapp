@@ -39,10 +39,21 @@ interface NewPatentAnalysis {
   inventorClarificationQuestions: string[];
 }
 
+interface OverallMatchLevel {
+  level: "Green Match" | "Yellow Match" | "Red Match";
+  directMatches: number;
+  adjacentMatches: number;
+  unrelatedReferences: number;
+}
+
 interface AnalyzerJson {
   totalPatentsAnalyzed?: number;
   patentAnalyses?: NewPatentAnalysis[];
   crossPatentClarificationQuestions?: string[];
+  overallMatchLevel?: OverallMatchLevel;
+  consolidatedOpenLandscapeAnalysis?: string;
+  primaryDistinguishingFeatures?: string[];
+  keyConceptDevelopmentGuidance?: string;
 }
 
 // Backwards-compatible shape produced by `runWhitespace` for downstream
@@ -98,11 +109,28 @@ const WHITESPACE_RESPONSE_SCHEMA = {
       type: "array",
       items: { type: "string" },
     },
+    overallMatchLevel: {
+      type: "object",
+      properties: {
+        level: { type: "string", enum: ["Green Match", "Yellow Match", "Red Match"] },
+        directMatches: { type: "integer" },
+        adjacentMatches: { type: "integer" },
+        unrelatedReferences: { type: "integer" },
+      },
+      required: ["level", "directMatches", "adjacentMatches", "unrelatedReferences"],
+    },
+    consolidatedOpenLandscapeAnalysis: { type: "string" },
+    primaryDistinguishingFeatures: { type: "array", items: { type: "string" } },
+    keyConceptDevelopmentGuidance: { type: "string" },
   },
   required: [
     "totalPatentsAnalyzed",
     "patentAnalyses",
     "crossPatentClarificationQuestions",
+    "overallMatchLevel",
+    "consolidatedOpenLandscapeAnalysis",
+    "primaryDistinguishingFeatures",
+    "keyConceptDevelopmentGuidance",
   ],
 } as const;
 
@@ -252,8 +280,8 @@ export async function runWhitespace(payload: WhitespacePayload) {
       return { success: false as const, error: "Missing priorArtResults." };
     }
 
-    const config = loadAgentConfig("module4/4a/whitespace.config.json");
-    const systemPrompt = loadPrompt("module4/4a/whitespace.md");
+    const config = loadAgentConfig("module4/4a-whitespace/whitespace.config.json");
+    const systemPrompt = loadPrompt("module4/4a-whitespace/whitespace.md");
 
     const nuggetInputs = payload.selectedIdeas.map((idea, index) => {
       const matched = matchPriorArt(idea, payload.priorArtResults, index);
@@ -330,35 +358,59 @@ export async function runWhitespace(payload: WhitespacePayload) {
         inventorClarificationQuestions: np.inventorClarificationQuestions || [],
       }));
 
-      // The new prompt is fact-only — it doesn't produce a strategy, list
-      // differentiators, or write claim-drafting guidance. We pass cross-
-      // patent questions through to the strategy slot for the claims agent
-      // to consume, but leave the other two slots empty so the UI doesn't
-      // render placeholder sections.
+      // Map the prompt's new strategic-synthesis fields into the legacy
+      // slots downstream consumers (UI + claims agent) read. The new
+      // vocabulary lives in the same field names so the UI keeps working;
+      // headings on the page get renamed to match the prompt's discipline
+      // ("Open Landscape Analysis", "Primary Distinguishing Features", etc.).
       const crossQuestions = p.crossPatentClarificationQuestions || [];
-      const whiteSpaceStrategy = crossQuestions.length
-        ? crossQuestions.join(" ")
-        : parseError
-          ? `Analysis unavailable for this concept: ${parseError}`
-          : "";
+
+      // Match level "Green Match" / "Yellow Match" / "Red Match" — strip
+      // the trailing word for the legacy badge logic which checks for
+      // bare Green/Yellow/Red. Default to "Unknown" if absent or parsed bad.
+      const matchLevelRaw = p.overallMatchLevel?.level || "";
+      const overallRiskLevel = parseError
+        ? "Error - Parse Failed"
+        : matchLevelRaw
+            ? matchLevelRaw.replace(/\s*Match$/i, "").trim() || "Unknown"
+            : "Unknown";
+
+      const matchCounts = {
+        direct: p.overallMatchLevel?.directMatches ?? 0,
+        adjacent: p.overallMatchLevel?.adjacentMatches ?? 0,
+        unrelated: p.overallMatchLevel?.unrelatedReferences ?? 0,
+      };
 
       return {
         conceptNumber: nugget.index + 1,
         conceptId: nugget.nuggetId,
         conceptTitle: nugget.nuggetTitle,
         conceptDescription: nugget.nuggetDescription,
-        overallRiskLevel: parseError ? "Error - Parse Failed" : "Unknown",
+        overallRiskLevel,
         totalPatentsAnalyzed: p.totalPatentsAnalyzed ?? newPatents.length,
         priorArtInputCount: nugget.priorArtCount,
-        threatCounts: { high: 0, medium: 0, low: 0 },
+        // Surface the new direct/adjacent/unrelated counts under the
+        // existing keys so the UI summary chips keep rendering. UI labels
+        // are renamed to "Direct / Adjacent / Unrelated" downstream.
+        threatCounts: {
+          high: matchCounts.direct,
+          medium: matchCounts.adjacent,
+          low: matchCounts.unrelated,
+        },
+        matchCounts,
         patentAnalyses: bridgedPatentAnalyses,
         crossPatentClarificationQuestions: crossQuestions,
         strategy: {
-          whiteSpaceStrategy,
-          primaryDifferentiators: [],
-          claimDraftingGuidance: parseError
+          // Legacy field name kept; new content is the open-landscape paragraph.
+          whiteSpaceStrategy: p.consolidatedOpenLandscapeAnalysis || (parseError
+            ? `Analysis unavailable for this concept: ${parseError}`
+            : ""),
+          // Legacy field name kept; new content is the distinguishing-features list.
+          primaryDifferentiators: p.primaryDistinguishingFeatures || [],
+          // Legacy field name kept; new content is the development-guidance paragraph.
+          claimDraftingGuidance: p.keyConceptDevelopmentGuidance || (parseError
             ? "Manual review required — model output could not be parsed for this concept. Re-run the stage to retry."
-            : "",
+            : ""),
         },
       };
     });

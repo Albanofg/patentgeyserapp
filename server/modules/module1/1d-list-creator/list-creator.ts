@@ -99,8 +99,8 @@ export async function runListCreator(payload: ListCreatorPayload) {
   console.log(">>> [M1-1d LIST-CREATOR] <<< List Creator — generating unified items");
 
   try {
-    const listConfig = loadAgentConfig("module1/1d/list-maker.config.json");
-    const listSystem = loadPrompt("module1/1d/list-maker.md");
+    const listConfig = loadAgentConfig("module1/1d-list-creator/list-maker.config.json");
+    const listSystem = loadPrompt("module1/1d-list-creator/list-maker.md");
     const listUserMessage =
       `Here are the three texts you must analyze:\n\n` +
       `ORIGINAL:\n${payload.original || ""}\n\n` +
@@ -131,8 +131,8 @@ export async function runListCreator(payload: ListCreatorPayload) {
       };
     }
 
-    const filterConfig = loadAgentConfig("module1/1d/filter.config.json");
-    const filterSystem = loadPrompt("module1/1d/filter.md");
+    const filterConfig = loadAgentConfig("module1/1d-list-creator/filter.config.json");
+    const filterSystem = loadPrompt("module1/1d-list-creator/filter.md");
 
     const decisions = await Promise.all(items.map((item) => filterItem(item, filterSystem, filterConfig)));
 

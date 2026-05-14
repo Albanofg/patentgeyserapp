@@ -19,8 +19,8 @@ export async function runPannuSuggestion(payload: SuggestionPayload) {
   console.log(">>> [M4-4d PANNU/SUGGESTION] <<< factor:", payload.factor);
 
   try {
-    const config = loadAgentConfig("module4/4d/suggestion.config.json");
-    const systemPrompt = loadPrompt("module4/4d/suggestion.md");
+    const config = loadAgentConfig("module4/4d-suggestion/suggestion.config.json");
+    const systemPrompt = loadPrompt("module4/4d-suggestion/suggestion.md");
 
     const contextDescription = FACTOR_CONTEXT[payload.factor] || "General Pannu Test Factor";
 

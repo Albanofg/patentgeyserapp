@@ -217,8 +217,8 @@ export async function runBroaderClaims(payload: BroaderClaimsPayload) {
 
     // Stage 1: Spec Reader
     console.log(">>> [M5-5c BROADER-CLAIMS] <<< stage 1/3 spec-reader");
-    const readerConfig = loadAgentConfig("module5/5c/spec-reader.config.json");
-    const readerSystem = loadPrompt("module5/5c/spec-reader.md");
+    const readerConfig = loadAgentConfig("module5/5c-broader-key-concepts/spec-reader.config.json");
+    const readerSystem = loadPrompt("module5/5c-broader-key-concepts/spec-reader.md");
     const readerPrompt = buildReaderPrompt(prepared);
     const specAnalysis = await callAgent({
       systemPrompt: readerSystem,
@@ -229,24 +229,24 @@ export async function runBroaderClaims(payload: BroaderClaimsPayload) {
 
     // Stage 2: Claim Strategist
     console.log(">>> [M5-5c BROADER-CLAIMS] <<< stage 2/3 claim-strategist");
-    const strategistConfig = loadAgentConfig("module5/5c/claim-strategist.config.json");
-    const strategistSystem = loadPrompt("module5/5c/claim-strategist.md");
+    const strategistConfig = loadAgentConfig("module5/5c-broader-key-concepts/claim-strategist.config.json");
+    const strategistSystem = loadPrompt("module5/5c-broader-key-concepts/claim-strategist.md");
     const blueprint = await callAgent({
       systemPrompt: strategistSystem,
       userMessage: buildStrategistPrompt(prepared, specAnalysis),
       config: strategistConfig,
-      usage: { agentCode: "module5/5c-claim-strategist" },
+      usage: { agentCode: "module5/5c-strategist" },
     });
 
     // Stage 3: Claim Drafter
     console.log(">>> [M5-5c BROADER-CLAIMS] <<< stage 3/3 claim-drafter");
-    const drafterConfig = loadAgentConfig("module5/5c/claim-drafter.config.json");
-    const drafterSystem = loadPrompt("module5/5c/claim-drafter.md");
+    const drafterConfig = loadAgentConfig("module5/5c-broader-key-concepts/claim-drafter.config.json");
+    const drafterSystem = loadPrompt("module5/5c-broader-key-concepts/claim-drafter.md");
     const rawClaims = await callAgent({
       systemPrompt: drafterSystem,
       userMessage: buildDrafterPrompt(prepared, blueprint),
       config: drafterConfig,
-      usage: { agentCode: "module5/5c-claim-drafter" },
+      usage: { agentCode: "module5/5c-drafter" },
     });
 
     const parsed = parseClaims(rawClaims);

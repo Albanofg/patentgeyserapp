@@ -24,8 +24,8 @@ export async function runR3Fixes(payload: R3FixesPayload) {
     return { success: true, data: [] as R3FixResult[] };
   }
 
-  const config = loadAgentConfig("module1/1c/r3-fixes.config.json");
-  const systemPrompt = loadPrompt("module1/1c/r3-fixes.md");
+  const config = loadAgentConfig("module1/1c-mechanical-fixes/r3-fixes.config.json");
+  const systemPrompt = loadPrompt("module1/1c-mechanical-fixes/r3-fixes.md");
 
   const results = await Promise.all(
     needsWorkItems.map(async (item, idx): Promise<R3FixResult> => {

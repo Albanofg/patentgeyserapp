@@ -24,8 +24,8 @@ export async function runDraft(payload: DraftPayload) {
   console.log(">>> [M2 DRAFT] <<< Generating provisional draft");
 
   try {
-    const config = loadAgentConfig("module2/2a/draft.config.json");
-    const systemPrompt = loadPrompt("module2/2a/draft.md");
+    const config = loadAgentConfig("module2/2a-draft/draft.config.json");
+    const systemPrompt = loadPrompt("module2/2a-draft/draft.md");
 
     const userMessage =
       `IDEA SUMMARY:\n${stringify(payload.ideaSummary)}\n\n` +

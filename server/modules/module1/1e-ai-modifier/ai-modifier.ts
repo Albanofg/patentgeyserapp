@@ -14,8 +14,8 @@ export async function runAiModifier(payload: AiModifierPayload) {
   console.log(`>>> [M1-1e AI-MODIFIER] <<< AI Idea Modifier — refining item: "${payload.item?.substring(0, 60)}..."`);
 
   try {
-    const config = loadAgentConfig("module1/1e/ai-modifier.config.json");
-    const systemPrompt = loadPrompt("module1/1e/ai-modifier.md");
+    const config = loadAgentConfig("module1/1e-ai-modifier/ai-modifier.config.json");
+    const systemPrompt = loadPrompt("module1/1e-ai-modifier/ai-modifier.md");
 
     const userMessage =
       `Here is the MAIN IDEA (Context):\n${payload.mainIdea || ""}\n\n` +

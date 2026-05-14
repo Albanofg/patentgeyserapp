@@ -141,8 +141,8 @@ export async function runAddressConcerns(payload: AddressConcernsPayload) {
     })
     .filter((x): x is { concern: Concern; response: ConcernResponse } => x !== null);
 
-  const config = loadAgentConfig("module1/1f/examiner-review.config.json");
-  const systemPrompt = loadPrompt("module1/1f/examiner-review.md");
+  const config = loadAgentConfig("module1/1f-address-concerns/examiner-review.config.json");
+  const systemPrompt = loadPrompt("module1/1f-address-concerns/examiner-review.md");
 
   const verdicts = await Promise.all(
     items.map(({ concern, response }) => {

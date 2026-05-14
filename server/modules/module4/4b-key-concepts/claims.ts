@@ -288,8 +288,8 @@ export async function runClaims(payload: ClaimsPayload) {
       return { success: false as const, error: "No selected ideas provided." };
     }
 
-    const config = loadAgentConfig("module4/4b/claims.config.json");
-    const systemPrompt = loadPrompt("module4/4b/claims.md");
+    const config = loadAgentConfig("module4/4b-key-concepts/claims.config.json");
+    const systemPrompt = loadPrompt("module4/4b-key-concepts/claims.md");
 
     const { contextBlock, perConcept } = normalizeWhiteSpace(payload.whiteSpaceAnalysis || null);
     const category = payload.category || "";
@@ -309,7 +309,7 @@ export async function runClaims(payload: ClaimsPayload) {
             whiteSpaceContext: contextBlock,
             nugget: perConcept[index] || null,
           });
-          const raw = await callAgent({ systemPrompt, userMessage, config, usage: { agentCode: "module4/4b-claims" } });
+          const raw = await callAgent({ systemPrompt, userMessage, config, usage: { agentCode: "module4/4b-key-concepts" } });
           return parseClaimsOutput(raw, conceptId, conceptText, category, index);
         } catch (err: any) {
           console.error(`>>> [M4-4b CLAIMS] <<< concept "${conceptId}" failed:`, err.message);

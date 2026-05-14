@@ -47,8 +47,8 @@ export async function runReanalyze(payload: ReanalyzePayload) {
 
 async function runAdvocateAudit(payload: ReanalyzePayload): Promise<string> {
   console.log("[M1-1b/Advocate] Running audit...");
-  const config = loadAgentConfig("module1/1b/advocate.config.json");
-  const systemPrompt = loadPrompt("module1/1b/advocate.md");
+  const config = loadAgentConfig("module1/1b-reanalyze/advocate.config.json");
+  const systemPrompt = loadPrompt("module1/1b-reanalyze/advocate.md");
 
   const userMessage = `CONTEXT DATA:
 1. Main Idea (Original): ${payload.mainIdea}
@@ -68,8 +68,8 @@ Return the audit log in strict JSON.`;
 
 async function runExaminerAudit(payload: ReanalyzePayload): Promise<string> {
   console.log("[M1-1b/Examiner] Running audit...");
-  const config = loadAgentConfig("module1/1b/examiner.config.json");
-  const systemPrompt = loadPrompt("module1/1b/examiner.md");
+  const config = loadAgentConfig("module1/1b-reanalyze/examiner.config.json");
+  const systemPrompt = loadPrompt("module1/1b-reanalyze/examiner.md");
 
   const userMessage = `CONTEXT DATA:
 1. Main Idea (Original): ${payload.mainIdea}

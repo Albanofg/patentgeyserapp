@@ -183,8 +183,8 @@ export async function runDiagrams(payload: DiagramsPayload) {
     const { title, patentText, codeCount, formattedCode } = extractPatentText(payload);
 
     // Step 1: AI plans diagrams
-    const config = loadAgentConfig("module5/5b/planner.config.json");
-    const systemPrompt = loadPrompt("module5/5b/planner.md");
+    const config = loadAgentConfig("module5/5b-diagrams/planner.config.json");
+    const systemPrompt = loadPrompt("module5/5b-diagrams/planner.md");
 
     const keyConceptsBlock = (payload.keyConcepts || "").trim();
     if (!keyConceptsBlock) {
