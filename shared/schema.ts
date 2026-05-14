@@ -6,6 +6,10 @@ import { pgSchema, text, varchar, timestamp, integer, jsonb, boolean } from "dri
 // `patent_geyser` schema — DO NOT touch that schema from this app.
 const inventorGeyser = pgSchema("inventor_geyser");
 const pgTable = inventorGeyser.table.bind(inventorGeyser);
+// Sibling schema for admin/observability tables (usage logs, future audit
+// trails). Kept separate so the app schema stays focused on product data.
+const inventorGeyserAdmin = pgSchema("inventor_geyser_admin");
+const adminTable = inventorGeyserAdmin.table.bind(inventorGeyserAdmin);
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -135,10 +139,11 @@ export const pannuRecords = pgTable("pannu_records", {
 });
 
 // AI usage log — one row per server-side AI call across the app.
-// Powers the admin /admin/usage page; written fire-and-forget so a failed
-// log never breaks an AI request. `agentLabel` is the user-friendly name
-// from server/ai/usage-log.ts (e.g. "Whitespace (Stage 4a)").
-export const aiUsageLog = pgTable("ai_usage_log", {
+// Lives in the `inventor_geyser_admin` schema so observability data stays
+// out of the product schema. Written fire-and-forget so a failed log never
+// breaks an AI request. `agentLabel` is the user-friendly name from
+// server/ai/usage-log.ts (e.g. "Whitespace (Stage 4a)").
+export const aiUsageLog = adminTable("ai_usage_log", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id"),         // inventors_users.id or users.id; nullable for unauthenticated calls
   userEmail: text("user_email"),      // captured at insert time so the log stays readable if the user is later deleted

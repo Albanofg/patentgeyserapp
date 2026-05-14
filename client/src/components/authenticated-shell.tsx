@@ -31,6 +31,7 @@ const AdminWhitelist = lazy(() => import("@/pages/admin-whitelist"));
 const AdminUsers = lazy(() => import("@/pages/admin-users"));
 const AdminCredits = lazy(() => import("@/pages/admin-credits"));
 const AdminUsage = lazy(() => import("@/pages/admin-usage"));
+const AdminMenu = lazy(() => import("@/pages/admin-menu"));
 const TwoFactorVerify = lazy(() => import("@/pages/two-factor-verify"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
@@ -240,6 +241,7 @@ export function AuthenticatedShell() {
             <Route path="/admin/users" component={AdminUsers} />
             <Route path="/admin/credits" component={AdminCredits} />
             <Route path="/admin/usage" component={AdminUsage} />
+            <Route path="/admin" component={AdminMenu} />
             <Route path="/project/:id/agent/1" component={Agent1} />
             <Route path="/project/:id/agent/1a" component={Agent1a} />
             <Route path="/project/:id/agent/1a-audit" component={Agent1aAudit} />

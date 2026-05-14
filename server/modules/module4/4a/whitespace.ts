@@ -29,6 +29,26 @@ interface WhitespacePayload {
   priorArtResults: PriorArtResult[];
 }
 
+// Shape emitted by the current whitespace.md prompt: mechanism extraction +
+// clarification questions for the inventor. No risk/threat assessment.
+interface NewPatentAnalysis {
+  patentNumber: string;
+  patentTitle: string;
+  patentStatus: "GRANTED" | "PENDING";
+  extractedMechanisms: string[];
+  inventorClarificationQuestions: string[];
+}
+
+interface AnalyzerJson {
+  totalPatentsAnalyzed?: number;
+  patentAnalyses?: NewPatentAnalysis[];
+  crossPatentClarificationQuestions?: string[];
+}
+
+// Backwards-compatible shape produced by `runWhitespace` for downstream
+// consumers (claims agent, UI). The legacy risk/threat/strategy fields are
+// preserved so nothing breaks, but they're filled with defaults since the
+// new prompt is intentionally factual-only and produces no strategic content.
 interface PatentAnalysis {
   patentNumber: string;
   patentTitle: string;
@@ -37,31 +57,20 @@ interface PatentAnalysis {
   specificConstraint: string;
   differentiationStrategy: string;
   canDesignAround: boolean;
+  // New fields surfaced from the rewritten prompt — additive, so older code
+  // that only reads the legacy fields is unaffected.
+  extractedMechanisms?: string[];
+  inventorClarificationQuestions?: string[];
 }
 
-interface AnalyzerJson {
-  overallRiskLevel?: "Green" | "Yellow" | "Red";
-  totalPatentsAnalyzed?: number;
-  highThreatCount?: number;
-  mediumThreatCount?: number;
-  lowThreatCount?: number;
-  patentAnalyses?: PatentAnalysis[];
-  consolidatedWhiteSpaceStrategy?: string;
-  primaryDifferentiators?: string[];
-  claimDraftingGuidance?: string;
-}
-
-// Mirrors AnalyzerJson and the JSON shape declared in whitespace.md.
-// Passed to Gemini as responseSchema so the model is API-constrained to valid
-// JSON — no markdown fences, no trailing prose, properly escaped strings.
+// Schema matching the rewritten prompt's PHASE_6 contract. The earlier
+// legacy schema was removed because it forced fields the prompt now
+// forbids; this one mirrors the new shape so the Gemini API enforces
+// valid JSON structure without overriding the prompt's content rules.
 const WHITESPACE_RESPONSE_SCHEMA = {
   type: "object",
   properties: {
-    overallRiskLevel: { type: "string", enum: ["Green", "Yellow", "Red"] },
     totalPatentsAnalyzed: { type: "integer" },
-    highThreatCount: { type: "integer" },
-    mediumThreatCount: { type: "integer" },
-    lowThreatCount: { type: "integer" },
     patentAnalyses: {
       type: "array",
       items: {
@@ -70,39 +79,30 @@ const WHITESPACE_RESPONSE_SCHEMA = {
           patentNumber: { type: "string" },
           patentTitle: { type: "string" },
           patentStatus: { type: "string", enum: ["GRANTED", "PENDING"] },
-          threatLevel: {
-            type: "string",
-            enum: ["High", "Medium", "Low", "Minimal"],
+          extractedMechanisms: { type: "array", items: { type: "string" } },
+          inventorClarificationQuestions: {
+            type: "array",
+            items: { type: "string" },
           },
-          specificConstraint: { type: "string" },
-          differentiationStrategy: { type: "string" },
-          canDesignAround: { type: "boolean" },
         },
         required: [
           "patentNumber",
           "patentTitle",
           "patentStatus",
-          "threatLevel",
-          "specificConstraint",
-          "differentiationStrategy",
-          "canDesignAround",
+          "extractedMechanisms",
+          "inventorClarificationQuestions",
         ],
       },
     },
-    consolidatedWhiteSpaceStrategy: { type: "string" },
-    primaryDifferentiators: { type: "array", items: { type: "string" } },
-    claimDraftingGuidance: { type: "string" },
+    crossPatentClarificationQuestions: {
+      type: "array",
+      items: { type: "string" },
+    },
   },
   required: [
-    "overallRiskLevel",
     "totalPatentsAnalyzed",
-    "highThreatCount",
-    "mediumThreatCount",
-    "lowThreatCount",
     "patentAnalyses",
-    "consolidatedWhiteSpaceStrategy",
-    "primaryDifferentiators",
-    "claimDraftingGuidance",
+    "crossPatentClarificationQuestions",
   ],
 } as const;
 
@@ -174,16 +174,20 @@ function threatEmoji(level?: string): string {
 }
 
 function buildStrategicDirective(sessionId: string, conceptAnalyses: any[]): string {
-  let md = "# White Space Analysis - Strategic Directive for Claims Drafting\n\n";
+  let md = "# Prior Art Mechanism Surfacer — Inventor Clarification Brief\n\n";
   md += `**Analysis Date:** ${new Date().toISOString().split("T")[0]}\n`;
   md += `**Session ID:** ${sessionId}\n`;
   md += `**Total Concepts Analyzed:** ${conceptAnalyses.length}\n\n`;
 
   md += "## Executive Summary\n\n";
-  md += "| # | Concept Title | Risk Level | Patents Analyzed | High Threats |\n";
-  md += "|---|---------------|------------|------------------|--------------|\n";
+  md += "| # | Concept Title | Patents Analyzed | Clarification Questions |\n";
+  md += "|---|---------------|------------------|-------------------------|\n";
   conceptAnalyses.forEach((c, i) => {
-    md += `| ${i + 1} | ${c.conceptTitle} | ${riskEmoji(c.overallRiskLevel)} ${c.overallRiskLevel} | ${c.totalPatentsAnalyzed} | ${c.threatCounts.high} |\n`;
+    const qCount = (c.patentAnalyses || []).reduce(
+      (sum: number, pa: PatentAnalysis) => sum + (pa.inventorClarificationQuestions?.length || 0),
+      0,
+    ) + (c.crossPatentClarificationQuestions?.length || 0);
+    md += `| ${i + 1} | ${c.conceptTitle} | ${c.totalPatentsAnalyzed} | ${qCount} |\n`;
   });
   md += "\n---\n\n";
 
@@ -191,40 +195,51 @@ function buildStrategicDirective(sessionId: string, conceptAnalyses: any[]): str
     md += `## Concept ${i + 1}: ${c.conceptTitle}\n\n`;
     if (c.conceptDescription) md += `> ${c.conceptDescription}\n\n`;
 
-    md += `### Overall Assessment\n`;
-    md += `* **Risk Level:** ${riskEmoji(c.overallRiskLevel)} ${c.overallRiskLevel}\n`;
-    md += `* **Patents Analyzed:** ${c.totalPatentsAnalyzed} (Input: ${c.priorArtInputCount})\n`;
-    md += `* **Threat Distribution:** 🔴 High: ${c.threatCounts.high} | 🟡 Medium: ${c.threatCounts.medium} | 🟢 Low: ${c.threatCounts.low}\n\n`;
-
     if (c.patentAnalyses?.length > 0) {
-      md += `### Prior Art Patent Analysis\n\n`;
+      md += `### Prior Art — Extracted Mechanisms and Inventor Questions\n\n`;
       c.patentAnalyses.forEach((pa: PatentAnalysis, j: number) => {
-        md += `#### ${j + 1}. ${pa.patentNumber} ${threatEmoji(pa.threatLevel)} ${pa.threatLevel}\n`;
+        md += `#### ${j + 1}. ${pa.patentNumber}\n`;
         md += `* **Title:** ${pa.patentTitle}\n`;
         md += `* **Status:** ${pa.patentStatus}\n`;
-        md += `* **Specific Constraint:** "${pa.specificConstraint}"\n`;
-        md += `* **Differentiation Strategy:** ${pa.differentiationStrategy}\n`;
-        md += `* **Can Design Around:** ${pa.canDesignAround ? "✅ Yes" : "❌ No"}\n\n`;
+        const mechs = pa.extractedMechanisms || [];
+        if (mechs.length > 0) {
+          md += `* **Extracted Mechanisms:**\n`;
+          mechs.forEach((m) => {
+            md += `  - ${m}\n`;
+          });
+        }
+        const qs = pa.inventorClarificationQuestions || [];
+        if (qs.length > 0) {
+          md += `* **Inventor Clarification Questions:**\n`;
+          qs.forEach((q) => {
+            md += `  - ${q}\n`;
+          });
+        }
+        md += "\n";
       });
     } else {
-      md += `### Prior Art Patent Analysis\n\n*No prior art patents were found for this concept.*\n\n`;
+      md += `### Prior Art — Extracted Mechanisms and Inventor Questions\n\n*No prior art patents were found for this concept.*\n\n`;
     }
 
-    md += `### Strategic Guidance\n\n`;
-    md += `**White Space Strategy:**\n${c.strategy.whiteSpaceStrategy}\n\n`;
-    if (c.strategy.primaryDifferentiators?.length > 0) {
-      md += `**Primary Differentiators:**\n`;
-      c.strategy.primaryDifferentiators.forEach((d: string, idx: number) => {
-        md += `${idx + 1}. ${d}\n`;
+    const crossQs = c.crossPatentClarificationQuestions || [];
+    if (crossQs.length > 0) {
+      md += `### Cross-Patent Clarification Questions\n\n`;
+      crossQs.forEach((q: string) => {
+        md += `- ${q}\n`;
       });
       md += "\n";
     }
-    md += `**Claim Drafting Guidance:**\n${c.strategy.claimDraftingGuidance}\n\n`;
+
     md += "---\n\n";
   });
 
   return md;
 }
+
+// Kept exported-as-unused so the helpers stay available if a future
+// re-introduction of risk classification wants them. Not currently called.
+void riskEmoji;
+void threatEmoji;
 
 export async function runWhitespace(payload: WhitespacePayload) {
   console.log(">>> [M4-4a WHITESPACE] <<< analyzing", payload.selectedIdeas?.length, "concepts");
@@ -285,35 +300,63 @@ export async function runWhitespace(payload: WhitespacePayload) {
       }),
     );
 
-    // Shape into conceptAnalyses[]
+    // Shape into conceptAnalyses[]. Bridges the new mechanism-extraction
+    // prompt output to the legacy field layout downstream consumers expect.
+    // Legacy fields (threatLevel, specificConstraint, etc.) get filled from
+    // the new fields where mappable and with neutral defaults otherwise —
+    // the prompt is fact-only by design, so risk/threat/strategy stay empty.
     const conceptAnalyses = analyses.map(({ nugget, parsed, parseError }) => {
-      const p = parsed || {};
+      const p: AnalyzerJson = parsed || {};
+      const newPatents = p.patentAnalyses || [];
+
+      // Map each new-shape patent entry to the legacy shape used by claims/UI.
+      const bridgedPatentAnalyses: PatentAnalysis[] = newPatents.map((np) => ({
+        patentNumber: np.patentNumber,
+        patentTitle: np.patentTitle,
+        patentStatus: np.patentStatus,
+        // Risk fields no longer produced by the prompt; default neutral.
+        threatLevel: "Minimal",
+        // Surface the first extracted mechanism as the "specific constraint"
+        // so the claims agent has a concrete textual hook to work with.
+        specificConstraint: (np.extractedMechanisms || [])[0] || "",
+        // Differentiation strategy is now framed as the first clarification
+        // question to the inventor — preserves the per-patent text slot.
+        differentiationStrategy:
+          (np.inventorClarificationQuestions || [])[0] ||
+          "Awaiting inventor clarification.",
+        canDesignAround: true,
+        extractedMechanisms: np.extractedMechanisms || [],
+        inventorClarificationQuestions: np.inventorClarificationQuestions || [],
+      }));
+
+      // Roll up the cross-patent questions into the strategy slot so the
+      // claims agent still has something to ingest. No synthesis happens
+      // here — we just pass the model's verbatim questions through.
+      const crossQuestions = p.crossPatentClarificationQuestions || [];
+      const whiteSpaceStrategy = crossQuestions.length
+        ? crossQuestions.join(" ")
+        : parseError
+          ? `Analysis unavailable for this concept: ${parseError}`
+          : "Awaiting inventor responses to clarification questions.";
+
       return {
         conceptNumber: nugget.index + 1,
         conceptId: nugget.nuggetId,
         conceptTitle: nugget.nuggetTitle,
         conceptDescription: nugget.nuggetDescription,
-        overallRiskLevel: p.overallRiskLevel || (parseError ? "Error - Parse Failed" : "Unknown"),
-        totalPatentsAnalyzed: p.totalPatentsAnalyzed ?? (p.patentAnalyses?.length || 0),
+        overallRiskLevel: parseError ? "Error - Parse Failed" : "Unknown",
+        totalPatentsAnalyzed: p.totalPatentsAnalyzed ?? newPatents.length,
         priorArtInputCount: nugget.priorArtCount,
-        threatCounts: {
-          high: p.highThreatCount || 0,
-          medium: p.mediumThreatCount || 0,
-          low: p.lowThreatCount || 0,
-        },
-        patentAnalyses: p.patentAnalyses || [],
+        threatCounts: { high: 0, medium: 0, low: 0 },
+        patentAnalyses: bridgedPatentAnalyses,
+        crossPatentClarificationQuestions: crossQuestions,
         strategy: {
-          whiteSpaceStrategy:
-            p.consolidatedWhiteSpaceStrategy ||
-            (parseError
-              ? `Analysis unavailable for this concept: ${parseError}`
-              : "No strategy generated."),
-          primaryDifferentiators: p.primaryDifferentiators || [],
+          whiteSpaceStrategy,
+          primaryDifferentiators: [],
           claimDraftingGuidance:
-            p.claimDraftingGuidance ||
-            (parseError
+            parseError
               ? "Manual review required — model output could not be parsed for this concept. Re-run the stage to retry."
-              : ""),
+              : "Awaiting inventor responses to clarification questions before producing claim-drafting guidance.",
         },
       };
     });

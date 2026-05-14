@@ -168,7 +168,10 @@ export default function Agent4() {
           </div>
         ) : (
           <div className="space-y-8">
-            {/* Summary Card for New Format */}
+            {/* Summary Card for New Format. The risk-distribution chips
+                only render when the analyzer actually produced risk levels —
+                the rewritten 4a prompt is fact-only and emits no risk data,
+                so those chips would otherwise be a row of zeros. */}
             {isNewFormat && summary.riskDistribution && (
               <Card className="bg-muted/30">
                 <CardHeader>
@@ -179,18 +182,24 @@ export default function Agent4() {
                 </CardHeader>
                 <CardContent>
                   <div className="flex flex-wrap gap-4">
-                    <div className="flex items-center gap-2">
-                      <Shield className="h-4 w-4 text-green-500" />
-                      <span className="text-sm">{summary.riskDistribution.green || 0} Green</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <AlertTriangle className="h-4 w-4 text-yellow-500" />
-                      <span className="text-sm">{summary.riskDistribution.yellow || 0} Yellow</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <AlertTriangle className="h-4 w-4 text-red-500" />
-                      <span className="text-sm">{summary.riskDistribution.red || 0} Red</span>
-                    </div>
+                    {((summary.riskDistribution.green || 0) +
+                      (summary.riskDistribution.yellow || 0) +
+                      (summary.riskDistribution.red || 0) > 0) && (
+                      <>
+                        <div className="flex items-center gap-2">
+                          <Shield className="h-4 w-4 text-green-500" />
+                          <span className="text-sm">{summary.riskDistribution.green || 0} Green</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className="h-4 w-4 text-yellow-500" />
+                          <span className="text-sm">{summary.riskDistribution.yellow || 0} Yellow</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className="h-4 w-4 text-red-500" />
+                          <span className="text-sm">{summary.riskDistribution.red || 0} Red</span>
+                        </div>
+                      </>
+                    )}
                     {summary.totalHighThreats > 0 && (
                       <div className="flex items-center gap-2 ml-auto">
                         <Badge variant="destructive">{summary.totalHighThreats} High Threat{summary.totalHighThreats !== 1 ? 's' : ''}</Badge>
@@ -212,17 +221,29 @@ export default function Agent4() {
               
               {/* New Format: conceptAnalyses with patentAnalyses */}
               {isNewFormat ? (
-                conceptAnalyses.map((concept: any, index: number) => (
-                  <Card 
-                    key={index} 
+                conceptAnalyses.map((concept: any, index: number) => {
+                  // Risk/threat fields are only meaningful when the analyzer
+                  // actually returned them. The rewritten 4a prompt is
+                  // fact-only and produces neither — so hide the badge and
+                  // the threat-count line when there's nothing to show.
+                  const riskKnown = ["red", "yellow", "green"].includes(
+                    String(concept.overallRiskLevel || "").toLowerCase(),
+                  );
+                  const threats = concept.threatCounts || {};
+                  const anyThreats =
+                    (threats.high || 0) + (threats.medium || 0) + (threats.low || 0) > 0;
+                  const borderColor = !riskKnown
+                    ? "hsl(var(--border))"
+                    : concept.overallRiskLevel?.toLowerCase() === "red"
+                      ? "hsl(var(--destructive))"
+                      : concept.overallRiskLevel?.toLowerCase() === "green"
+                        ? "hsl(var(--primary))"
+                        : "hsl(var(--warning))";
+                  return (
+                  <Card
+                    key={index}
                     className="border-l-4"
-                    style={{
-                      borderLeftColor: concept.overallRiskLevel?.toLowerCase() === 'red' 
-                        ? 'hsl(var(--destructive))' 
-                        : concept.overallRiskLevel?.toLowerCase() === 'green'
-                          ? 'hsl(var(--primary))'
-                          : 'hsl(var(--warning))'
-                    }}
+                    style={{ borderLeftColor: borderColor }}
                     data-testid={`concept-analysis-${index}`}
                   >
                     <CardHeader>
@@ -233,21 +254,23 @@ export default function Agent4() {
                           </CardTitle>
                           <CardDescription className="mt-1">
                             {concept.totalPatentsAnalyzed} patents analyzed
-                            {concept.threatCounts && (
+                            {anyThreats && (
                               <span className="ml-2">
-                                ({concept.threatCounts.high || 0} high, {concept.threatCounts.medium || 0} medium, {concept.threatCounts.low || 0} low threats)
+                                ({threats.high || 0} high, {threats.medium || 0} medium, {threats.low || 0} low threats)
                               </span>
                             )}
                           </CardDescription>
                         </div>
-                        <Badge 
-                          variant={getRiskBadgeVariant(concept.overallRiskLevel)}
-                          className="flex items-center gap-1"
-                          data-testid={`risk-badge-${index}`}
-                        >
-                          {getRiskIcon(concept.overallRiskLevel)}
-                          {concept.overallRiskLevel || 'Unknown'} Risk
-                        </Badge>
+                        {riskKnown && (
+                          <Badge
+                            variant={getRiskBadgeVariant(concept.overallRiskLevel)}
+                            className="flex items-center gap-1"
+                            data-testid={`risk-badge-${index}`}
+                          >
+                            {getRiskIcon(concept.overallRiskLevel)}
+                            {concept.overallRiskLevel} Risk
+                          </Badge>
+                        )}
                       </div>
                     </CardHeader>
                     <CardContent className="space-y-4">
@@ -260,47 +283,71 @@ export default function Agent4() {
                           </Button>
                         </CollapsibleTrigger>
                         <CollapsibleContent className="mt-4 space-y-3">
-                          {concept.patentAnalyses?.map((patent: any, pIdx: number) => (
-                            <div 
-                              key={pIdx} 
+                          {concept.patentAnalyses?.map((patent: any, pIdx: number) => {
+                            const threatKnown = ["high", "medium", "low"].includes(
+                              String(patent.threatLevel || "").toLowerCase(),
+                            );
+                            const mechs: string[] = patent.extractedMechanisms || [];
+                            const questions: string[] = patent.inventorClarificationQuestions || [];
+                            return (
+                            <div
+                              key={pIdx}
                               className="bg-muted/50 p-4 rounded-lg border"
                               data-testid={`patent-analysis-${index}-${pIdx}`}
                             >
                               <div className="flex items-start justify-between gap-3 mb-3">
                                 <div className="flex-1">
-                                  <div className="flex items-center gap-2">
+                                  <div className="flex items-center gap-2 flex-wrap">
                                     <span className="font-semibold text-sm">{pIdx + 1}. {patent.patentNumber}</span>
-                                    <Badge variant={getThreatBadgeVariant(patent.threatLevel)} className="text-xs">
-                                      {patent.threatLevel || 'Unknown'}
-                                    </Badge>
+                                    {threatKnown && (
+                                      <Badge variant={getThreatBadgeVariant(patent.threatLevel)} className="text-xs">
+                                        {patent.threatLevel}
+                                      </Badge>
+                                    )}
+                                    {patent.patentStatus && (
+                                      <Badge variant="outline" className="text-xs">
+                                        {patent.patentStatus}
+                                      </Badge>
+                                    )}
                                   </div>
-                                  <p className="text-sm text-muted-foreground mt-1">{patent.title}</p>
-                                  {patent.status && (
-                                    <span className="text-xs text-muted-foreground">Status: {patent.status}</span>
-                                  )}
-                                </div>
-                                <div className="flex items-center gap-1">
-                                  {patent.canDesignAround ? (
-                                    <CheckCircle className="h-4 w-4 text-green-500" />
-                                  ) : (
-                                    <XCircle className="h-4 w-4 text-red-500" />
-                                  )}
-                                  <span className="text-xs">{patent.canDesignAround ? 'Can Design Around' : 'Difficult'}</span>
+                                  <p className="text-sm text-muted-foreground mt-1">{patent.patentTitle || patent.title}</p>
                                 </div>
                               </div>
-                              
-                              <div className="space-y-2 text-sm">
-                                <div>
+
+                              {mechs.length > 0 ? (
+                                <div className="space-y-1 text-sm mb-3">
+                                  <div className="font-medium text-muted-foreground text-xs">Extracted Mechanisms</div>
+                                  <ul className="list-disc list-inside space-y-0.5">
+                                    {mechs.map((m, mIdx) => (
+                                      <li key={mIdx}>{m}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              ) : patent.specificConstraint ? (
+                                <div className="text-sm mb-3">
                                   <span className="font-medium text-muted-foreground">Constraint: </span>
                                   <span>{patent.constraint || patent.specificConstraint}</span>
                                 </div>
-                                <div>
+                              ) : null}
+
+                              {questions.length > 0 ? (
+                                <div className="space-y-1 text-sm">
+                                  <div className="font-medium text-primary text-xs">Inventor Clarification Questions</div>
+                                  <ul className="list-disc list-inside space-y-0.5">
+                                    {questions.map((q, qIdx) => (
+                                      <li key={qIdx}>{q}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              ) : patent.differentiationStrategy ? (
+                                <div className="text-sm">
                                   <span className="font-medium text-primary">Differentiation: </span>
                                   <span>{patent.differentiationStrategy}</span>
                                 </div>
-                              </div>
+                              ) : null}
                             </div>
-                          ))}
+                          );
+                          })}
                         </CollapsibleContent>
                       </Collapsible>
 
@@ -380,7 +427,8 @@ export default function Agent4() {
                       </div>
                     </CardContent>
                   </Card>
-                ))
+                );
+                })
               ) : (
                 /* Legacy Format: nuggetAnalyses */
                 nuggetAnalyses.map((nugget: any, index: number) => (

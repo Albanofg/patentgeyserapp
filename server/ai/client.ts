@@ -93,13 +93,13 @@ const EMPTY_RESPONSE_GUARD =
 // retry (with the secondary key if configured). Add new phrases here as we
 // observe more degradation modes — keep them specific enough that they don't
 // false-positive on legitimate output.
-const DEGRADED_OUTPUT_MARKERS = [
-  "N/A - Fact extraction only",
-  "N/A - Question generation only",
-  "Strategy synthesis disabled per instructions",
-  "N/A - Strategy synthesis disabled",
-  "Claim drafting guidance disabled per instructions",
-];
+//
+// Note: the older "Strategy synthesis disabled per instructions" / "N/A -
+// Fact extraction only" phrases were removed because the rewritten 4a
+// whitespace prompt no longer asks for strategic synthesis at all. Those
+// phrases would now fire on by-design empty fields, not on actual model
+// degradation.
+const DEGRADED_OUTPUT_MARKERS: string[] = [];
 
 /**
  * Scan a model response for known "the model gave up" placeholder phrases.
