@@ -134,6 +134,31 @@ export const pannuRecords = pgTable("pannu_records", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+// AI usage log — one row per server-side AI call across the app.
+// Powers the admin /admin/usage page; written fire-and-forget so a failed
+// log never breaks an AI request. `agentLabel` is the user-friendly name
+// from server/ai/usage-log.ts (e.g. "Whitespace (Stage 4a)").
+export const aiUsageLog = pgTable("ai_usage_log", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id"),         // inventors_users.id or users.id; nullable for unauthenticated calls
+  userEmail: text("user_email"),      // captured at insert time so the log stays readable if the user is later deleted
+  projectId: varchar("project_id"),   // nullable (some calls aren't project-scoped)
+  agentLabel: text("agent_label").notNull(), // friendly name: "Whitespace (Stage 4a)", "AI Helper", ...
+  model: text("model").notNull(),     // "gemini-pro-latest", "gpt-4o", ...
+  inputTokens: integer("input_tokens"),
+  outputTokens: integer("output_tokens"),
+  cachedTokens: integer("cached_tokens"),
+  totalTokens: integer("total_tokens"),
+  durationMs: integer("duration_ms"),
+  status: text("status").notNull(),   // "ok" | "retry" | "fallback" | "error"
+  fallbackFrom: text("fallback_from"), // set when this call replaced a failed Gemini attempt
+  usedSecondaryKey: boolean("used_secondary_key").default(false),
+  requestId: text("request_id"),       // Vercel request id for cross-correlation, when available
+  errorMessage: text("error_message"), // populated when status = "error"
+  metadata: jsonb("metadata"),         // free-form per-call extras
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   projects: many(projects),

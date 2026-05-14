@@ -30,6 +30,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../../db";
+import { recordUsage, extractGeminiUsage, extractOpenAIUsage } from "../../ai/usage-log";
 
 // ─── Module-owned table declarations ────────────────────────────────────────
 // These point at physical tables already created in the inventor_geyser schema
@@ -294,6 +295,15 @@ interface QAPayload {
   };
   currentLocation: string;
   sessionId?: string;
+  /**
+   * Identity of the authenticated caller. Used for usage logging only —
+   * persisted alongside each Gemini/OpenAI invocation so the admin /admin/usage
+   * page can attribute the call. Optional so non-route callers (e.g. tests)
+   * keep working.
+   */
+  userId?: string | null;
+  userEmail?: string | null;
+  requestId?: string | null;
   /**
    * Snapshot of what's currently rendered on the page the user is chatting from.
    * Built client-side via the page-snapshot registry (lib/page-snapshot.ts).
@@ -757,6 +767,9 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
       },
     };
 
+    const turnStarted = Date.now();
+    let usedSecondaryKey = false;
+    let lastChunk: any = null;
     try {
       let stream;
       try {
@@ -768,12 +781,14 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         if (geminiSecondary) {
           console.warn(`[QA-Assistant] Primary Gemini key failed, trying secondary key:`, primaryErr?.message);
           stream = await geminiSecondary.models.generateContentStream(streamConfig);
+          usedSecondaryKey = true;
         } else {
           throw primaryErr;
         }
       }
 
       for await (const chunk of stream) {
+        lastChunk = chunk;
         const t = (chunk as any).text;
         if (t) {
           turnText.push(t);
@@ -795,10 +810,43 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
           }
         }
       }
+
+      // Log one usage row per turn. Gemini's usageMetadata lands on the
+      // terminal chunk; we read it off lastChunk (or fall back to null
+      // counts if the SDK omitted it for this snapshot).
+      const usage = extractGeminiUsage(lastChunk);
+      void recordUsage({
+        userId: payload.userId ?? null,
+        userEmail: payload.userEmail ?? null,
+        projectId: projectId ?? null,
+        agentCode: "module0/qa-assistant",
+        model: CONFIG.model,
+        ...usage,
+        durationMs: Date.now() - turnStarted,
+        status: usedSecondaryKey ? "retry" : "ok",
+        usedSecondaryKey,
+        requestId: payload.requestId ?? null,
+        metadata: { turn, toolCalls: turnToolCalls.map((c) => c.name) },
+      });
     } catch (geminiErr: any) {
       console.warn(`[QA-Assistant] Gemini failed on turn ${turn}, falling back to ${CONFIG.fallback}:`, geminiErr?.message);
       if (turn === 0) geminiFailedOnFirstTurn = true;
       usedFallback = true;
+      // Record the failed Gemini turn so it shows up in the admin usage page.
+      void recordUsage({
+        userId: payload.userId ?? null,
+        userEmail: payload.userEmail ?? null,
+        projectId: projectId ?? null,
+        agentCode: "module0/qa-assistant",
+        model: CONFIG.model,
+        durationMs: Date.now() - turnStarted,
+        status: "error",
+        usedSecondaryKey,
+        requestId: payload.requestId ?? null,
+        errorMessage: geminiErr?.message ?? String(geminiErr),
+        metadata: { turn },
+      });
+      const fbStarted = Date.now();
       try {
         const completion = await openai.chat.completions.create({
           model: CONFIG.fallback,
@@ -816,7 +864,33 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         const text = completion.choices[0]?.message?.content ?? "";
         allTokens.push(text);
         yield { type: "token", data: { delta: text } };
+        void recordUsage({
+          userId: payload.userId ?? null,
+          userEmail: payload.userEmail ?? null,
+          projectId: projectId ?? null,
+          agentCode: "module0/qa-assistant",
+          model: CONFIG.fallback,
+          ...extractOpenAIUsage(completion),
+          durationMs: Date.now() - fbStarted,
+          status: "fallback",
+          fallbackFrom: CONFIG.model,
+          requestId: payload.requestId ?? null,
+          metadata: { turn },
+        });
       } catch (fallbackErr: any) {
+        void recordUsage({
+          userId: payload.userId ?? null,
+          userEmail: payload.userEmail ?? null,
+          projectId: projectId ?? null,
+          agentCode: "module0/qa-assistant",
+          model: CONFIG.fallback,
+          durationMs: Date.now() - fbStarted,
+          status: "error",
+          fallbackFrom: CONFIG.model,
+          requestId: payload.requestId ?? null,
+          errorMessage: fallbackErr?.message ?? String(fallbackErr),
+          metadata: { turn },
+        });
         yield {
           type: "error",
           data: {

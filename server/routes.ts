@@ -3,8 +3,9 @@ import { createServer, type Server } from "http";
 import https from "https";
 import crypto from "crypto";
 import { storage } from "./storage";
-import { pool } from "./db";
-import { insertProjectSchema } from "@shared/schema";
+import { pool, db } from "./db";
+import { insertProjectSchema, aiUsageLog } from "@shared/schema";
+import { and as drizzleAnd, gte as drizzleGte, lte as drizzleLte, eq as drizzleEq, desc as drizzleDesc, sql as drizzleSql } from "drizzle-orm";
 import { TERMS_VERSION } from "@shared/terms";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
@@ -279,6 +280,7 @@ function sessionOwnsProject(
 const ADMIN_EMAILS = new Set([
   (process.env.ADMIN_EMAIL || "albano@bookingboostpro.com").toLowerCase().trim(),
   "tim.bratton@gmail.com",
+  "tim@personallifemedia.com",
 ]);
 
 const isAdmin = async (req: Request, res: Response, next: NextFunction) => {
@@ -733,6 +735,153 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(entry);
     } catch (error: any) {
       res.status(500).json({ message: "Failed to update status" });
+    }
+  });
+
+  // ============================================
+  // AI Usage Log — admin observability for token spend
+  // GET /api/admin/usage         → rows + summary for a filter window
+  // GET /api/admin/usage/export  → CSV download of the same query
+  // ============================================
+
+  function parseUsageFilters(req: Request) {
+    const q = req.query as Record<string, string | undefined>;
+    const conds: any[] = [];
+
+    // Date range. Defaults to last 7 days when neither is provided.
+    const now = new Date();
+    const defaultFrom = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const from = q.from ? new Date(q.from) : defaultFrom;
+    const to = q.to ? new Date(q.to) : now;
+    if (Number.isFinite(from.getTime())) {
+      conds.push(drizzleGte(aiUsageLog.createdAt, from));
+    }
+    if (Number.isFinite(to.getTime())) {
+      conds.push(drizzleLte(aiUsageLog.createdAt, to));
+    }
+
+    if (q.userEmail) conds.push(drizzleEq(aiUsageLog.userEmail, q.userEmail));
+    if (q.agentLabel) conds.push(drizzleEq(aiUsageLog.agentLabel, q.agentLabel));
+    if (q.model) conds.push(drizzleEq(aiUsageLog.model, q.model));
+    if (q.status) conds.push(drizzleEq(aiUsageLog.status, q.status));
+
+    return {
+      where: conds.length ? drizzleAnd(...conds) : undefined,
+      from,
+      to,
+    };
+  }
+
+  app.get("/api/admin/usage", isAdmin, async (req, res) => {
+    try {
+      const { where, from, to } = parseUsageFilters(req);
+      const limit = Math.min(parseInt((req.query.limit as string) || "200", 10) || 200, 1000);
+      const offset = Math.max(parseInt((req.query.offset as string) || "0", 10) || 0, 0);
+
+      const rowsQuery = db
+        .select()
+        .from(aiUsageLog)
+        .orderBy(drizzleDesc(aiUsageLog.createdAt))
+        .limit(limit)
+        .offset(offset);
+      const rows = where ? await rowsQuery.where(where) : await rowsQuery;
+
+      // Aggregates over the same filter window (NOT limited to the page).
+      // Returned alongside rows so the page can render summary cards.
+      const aggBase = db
+        .select({
+          totalCalls: drizzleSql<number>`count(*)::int`,
+          totalInput: drizzleSql<number>`coalesce(sum(${aiUsageLog.inputTokens}), 0)::bigint`,
+          totalOutput: drizzleSql<number>`coalesce(sum(${aiUsageLog.outputTokens}), 0)::bigint`,
+          totalCached: drizzleSql<number>`coalesce(sum(${aiUsageLog.cachedTokens}), 0)::bigint`,
+          totalTokens: drizzleSql<number>`coalesce(sum(${aiUsageLog.totalTokens}), 0)::bigint`,
+          totalDurationMs: drizzleSql<number>`coalesce(sum(${aiUsageLog.durationMs}), 0)::bigint`,
+        })
+        .from(aiUsageLog);
+      const [summary] = where ? await aggBase.where(where) : await aggBase;
+
+      const byModelBase = db
+        .select({
+          model: aiUsageLog.model,
+          calls: drizzleSql<number>`count(*)::int`,
+          inputTokens: drizzleSql<number>`coalesce(sum(${aiUsageLog.inputTokens}), 0)::bigint`,
+          outputTokens: drizzleSql<number>`coalesce(sum(${aiUsageLog.outputTokens}), 0)::bigint`,
+          totalTokens: drizzleSql<number>`coalesce(sum(${aiUsageLog.totalTokens}), 0)::bigint`,
+        })
+        .from(aiUsageLog)
+        .groupBy(aiUsageLog.model);
+      const byModel = where ? await byModelBase.where(where) : await byModelBase;
+
+      const byAgentBase = db
+        .select({
+          agentLabel: aiUsageLog.agentLabel,
+          calls: drizzleSql<number>`count(*)::int`,
+          totalTokens: drizzleSql<number>`coalesce(sum(${aiUsageLog.totalTokens}), 0)::bigint`,
+        })
+        .from(aiUsageLog)
+        .groupBy(aiUsageLog.agentLabel);
+      const byAgent = where ? await byAgentBase.where(where) : await byAgentBase;
+
+      const byUserBase = db
+        .select({
+          userEmail: aiUsageLog.userEmail,
+          calls: drizzleSql<number>`count(*)::int`,
+          totalTokens: drizzleSql<number>`coalesce(sum(${aiUsageLog.totalTokens}), 0)::bigint`,
+        })
+        .from(aiUsageLog)
+        .groupBy(aiUsageLog.userEmail);
+      const byUser = where ? await byUserBase.where(where) : await byUserBase;
+
+      res.json({
+        window: { from, to },
+        summary,
+        byModel,
+        byAgent,
+        byUser,
+        rows,
+        pagination: { limit, offset, returned: rows.length },
+      });
+    } catch (error: any) {
+      console.error("[admin/usage] query failed:", error);
+      res.status(500).json({ message: error?.message ?? "Failed to fetch usage" });
+    }
+  });
+
+  app.get("/api/admin/usage/export", isAdmin, async (req, res) => {
+    try {
+      const { where } = parseUsageFilters(req);
+      const rowsQuery = db
+        .select()
+        .from(aiUsageLog)
+        .orderBy(drizzleDesc(aiUsageLog.createdAt))
+        .limit(50000); // hard cap to keep memory bounded
+      const rows = where ? await rowsQuery.where(where) : await rowsQuery;
+
+      const cols = [
+        "createdAt", "userEmail", "projectId", "agentLabel", "model",
+        "inputTokens", "outputTokens", "cachedTokens", "totalTokens",
+        "durationMs", "status", "fallbackFrom", "usedSecondaryKey",
+        "requestId", "errorMessage",
+      ];
+      const escape = (v: any): string => {
+        if (v === null || v === undefined) return "";
+        const s = v instanceof Date ? v.toISOString() : String(v);
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      const lines = [cols.join(",")];
+      for (const r of rows as any[]) {
+        lines.push(cols.map((c) => escape(r[c])).join(","));
+      }
+
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="ai-usage-${new Date().toISOString().slice(0, 10)}.csv"`,
+      );
+      res.send(lines.join("\n"));
+    } catch (error: any) {
+      console.error("[admin/usage/export] failed:", error);
+      res.status(500).json({ message: error?.message ?? "Failed to export usage" });
     }
   });
 
@@ -6009,12 +6158,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
 
       try {
+        // Identity for usage-log attribution. Resolve email best-effort so
+        // the admin /admin/usage page shows a name, not a UUID.
+        const sessUserId = (req.session as any)?.userId as string | undefined;
+        const sessUserKind = (req.session as any)?.userKind as string | undefined;
+        let sessUserEmail: string | null = null;
+        if (sessUserId) {
+          try {
+            const u = sessUserKind === "paid"
+              ? await storage.getInventorUser(sessUserId)
+              : await storage.getUser(sessUserId);
+            sessUserEmail = u?.email ?? null;
+          } catch {
+            // Identity lookup failures are non-fatal — log row will just lack email.
+          }
+        }
+
         for await (const ev of runQAAssistant({
           message,
           conversationHistory: conversationHistory || [],
           projectContext,
           currentLocation: currentLocation || 'Unknown',
           sessionId: req.session?.id || '',
+          userId: sessUserId ?? null,
+          userEmail: sessUserEmail,
+          requestId: (req.headers['x-vercel-id'] as string | undefined) ?? null,
           pageSnapshot: pageSnapshot ?? null,
         })) {
           send(ev.type, ev.data);

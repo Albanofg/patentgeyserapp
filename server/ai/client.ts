@@ -2,6 +2,12 @@ import { GoogleGenAI, HarmCategory, HarmBlockThreshold } from "@google/genai";
 import OpenAI from "openai";
 import fs from "fs";
 import path from "path";
+import {
+  recordUsage,
+  extractGeminiUsage,
+  extractOpenAIUsage,
+  type UsageStatus,
+} from "./usage-log";
 
 const gemini = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
 // Optional secondary Gemini client backed by a key from a different GCP project
@@ -31,6 +37,17 @@ export interface AgentCallOptions {
   // Per-call timeout. Protects against the SDK hanging on a stalled stream and
   // burning the whole 300s function budget. Default 120s.
   timeoutMs?: number;
+  // Usage-log context. Optional today (older call sites can omit it) but every
+  // new wiring should pass it so the admin /admin/usage page can attribute the
+  // call to a user, project, and agent stage. `agentCode` is a stable code
+  // looked up against AGENT_LABELS in server/ai/usage-log.ts.
+  usage?: {
+    agentCode: string;
+    userId?: string | null;
+    userEmail?: string | null;
+    projectId?: string | null;
+    requestId?: string | null;
+  };
 }
 
 const DEFAULT_CALL_TIMEOUT_MS = 150_000;
@@ -95,11 +112,19 @@ function detectDegradedOutput(text: string): string | null {
   return null;
 }
 
+interface ModelCallResult {
+  text: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cachedTokens: number | null;
+  totalTokens: number | null;
+}
+
 async function callGemini(
   opts: AgentCallOptions,
   model: string,
   client: GoogleGenAI = gemini,
-): Promise<string> {
+): Promise<ModelCallResult> {
   const systemInstruction = (opts.systemPrompt || "") + EMPTY_RESPONSE_GUARD;
   const maxOutputTokens = Math.max(opts.config.maxTokens || 0, 2048);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
@@ -133,7 +158,7 @@ async function callGemini(
       `Gemini returned empty response (finishReason=${finishReason ?? "n/a"}, blockReason=${blockReason ?? "n/a"})`
     );
   }
-  return text;
+  return { text, ...extractGeminiUsage(response) };
 }
 
 // gpt-4o caps completion tokens at 16384; clamp to avoid 400s on Gemini fallback
@@ -141,7 +166,7 @@ const GPT_MAX_OUTPUT_TOKENS: Record<string, number> = {
   "gpt-4o": 16384,
 };
 
-async function callGPT(opts: AgentCallOptions, model: string): Promise<string> {
+async function callGPT(opts: AgentCallOptions, model: string): Promise<ModelCallResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
   const cap = GPT_MAX_OUTPUT_TOKENS[model];
   const maxTokens = cap ? Math.min(opts.config.maxTokens, cap) : opts.config.maxTokens;
@@ -162,15 +187,51 @@ async function callGPT(opts: AgentCallOptions, model: string): Promise<string> {
   );
   const text = response.choices[0]?.message?.content;
   if (!text) throw new Error("GPT returned empty response");
-  return text;
+  return { text, ...extractOpenAIUsage(response) };
 }
 
-async function callModel(opts: AgentCallOptions, model: string): Promise<string> {
+async function callModel(opts: AgentCallOptions, model: string): Promise<ModelCallResult> {
   if (isGemini(model)) {
     return await callGemini(opts, model);
   } else {
     return await callGPT(opts, model);
   }
+}
+
+// Light wrapper that fires a usage-log row without ever throwing. Each branch
+// of callAgent calls this once it knows how the attempt ended.
+// When opts.usage isn't set the row is still written — just without user /
+// project / agent attribution. That gives us cost-per-model coverage from
+// day one even before every route is wired through.
+function logUsage(
+  opts: AgentCallOptions,
+  args: {
+    model: string;
+    status: UsageStatus;
+    result?: ModelCallResult;
+    durationMs: number;
+    fallbackFrom?: string;
+    usedSecondaryKey?: boolean;
+    errorMessage?: string;
+  },
+): void {
+  void recordUsage({
+    userId: opts.usage?.userId ?? null,
+    userEmail: opts.usage?.userEmail ?? null,
+    projectId: opts.usage?.projectId ?? null,
+    agentCode: opts.usage?.agentCode ?? "unknown",
+    requestId: opts.usage?.requestId ?? null,
+    model: args.model,
+    inputTokens: args.result?.inputTokens ?? null,
+    outputTokens: args.result?.outputTokens ?? null,
+    cachedTokens: args.result?.cachedTokens ?? null,
+    totalTokens: args.result?.totalTokens ?? null,
+    durationMs: args.durationMs,
+    status: args.status,
+    fallbackFrom: args.fallbackFrom ?? null,
+    usedSecondaryKey: args.usedSecondaryKey ?? false,
+    errorMessage: args.errorMessage ?? null,
+  });
 }
 
 export async function callAgent(opts: AgentCallOptions): Promise<string> {
@@ -185,14 +246,17 @@ export async function callAgent(opts: AgentCallOptions): Promise<string> {
     // returns 200 OK with placeholder meta-text instead of real analysis
     // (observed on Whitespace 4a). Throwing here re-enters the retry path
     // below, which will use the secondary key when available.
-    const degraded = detectDegradedOutput(result);
+    const degraded = detectDegradedOutput(result.text);
     if (degraded) {
       throw new Error(`degraded output detected: "${degraded}"`);
     }
-    console.log(`[AI] <- ${model} ok (${Date.now() - started}ms, ${result.length} chars)`);
-    return result;
+    const duration = Date.now() - started;
+    console.log(`[AI] <- ${model} ok (${duration}ms, ${result.text.length} chars)`);
+    logUsage(opts, { model, status: "ok", result, durationMs: duration });
+    return result.text;
   } catch (error: any) {
-    console.error(`[AI] ${model} failed after ${Date.now() - started}ms:`, error.message);
+    const firstDuration = Date.now() - started;
+    console.error(`[AI] ${model} failed after ${firstDuration}ms:`, error.message);
 
     // Retry Gemini once before falling back — most failures are tail-latency
     // timeouts, transient throttling, or degraded-output snapshots. If a
@@ -206,15 +270,39 @@ export async function callAgent(opts: AgentCallOptions): Promise<string> {
         const result = useSecondary
           ? await callGemini(opts, model, geminiSecondary!)
           : await callModel(opts, model);
-        const degradedRetry = detectDegradedOutput(result);
+        const degradedRetry = detectDegradedOutput(result.text);
         if (degradedRetry) {
           throw new Error(`degraded output on retry: "${degradedRetry}"`);
         }
-        console.log(`[AI] <- ${model} ok on retry (${Date.now() - retryStarted}ms, ${result.length} chars)`);
-        return result;
+        const duration = Date.now() - retryStarted;
+        console.log(`[AI] <- ${model} ok on retry (${duration}ms, ${result.text.length} chars)`);
+        logUsage(opts, {
+          model,
+          status: "retry",
+          result,
+          durationMs: duration,
+          usedSecondaryKey: useSecondary,
+        });
+        return result.text;
       } catch (retryError: any) {
-        console.error(`[AI] ${model} retry also failed after ${Date.now() - retryStarted}ms:`, retryError.message);
+        const retryDuration = Date.now() - retryStarted;
+        console.error(`[AI] ${model} retry also failed after ${retryDuration}ms:`, retryError.message);
+        logUsage(opts, {
+          model,
+          status: "error",
+          durationMs: retryDuration,
+          usedSecondaryKey: useSecondary,
+          errorMessage: retryError?.message ?? String(retryError),
+        });
       }
+    } else {
+      // Non-Gemini primary that failed without a retry attempt — still log it.
+      logUsage(opts, {
+        model,
+        status: "error",
+        durationMs: firstDuration,
+        errorMessage: error?.message ?? String(error),
+      });
     }
 
     if (!fallback) throw error;
@@ -223,10 +311,26 @@ export async function callAgent(opts: AgentCallOptions): Promise<string> {
     const fbStarted = Date.now();
     try {
       const result = await callModel(opts, fallback);
-      console.log(`[AI] <- ${fallback} ok (${Date.now() - fbStarted}ms, ${result.length} chars)`);
-      return result;
+      const fbDuration = Date.now() - fbStarted;
+      console.log(`[AI] <- ${fallback} ok (${fbDuration}ms, ${result.text.length} chars)`);
+      logUsage(opts, {
+        model: fallback,
+        status: "fallback",
+        result,
+        durationMs: fbDuration,
+        fallbackFrom: model,
+      });
+      return result.text;
     } catch (fallbackError: any) {
-      console.error(`[AI] Fallback ${fallback} also failed after ${Date.now() - fbStarted}ms:`, fallbackError.message);
+      const fbDuration = Date.now() - fbStarted;
+      console.error(`[AI] Fallback ${fallback} also failed after ${fbDuration}ms:`, fallbackError.message);
+      logUsage(opts, {
+        model: fallback,
+        status: "error",
+        durationMs: fbDuration,
+        fallbackFrom: model,
+        errorMessage: fallbackError?.message ?? String(fallbackError),
+      });
       throw fallbackError;
     }
   }
