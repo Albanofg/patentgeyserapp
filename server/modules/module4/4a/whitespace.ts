@@ -330,15 +330,17 @@ export async function runWhitespace(payload: WhitespacePayload) {
         inventorClarificationQuestions: np.inventorClarificationQuestions || [],
       }));
 
-      // Roll up the cross-patent questions into the strategy slot so the
-      // claims agent still has something to ingest. No synthesis happens
-      // here — we just pass the model's verbatim questions through.
+      // The new prompt is fact-only — it doesn't produce a strategy, list
+      // differentiators, or write claim-drafting guidance. We pass cross-
+      // patent questions through to the strategy slot for the claims agent
+      // to consume, but leave the other two slots empty so the UI doesn't
+      // render placeholder sections.
       const crossQuestions = p.crossPatentClarificationQuestions || [];
       const whiteSpaceStrategy = crossQuestions.length
         ? crossQuestions.join(" ")
         : parseError
           ? `Analysis unavailable for this concept: ${parseError}`
-          : "Awaiting inventor responses to clarification questions.";
+          : "";
 
       return {
         conceptNumber: nugget.index + 1,
@@ -354,10 +356,9 @@ export async function runWhitespace(payload: WhitespacePayload) {
         strategy: {
           whiteSpaceStrategy,
           primaryDifferentiators: [],
-          claimDraftingGuidance:
-            parseError
-              ? "Manual review required — model output could not be parsed for this concept. Re-run the stage to retry."
-              : "Awaiting inventor responses to clarification questions before producing claim-drafting guidance.",
+          claimDraftingGuidance: parseError
+            ? "Manual review required — model output could not be parsed for this concept. Re-run the stage to retry."
+            : "",
         },
       };
     });

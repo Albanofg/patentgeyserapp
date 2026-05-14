@@ -12,13 +12,37 @@ import { Loader2, AlertTriangle, Shield, FileText, PencilLine, ChevronDown, Chev
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import type { Project } from "@shared/schema";
 
+// Defensive filter: strip any string that contains legal-advice vocabulary
+// before it renders. Old DB rows from earlier whitespace runs may still
+// carry placeholders like "claim-drafting guidance"; we never want that
+// text on screen because the rewritten 4a prompt is fact-only by design
+// and the app is not authorized to give claim guidance.
+const FORBIDDEN_DISPLAY_FRAGMENTS = ["claim"];
+function safeDisplay(s: any): string {
+  if (typeof s !== "string") return "";
+  const lower = s.toLowerCase();
+  for (const frag of FORBIDDEN_DISPLAY_FRAGMENTS) {
+    if (lower.includes(frag)) return "";
+  }
+  return s;
+}
+function safeList(arr: any): string[] {
+  if (!Array.isArray(arr)) return [];
+  return arr.map((v) => safeDisplay(v)).filter((s) => s.length > 0);
+}
+
 export default function Agent4() {
   const [, params] = useRoute("/project/:id/agent/4a");
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const projectId = params?.id;
   const [userNotes, setUserNotes] = useState<{ [conceptIndex: number]: string }>({});
+  // Each concept's per-patent analysis (mechanisms + clarification
+  // questions) lives inside a collapsible. We default ALL of them to open
+  // so users see the depth immediately on page load; the toggle is there
+  // for users who want to collapse a concept once they've reviewed it.
   const [expandedConcepts, setExpandedConcepts] = useState<{ [key: number]: boolean }>({});
+  const [hasInitializedExpansion, setHasInitializedExpansion] = useState(false);
 
   const { data: project, isLoading: projectLoading } = useQuery<Project>({
     queryKey: ["/api/projects", projectId],
@@ -113,9 +137,22 @@ export default function Agent4() {
   const summary = analysisResults.summary || {};
   
   const isNewFormat = conceptAnalyses.length > 0;
-  const totalAnalyzed = isNewFormat 
+  const totalAnalyzed = isNewFormat
     ? summary.totalConceptsAnalyzed || conceptAnalyses.length
     : analysisResults.totalNuggetsAnalyzed || nuggetAnalyses.length;
+
+  // First time we see concept data, open every concept's per-patent
+  // analysis so the user lands on the page with the depth visible
+  // rather than a stack of collapsed cards.
+  useEffect(() => {
+    if (hasInitializedExpansion) return;
+    const total = isNewFormat ? conceptAnalyses.length : nuggetAnalyses.length;
+    if (total === 0) return;
+    const next: { [key: number]: boolean } = {};
+    for (let i = 0; i < total; i++) next[i] = true;
+    setExpandedConcepts(next);
+    setHasInitializedExpansion(true);
+  }, [isNewFormat, conceptAnalyses.length, nuggetAnalyses.length, hasInitializedExpansion]);
 
   const getRiskBadgeVariant = (riskLevel: string) => {
     const level = riskLevel?.toLowerCase();
@@ -314,79 +351,104 @@ export default function Agent4() {
                                 </div>
                               </div>
 
-                              {mechs.length > 0 ? (
-                                <div className="space-y-1 text-sm mb-3">
-                                  <div className="font-medium text-muted-foreground text-xs">Extracted Mechanisms</div>
-                                  <ul className="list-disc list-inside space-y-0.5">
-                                    {mechs.map((m, mIdx) => (
-                                      <li key={mIdx}>{m}</li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              ) : patent.specificConstraint ? (
-                                <div className="text-sm mb-3">
-                                  <span className="font-medium text-muted-foreground">Constraint: </span>
-                                  <span>{patent.constraint || patent.specificConstraint}</span>
-                                </div>
-                              ) : null}
+                              {(() => {
+                                const safeMechs = safeList(mechs);
+                                const safeConstraint = safeDisplay(patent.constraint || patent.specificConstraint);
+                                if (safeMechs.length > 0) {
+                                  return (
+                                    <div className="space-y-1 text-sm mb-3">
+                                      <div className="font-medium text-muted-foreground text-xs">Extracted Mechanisms</div>
+                                      <ul className="list-disc list-inside space-y-0.5">
+                                        {safeMechs.map((m, mIdx) => (
+                                          <li key={mIdx}>{m}</li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  );
+                                }
+                                if (safeConstraint) {
+                                  return (
+                                    <div className="text-sm mb-3">
+                                      <span className="font-medium text-muted-foreground">Constraint: </span>
+                                      <span>{safeConstraint}</span>
+                                    </div>
+                                  );
+                                }
+                                return null;
+                              })()}
 
-                              {questions.length > 0 ? (
-                                <div className="space-y-1 text-sm">
-                                  <div className="font-medium text-primary text-xs">Inventor Clarification Questions</div>
-                                  <ul className="list-disc list-inside space-y-0.5">
-                                    {questions.map((q, qIdx) => (
-                                      <li key={qIdx}>{q}</li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              ) : patent.differentiationStrategy ? (
-                                <div className="text-sm">
-                                  <span className="font-medium text-primary">Differentiation: </span>
-                                  <span>{patent.differentiationStrategy}</span>
-                                </div>
-                              ) : null}
+                              {(() => {
+                                const safeQs = safeList(questions);
+                                const safeDiff = safeDisplay(patent.differentiationStrategy);
+                                if (safeQs.length > 0) {
+                                  return (
+                                    <div className="space-y-1 text-sm">
+                                      <div className="font-medium text-primary text-xs">Inventor Clarification Questions</div>
+                                      <ul className="list-disc list-inside space-y-0.5">
+                                        {safeQs.map((q, qIdx) => (
+                                          <li key={qIdx}>{q}</li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  );
+                                }
+                                if (safeDiff) {
+                                  return (
+                                    <div className="text-sm">
+                                      <span className="font-medium text-primary">Differentiation: </span>
+                                      <span>{safeDiff}</span>
+                                    </div>
+                                  );
+                                }
+                                return null;
+                              })()}
                             </div>
                           );
                           })}
                         </CollapsibleContent>
                       </Collapsible>
 
-                      {/* Strategic Guidance */}
-                      {concept.strategy && (
-                        <div className="mt-4 space-y-3">
-                          <h4 className="font-semibold text-sm text-primary">Strategic Guidance</h4>
-                          
-                          {concept.strategy.whiteSpaceStrategy && (
-                            <div>
-                              <h5 className="text-xs font-medium text-muted-foreground mb-1">White Space Strategy</h5>
-                              <div className="bg-primary/5 border border-primary/20 p-3 rounded-md text-sm">
-                                {concept.strategy.whiteSpaceStrategy}
+                      {/* Strategic Guidance — only render the subsections
+                          whose content survives the legal-advice filter,
+                          and the wrapper only if anything's left to show.
+                          The rewritten 4a prompt is fact-only, so for new
+                          runs all three subsections will normally be empty
+                          and this entire block disappears. */}
+                      {(() => {
+                        const ws = safeDisplay(concept.strategy?.whiteSpaceStrategy);
+                        const diffs = safeList(concept.strategy?.primaryDifferentiators);
+                        const guidance = safeDisplay(concept.strategy?.claimDraftingGuidance);
+                        if (!ws && diffs.length === 0 && !guidance) return null;
+                        return (
+                          <div className="mt-4 space-y-3">
+                            <h4 className="font-semibold text-sm text-primary">Strategic Guidance</h4>
+                            {ws && (
+                              <div>
+                                <h5 className="text-xs font-medium text-muted-foreground mb-1">White Space Strategy</h5>
+                                <div className="bg-primary/5 border border-primary/20 p-3 rounded-md text-sm">
+                                  {ws}
+                                </div>
                               </div>
-                            </div>
-                          )}
-
-                          {concept.strategy.primaryDifferentiators && (
-                            <div>
-                              <h5 className="text-xs font-medium text-muted-foreground mb-1">Primary Differentiators</h5>
-                              <ul className="list-disc list-inside text-sm space-y-1">
-                                {Array.isArray(concept.strategy.primaryDifferentiators) 
-                                  ? concept.strategy.primaryDifferentiators.map((diff: string, dIdx: number) => (
-                                      <li key={dIdx}>{diff}</li>
-                                    ))
-                                  : <li>{concept.strategy.primaryDifferentiators}</li>
-                                }
-                              </ul>
-                            </div>
-                          )}
-
-                          {concept.strategy.claimDraftingGuidance && (
-                            <div>
-                              <h5 className="text-xs font-medium text-muted-foreground mb-1">Key Concept Drafting Guidance</h5>
-                              <p className="text-sm text-muted-foreground">{concept.strategy.claimDraftingGuidance}</p>
-                            </div>
-                          )}
-                        </div>
-                      )}
+                            )}
+                            {diffs.length > 0 && (
+                              <div>
+                                <h5 className="text-xs font-medium text-muted-foreground mb-1">Primary Differentiators</h5>
+                                <ul className="list-disc list-inside text-sm space-y-1">
+                                  {diffs.map((diff, dIdx) => (
+                                    <li key={dIdx}>{diff}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            {guidance && (
+                              <div>
+                                <h5 className="text-xs font-medium text-muted-foreground mb-1">Drafting Notes</h5>
+                                <p className="text-sm text-muted-foreground">{guidance}</p>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                       
                       {/* User Notes */}
                       <div className="mt-4">
