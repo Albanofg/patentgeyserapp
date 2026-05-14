@@ -737,6 +737,11 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     // the next request with INVALID_ARGUMENT.
     const turnFunctionCallParts: any[] = [];
 
+    // On the final allowed turn, drop the tool declarations so Gemini is
+    // forced to emit a prose response instead of calling more tools. Without
+    // this guard, models that keep proposing tool calls every turn exhaust
+    // MAX_TOOL_TURNS with no text and the user sees only tool chips.
+    const isLastTurn = turn === MAX_TOOL_TURNS - 1;
     const streamConfig = {
       model: CONFIG.model,
       contents,
@@ -746,7 +751,7 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         topP: CONFIG.topP,
         maxOutputTokens: CONFIG.maxTokens,
         safetySettings: GEMINI_SAFETY_OFF,
-        ...(CONFIG.toolsEnabled
+        ...(CONFIG.toolsEnabled && !isLastTurn
           ? { tools: [{ functionDeclarations: TOOL_DECLARATIONS as any }] }
           : {}),
       },

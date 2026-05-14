@@ -70,6 +70,31 @@ const GEMINI_SAFETY_OFF = [
 const EMPTY_RESPONSE_GUARD =
   "\n\nCRITICAL: You must never return an empty response. If you cannot process an item due to safety or content restrictions, you must output the exact string 'ITEM_FILTERED' instead of returning nothing.";
 
+// Telltale phrases observed in degraded Gemini Pro responses where the model
+// returned 200 OK but emitted meta-commentary placeholders instead of doing
+// the actual work. When these appear, we treat the response as a failure and
+// retry (with the secondary key if configured). Add new phrases here as we
+// observe more degradation modes — keep them specific enough that they don't
+// false-positive on legitimate output.
+const DEGRADED_OUTPUT_MARKERS = [
+  "N/A - Fact extraction only",
+  "N/A - Question generation only",
+  "Strategy synthesis disabled per instructions",
+  "N/A - Strategy synthesis disabled",
+  "Claim drafting guidance disabled per instructions",
+];
+
+/**
+ * Scan a model response for known "the model gave up" placeholder phrases.
+ * Returns the first matching phrase if found (so we can log it), otherwise null.
+ */
+function detectDegradedOutput(text: string): string | null {
+  for (const marker of DEGRADED_OUTPUT_MARKERS) {
+    if (text.includes(marker)) return marker;
+  }
+  return null;
+}
+
 async function callGemini(
   opts: AgentCallOptions,
   model: string,
@@ -156,15 +181,23 @@ export async function callAgent(opts: AgentCallOptions): Promise<string> {
 
   try {
     const result = await callModel(opts, model);
+    // Sanity-check the output before returning. Gemini Pro occasionally
+    // returns 200 OK with placeholder meta-text instead of real analysis
+    // (observed on Whitespace 4a). Throwing here re-enters the retry path
+    // below, which will use the secondary key when available.
+    const degraded = detectDegradedOutput(result);
+    if (degraded) {
+      throw new Error(`degraded output detected: "${degraded}"`);
+    }
     console.log(`[AI] <- ${model} ok (${Date.now() - started}ms, ${result.length} chars)`);
     return result;
   } catch (error: any) {
     console.error(`[AI] ${model} failed after ${Date.now() - started}ms:`, error.message);
 
     // Retry Gemini once before falling back — most failures are tail-latency
-    // timeouts or transient throttling that resolve on a second attempt. If a
+    // timeouts, transient throttling, or degraded-output snapshots. If a
     // secondary API key is configured, the retry uses it so we get a fresh
-    // quota bucket instead of hitting the same throttle again.
+    // quota bucket and (often) a different model snapshot.
     if (isGemini(model)) {
       const retryStarted = Date.now();
       const useSecondary = geminiSecondary !== null;
@@ -173,6 +206,10 @@ export async function callAgent(opts: AgentCallOptions): Promise<string> {
         const result = useSecondary
           ? await callGemini(opts, model, geminiSecondary!)
           : await callModel(opts, model);
+        const degradedRetry = detectDegradedOutput(result);
+        if (degradedRetry) {
+          throw new Error(`degraded output on retry: "${degradedRetry}"`);
+        }
         console.log(`[AI] <- ${model} ok on retry (${Date.now() - retryStarted}ms, ${result.length} chars)`);
         return result;
       } catch (retryError: any) {

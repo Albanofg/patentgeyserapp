@@ -3,7 +3,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Send, Bot, User, Loader2, X, Copy, Check, Brain, ChevronDown, ChevronUp } from "lucide-react";
+import { Send, User, Loader2, X, Copy, Check, Brain, ChevronDown, ChevronUp } from "lucide-react";
+import aiHelperAvatar from "@/assets/ai-helper-avatar.png";
 import { getCurrentPageSnapshot } from "@/lib/page-snapshot";
 
 interface CoachMessage {
@@ -207,7 +208,7 @@ export function QAAssistantPanel({
       <div className="border-b shrink-0">
         <div className="px-4 py-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0 flex-1">
-            <Bot className="h-5 w-5 text-primary shrink-0" />
+            <img src={aiHelperAvatar} alt="" className="h-5 w-5 shrink-0 object-contain" />
             <h2 className="font-semibold truncate">AI Helper</h2>
           </div>
           <Button
@@ -294,7 +295,7 @@ export function QAAssistantPanel({
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4" ref={scrollRef}>
         {messages.length === 0 && !streamingText && !isSending ? (
           <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground py-8">
-            <Bot className="h-12 w-12 mb-4 opacity-50" />
+            <img src={aiHelperAvatar} alt="" className="h-12 w-12 mb-4 opacity-50 object-contain" />
             <p className="text-base font-medium">How can I help you?</p>
             <p className="text-sm mt-2">
               Ask me questions about your patent application, key concepts, or the workflow process.
@@ -357,7 +358,6 @@ export function QAAssistantPanel({
 
 function MessageBubble({ m }: { m: CoachMessage }) {
   const isUser = m.role === "user";
-  const Icon = isUser ? User : Bot;
   const label = isUser ? "You" : "AI Helper";
   return (
     <div
@@ -370,13 +370,13 @@ function MessageBubble({ m }: { m: CoachMessage }) {
         }`}
       >
         <div className="flex items-center gap-2 mb-2 opacity-80">
-          <div
-            className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center ${
-              isUser ? "bg-primary-foreground/20" : "bg-primary/15"
-            }`}
-          >
-            <Icon className={`h-3.5 w-3.5 ${isUser ? "text-primary-foreground" : "text-primary"}`} />
-          </div>
+          {isUser ? (
+            <div className="shrink-0 w-6 h-6 rounded-full flex items-center justify-center bg-primary-foreground/20">
+              <User className="h-3.5 w-3.5 text-primary-foreground" />
+            </div>
+          ) : (
+            <img src={aiHelperAvatar} alt="" className="shrink-0 h-6 w-6 object-contain" />
+          )}
           <span className="text-xs font-medium">{label}</span>
         </div>
         {isUser ? (
@@ -464,9 +464,7 @@ function ThinkingBubble({ elapsedSec }: { elapsedSec: number }) {
     <div className="flex justify-start" data-testid="ai-thinking-bubble">
       <div className="bg-muted rounded-lg px-4 py-3 max-w-full w-full">
         <div className="flex items-center gap-2 mb-2 opacity-80">
-          <div className="shrink-0 w-6 h-6 rounded-full bg-primary/15 flex items-center justify-center">
-            <Bot className="h-3.5 w-3.5 text-primary animate-pulse" />
-          </div>
+          <img src={aiHelperAvatar} alt="" className="shrink-0 h-6 w-6 object-contain animate-pulse" />
           <span className="text-xs font-medium">AI Helper</span>
         </div>
         <div className="flex items-center gap-3">
