@@ -85,8 +85,32 @@ export function QAAssistantPanel({
   const [isSending, setIsSending] = useState(false);
   const [thinkingElapsedSec, setThinkingElapsedSec] = useState(0);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [inputHeight, setInputHeight] = useState(96);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const dragStateRef = useRef<{ startY: number; startHeight: number } | null>(null);
+
+  // Drag from the top edge: pulling UP grows the input, pulling DOWN shrinks
+  // it. Capped between one line (44px) and 60% of the viewport so it never
+  // eats the whole chat area.
+  const onResizeStart = (e: React.PointerEvent) => {
+    e.preventDefault();
+    dragStateRef.current = { startY: e.clientY, startHeight: inputHeight };
+    const onMove = (ev: PointerEvent) => {
+      const s = dragStateRef.current;
+      if (!s) return;
+      const max = Math.floor(window.innerHeight * 0.6);
+      const next = Math.min(max, Math.max(44, s.startHeight + (s.startY - ev.clientY)));
+      setInputHeight(next);
+    };
+    const onUp = () => {
+      dragStateRef.current = null;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
 
   useEffect(() => {
     if (!isSending) {
@@ -139,6 +163,7 @@ export function QAAssistantPanel({
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
+
 
   const send = async () => {
     if (!input.trim() || isSending) return;
@@ -331,21 +356,36 @@ export function QAAssistantPanel({
 
       {/* Input */}
       <div className="px-4 py-3 border-t bg-background shrink-0">
-        <div className="flex gap-2 items-center">
-          <Textarea
+        <div
+          className="relative rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-0"
+          style={{ height: inputHeight }}
+        >
+          {/* Drag handle: pull up to enlarge, pull down to shrink. */}
+          <div
+            onPointerDown={onResizeStart}
+            className="absolute -top-1 left-0 right-0 h-2 cursor-ns-resize flex items-center justify-center group"
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize input"
+            data-testid="resize-input-handle"
+          >
+            <div className="h-1 w-10 rounded-full bg-border group-hover:bg-muted-foreground/60 transition-colors" />
+          </div>
+          <textarea
             ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Ask a question..."
-            className="resize-none h-11 overflow-y-auto"
             disabled={isSending}
             data-testid="input-qa-message"
+            className="block h-full w-full resize-none rounded-md border-0 bg-transparent pl-3 pr-14 pt-3 pb-10 text-sm leading-6 placeholder:text-muted-foreground focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
           />
           <Button
             onClick={send}
             disabled={!input.trim() || isSending}
             size="icon"
+            className="absolute! bottom-2 right-2 h-8 w-8 z-10 no-default-hover-elevate no-default-active-elevate"
             data-testid="button-send-qa-message"
           >
             {isSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
