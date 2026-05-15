@@ -202,13 +202,30 @@ interface ToolContext {
   // Map of display id ("q_0017") → DB uuid. Lets the model reference questions
   // by their short display id while the DB keeps using uuids.
   questionIdMap: Map<string, string>;
+  // Current leap target the routing state machine is working on. Used to
+  // (a) auto-tag completion entries when the agent omits the tag and
+  // (b) keep open-question accumulation under control.
+  currentLeapTarget: string | null;
 }
+
+const COMPLETION_ENTRY_TYPES = new Set(["first_conceptual_leap", "pohc_answer"]);
 
 async function executeTool(call: ToolCall, ctx: ToolContext): Promise<ToolResult> {
   try {
     switch (call.name) {
       case "recordEntry": {
         const a = recordEntryArgs.parse(call.args);
+        // Auto-tag completion entries with currentLeapTarget when the agent
+        // omitted it. Without this, leapProgress never flips to "complete"
+        // and the agent loops on Turn A, accumulating duplicate questions.
+        let finalTags = a.tags ?? null;
+        if (
+          ctx.currentLeapTarget &&
+          COMPLETION_ENTRY_TYPES.has(a.entryType) &&
+          !(finalTags ?? []).includes(ctx.currentLeapTarget)
+        ) {
+          finalTags = [...(finalTags ?? []), ctx.currentLeapTarget];
+        }
         const [row] = await db
           .insert(coachLogEntries)
           .values({
@@ -217,10 +234,10 @@ async function executeTool(call: ToolCall, ctx: ToolContext): Promise<ToolResult
             verbatimText: a.verbatimText,
             sourceMessageId: ctx.assistantMessageId,
             capturedBy: "auto",
-            tags: a.tags ?? null,
+            tags: finalTags,
           })
           .returning();
-        return { name: call.name, ok: true, result: { entryId: row.id, entryType: row.entryType } };
+        return { name: call.name, ok: true, result: { entryId: row.id, entryType: row.entryType, tags: finalTags } };
       }
       case "updateArticulation": {
         const a = updateArticulationArgs.parse(call.args);
@@ -242,6 +259,20 @@ async function executeTool(call: ToolCall, ctx: ToolContext): Promise<ToolResult
       }
       case "addOpenQuestion": {
         const a = addOpenQuestionArgs.parse(call.args);
+        // Enforce one-at-a-time progression per SERVER_CONTRACT: any prior
+        // unanswered open question for this project is superseded by the
+        // new one. Mark them dismissed so they stop blocking routing and
+        // stop bloating context with duplicate scaffolds.
+        await db
+          .update(coachOpenQuestions)
+          .set({ dismissedAt: new Date() })
+          .where(
+            and(
+              eq(coachOpenQuestions.projectId, ctx.projectId),
+              sql`${coachOpenQuestions.answeredAt} IS NULL`,
+              sql`${coachOpenQuestions.dismissedAt} IS NULL`,
+            ),
+          );
         const [row] = await db
           .insert(coachOpenQuestions)
           .values({
@@ -442,6 +473,29 @@ function renderPageSnapshot(snap: NonNullable<QAPayload["pageSnapshot"]>): strin
  * Render the projectContext as a labeled markdown block so the model can
  * address every list item by its stable label rather than positional ordinals.
  */
+/**
+ * Compact one array element to a single readable line. The whitespace analysis
+ * payload (conceptAnalyses) is enormous if JSON-stringified — every entry
+ * carries per-patent rows, strategy blocks, risk levels, etc. — so we pull a
+ * short label out and leave the rest behind. The agent doesn't need that
+ * detail to reason about Concept N; it just needs the stable label + a hint
+ * of what the concept is.
+ */
+function summarizeArrayItem(item: any): string {
+  if (item == null) return "(empty)";
+  if (typeof item === "string") return item;
+  if (typeof item !== "object") return String(item);
+  const labelKeys = ["conceptTitle", "title", "name", "summary", "label"];
+  for (const k of labelKeys) {
+    if (typeof item[k] === "string" && item[k].length > 0) return item[k];
+  }
+  if (typeof item.id === "string") return item.id;
+  // Last resort: stringify but cap the length so one fat row can't blow up
+  // the prompt all on its own.
+  const s = JSON.stringify(item);
+  return s.length > 240 ? `${s.slice(0, 240)}…` : s;
+}
+
 function renderProjectContext(pc: QAPayload["projectContext"]): string {
   const lines: string[] = [];
   for (const [field, value] of Object.entries(pc)) {
@@ -452,8 +506,7 @@ function renderProjectContext(pc: QAPayload["projectContext"]): string {
       const prefix = arrayFieldPrefix(field);
       lines.push(`\n**${field}** (${value.length} items):`);
       value.forEach((item, i) => {
-        const text = typeof item === "string" ? item : JSON.stringify(item);
-        lines.push(`- ${prefix} ${i + 1}: ${text}`);
+        lines.push(`- ${prefix} ${i + 1}: ${summarizeArrayItem(item)}`);
       });
     } else if (typeof value === "object") {
       lines.push(`\n**${field}:** ${JSON.stringify(value)}`);
@@ -647,43 +700,60 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
   }
 
   // ─── 2. Build the runtime context block ────────────────────────────────────
-  const sections: string[] = [];
   const pc = payload.projectContext ?? {};
-  const projInfo: string[] = [];
-  if (pc.projectTitle) projInfo.push(`Title: ${pc.projectTitle}`);
-  if (pc.currentStage !== undefined && pc.currentStage !== null) {
-    projInfo.push(`currentLocation.stage: ${pc.currentStage}`);
-  }
-  if (payload.currentLocation) projInfo.push(`Location label: ${payload.currentLocation}`);
-  projInfo.push(`previousStage: ${previousStage === null ? "null" : String(previousStage)}`);
-  sections.push(`## PROJECT META\n${projInfo.join("\n")}`);
 
-  sections.push(
-    `## POHC + LEAP LOG (${visibleLog.length} entries)\n${
-      visibleLog.length === 0
-        ? "(empty)"
-        : visibleLog
-            .map(
-              (e) =>
-                `- ${e.displayId} [${(e.entryType || "").toUpperCase()}] (${
-                  e.capturedAt?.toISOString?.() ?? ""
-                }): ${e.editedText ?? e.verbatimText}`,
-            )
-            .join("\n")
-    }`,
-  );
-  sections.push(
-    `## CURRENT ARTICULATION (v${latestArticulation?.version ?? 0})\n${
-      latestArticulation?.content ?? "(none yet)"
-    }`,
-  );
-  sections.push(
-    `## OPEN QUESTIONS (${visibleOpenQs.length})\n${
-      visibleOpenQs.length === 0
-        ? "(none)"
-        : visibleOpenQs.map((q) => `- ${q.displayId}: ${q.question}`).join("\n")
-    }`,
-  );
+  // Build the full user message from fresh state. Used at start AND between
+  // tool turns so the agent always reads the current TURN ROUTER STATE — not
+  // the stale block from before the tool calls executed.
+  function buildUserMessage(
+    logRows: Array<any>,
+    openQRows: Array<any>,
+    routingNow: RoutingFields,
+  ): string {
+    const s: string[] = [];
+    const meta: string[] = [];
+    if (pc.projectTitle) meta.push(`Title: ${pc.projectTitle}`);
+    if (pc.currentStage !== undefined && pc.currentStage !== null) {
+      meta.push(`currentLocation.stage: ${pc.currentStage}`);
+    }
+    if (payload.currentLocation) meta.push(`Location label: ${payload.currentLocation}`);
+    meta.push(`previousStage: ${previousStage === null ? "null" : String(previousStage)}`);
+    s.push(`## PROJECT META\n${meta.join("\n")}`);
+
+    s.push(
+      `## POHC + LEAP LOG (${logRows.length} entries)\n${
+        logRows.length === 0
+          ? "(empty)"
+          : logRows
+              .map(
+                (e) =>
+                  `- ${e.displayId ?? e.id} [${(e.entryType || "").toUpperCase()}] (${
+                    e.capturedAt?.toISOString?.() ?? ""
+                  }): ${e.editedText ?? e.verbatimText}`,
+              )
+              .join("\n")
+      }`,
+    );
+    s.push(
+      `## CURRENT ARTICULATION (v${latestArticulation?.version ?? 0})\n${
+        latestArticulation?.content ?? "(none yet)"
+      }`,
+    );
+    s.push(
+      `## OPEN QUESTIONS (${openQRows.length})\n${
+        openQRows.length === 0
+          ? "(none)"
+          : openQRows.map((q) => `- ${q.displayId ?? q.id}: ${q.question}`).join("\n")
+      }`,
+    );
+    s.push(`## TURN ROUTER STATE\n${renderRouting(routingNow)}`);
+    s.push(`## AGENT MODULE STATE\n${renderProjectContext(pc)}`);
+    if (payload.pageSnapshot) {
+      s.push(`## CURRENT PAGE\n${renderPageSnapshot(payload.pageSnapshot)}`);
+    }
+    return `${s.join("\n\n")}\n\n## NEW USER MESSAGE\n${payload.message}`;
+  }
+
   // Routing state machine. Computed server-side per SERVER_CONTRACT in
   // qa-assistant.md — the agent reads these fields verbatim and never
   // re-derives them from pohcLog or openQuestions.
@@ -693,18 +763,8 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     visibleLog,
     visibleOpenQs,
   );
-  sections.push(`## TURN ROUTER STATE\n${renderRouting(routing)}`);
 
-  sections.push(`## AGENT MODULE STATE\n${renderProjectContext(pc)}`);
-
-  // Snapshot of what's on the user's screen right now (registered per-page,
-  // or a fallback `<main>` scrape). Always present — there's no scenario where
-  // the user isn't looking at *something*.
-  if (payload.pageSnapshot) {
-    sections.push(`## CURRENT PAGE\n${renderPageSnapshot(payload.pageSnapshot)}`);
-  }
-
-  const fullUserMessage = `${sections.join("\n\n")}\n\n## NEW USER MESSAGE\n${payload.message}`;
+  const fullUserMessage = buildUserMessage(visibleLog, visibleOpenQs, routing);
 
   // ─── 3. Persist the user message + a placeholder assistant message ─────────
   let userMsgId: string | null = null;
@@ -737,6 +797,7 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     projectId: projectId ?? "",
     assistantMessageId: assistantMessageId ?? "",
     questionIdMap: questionDisplayToUuid,
+    currentLeapTarget: routing.currentLeapTarget,
   };
 
   // ─── 4. Streaming + tool-calling loop ──────────────────────────────────────
@@ -746,6 +807,7 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
   }));
 
   // Mutable conversation we feed back into Gemini each iteration.
+  const originalUserMsgIndex = geminiHistory.length;
   const contents: any[] = [
     ...geminiHistory,
     { role: "user", parts: [{ text: fullUserMessage }] },
@@ -984,17 +1046,30 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         visibleRefreshedLog,
         visibleRefreshedOpenQs,
       );
-      // Inject the refreshed routing as a synthetic user message so the
-      // agent sees it on the very next streaming pass. Wrapped in a
-      // recognizable banner so it's never confused with operator input.
-      contents.push({
+      toolCtx.currentLeapTarget = updatedRouting.currentLeapTarget;
+      // Re-attach display ids so buildUserMessage can render them next turn.
+      const refreshedLogWithIds = visibleRefreshedLog.map((r, i) => ({
+        ...r,
+        displayId: `entry_${pad4(i + 1)}`,
+      }));
+      const refreshedOpenQsWithIds = visibleRefreshedOpenQs.map((r, i) => ({
+        ...r,
+        displayId: `q_${pad4(i + 1)}`,
+      }));
+      // Overwrite the original user message in place so the agent only sees
+      // the CURRENT TURN ROUTER STATE — not the pre-tool snapshot. Without
+      // this, LAW_TURN_ROUTER_PRIMACY makes the agent anchor on stale state
+      // (e.g. currentLeapPhase=not_started) even after a completion entry
+      // landed in pohcLog.
+      const rebuiltMessage = buildUserMessage(
+        refreshedLogWithIds,
+        refreshedOpenQsWithIds,
+        updatedRouting,
+      );
+      contents[originalUserMsgIndex] = {
         role: "user",
-        parts: [
-          {
-            text: `## POST-TOOL ROUTER STATE\n${renderRouting(updatedRouting)}`,
-          },
-        ],
-      });
+        parts: [{ text: rebuiltMessage }],
+      };
     }
   }
 

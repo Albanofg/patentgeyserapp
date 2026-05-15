@@ -75,6 +75,27 @@ function stage5Scope(projectContext: Record<string, any>): string[] {
 }
 
 /**
+ * Stage 6 scope per SERVER_CONTRACT and PHASE_6 spec (qa-assistant.md:688):
+ * compound ids `<Key Concept Set N>_<dimension>` for every (KCSet, dimension)
+ * pair. Dimensions are the three Proof of Human Conception validation axes:
+ * conception, contribution_quality, exceeding_known. The server enumerates
+ * all pairs and lets leapProgress completion drive which one gets attention
+ * via currentLeapTarget.
+ */
+const STAGE6_DIMENSIONS = ["conception", "contribution_quality", "exceeding_known"];
+
+function stage6Scope(projectContext: Record<string, any>): string[] {
+  const kcs: any[] = (projectContext.selectedKeyConcepts as any[]) || [];
+  const out: string[] = [];
+  kcs.forEach((_, i) => {
+    for (const dim of STAGE6_DIMENSIONS) {
+      out.push(`Key Concept Set ${i + 1}_${dim}`);
+    }
+  });
+  return out;
+}
+
+/**
  * Match a tag list against a target id. The agent tags entries with the
  * exact stable id ("Concept 21"), so a strict equality check is sufficient.
  */
@@ -143,9 +164,6 @@ export function computeRouting(
     };
   }
 
-  // Stage 6 scope (compound <KCSet>_<dimension> ids) is not yet implemented —
-  // returns empty so the procedural branch handles it until dimension data is
-  // wired in. Stages 2/4/5 have full scope builders.
   let scope: string[];
   if (stage === 2) {
     scope = stage2Scope(projectContext);
@@ -153,6 +171,8 @@ export function computeRouting(
     scope = stage4Scope(projectContext);
   } else if (stage === 5) {
     scope = stage5Scope(projectContext);
+  } else if (stage === 6) {
+    scope = stage6Scope(projectContext);
   } else {
     scope = [];
   }
