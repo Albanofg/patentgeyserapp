@@ -312,6 +312,32 @@ export function QAAssistantPanel({
               </div>
               <span className="font-mono text-foreground text-base">{messages.length}</span>
             </section>
+
+            <section className="pt-2 border-t border-border/40">
+              <h3 className="font-semibold text-foreground mb-1">Start fresh</h3>
+              <p className="text-xs text-muted-foreground mb-2">
+                Use this if the conversation feels stuck. Clears pending questions and lets us pick up from a clean slate. Your saved progress in the invention log stays put.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+                onClick={async () => {
+                  if (!confirm("Start fresh? Any pending question I asked will be set aside. Your invention log is kept.")) return;
+                  await fetch(`/api/projects/${projectId}/qa-assistant/force-reset`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    credentials: "include",
+                    body: "{}",
+                  });
+                  await qc.invalidateQueries({ queryKey: ["/api/projects", projectId, "qa-assistant/open-questions"] });
+                  await qc.invalidateQueries({ queryKey: ["/api/projects", projectId, "qa-assistant/log"] });
+                }}
+                data-testid="button-force-reset"
+              >
+                Start fresh
+              </Button>
+            </section>
           </div>
         )}
       </div>

@@ -6306,6 +6306,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // FORCE RESET — nuclear button for the inventor. Dismisses every unanswered
+  // open question for the project. POHC log entries are preserved (legal
+  // record stays intact), but routing recomputes fresh on the next QA turn.
+  // Surfaced as a "Start over from this stage" button in the Helper panel.
+  app.post("/api/projects/:id/qa-assistant/force-reset", isAuthenticated, async (req, res) => {
+    try {
+      const projectId = req.params.id;
+      await db.execute(drizzleSql`
+        UPDATE inventor_geyser.coach_open_questions
+        SET dismissed_at = NOW()
+        WHERE project_id = ${projectId}
+          AND answered_at IS NULL
+          AND dismissed_at IS NULL
+      `);
+      // Optional stage scope: if body has { rollbackStage: 4 }, also dismiss
+      // completion entries tagged to any Concept N from that stage so the
+      // protocol re-runs every concept fresh.
+      const rollbackStage = (req.body && typeof req.body.rollbackStage === "number")
+        ? req.body.rollbackStage
+        : null;
+      if (rollbackStage !== null) {
+        await db.execute(drizzleSql`
+          UPDATE inventor_geyser.coach_log_entries
+          SET dismissed_at = NOW()
+          WHERE project_id = ${projectId}
+            AND entry_type IN ('first_conceptual_leap', 'pohc_answer')
+            AND dismissed_at IS NULL
+        `);
+      }
+      res.json({ success: true, rollbackStage });
+    } catch (err: any) {
+      console.error("[force-reset] failed:", err);
+      res.status(500).json({ message: err?.message ?? "force reset failed" });
+    }
+  });
+
   // PATCH open question (dismiss)
   app.patch("/api/projects/:id/qa-assistant/open-questions/:qId", isAuthenticated, async (req, res) => {
     try {

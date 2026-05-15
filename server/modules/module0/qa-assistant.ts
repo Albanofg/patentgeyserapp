@@ -642,10 +642,154 @@ export async function patchOpenQuestion(
  * call becomes a stateless Q&A turn (the route can opt in to persistence by
  * adding `projectId: req.params.id` to projectContext).
  */
+/**
+ * Detect inventor-initiated recovery intent in their message text. If the
+ * user is asking to reset / restart / skip / redo, we mutate state DIRECTLY
+ * before the agent runs — so the agent sees post-action state and can't
+ * refuse, dead-end, or send them to "support."
+ *
+ * Returns the kind of recovery applied so the agent's reply can be primed
+ * with a positive forward directive.
+ */
+async function applyRecoveryIntent(
+  projectId: string,
+  message: string,
+): Promise<{ kind: "reset" | "skip" | "restart" | null; targetIndex: number | null }> {
+  const m = message.toLowerCase();
+
+  // Match "concept N" / "concept #N" — captures the number for targeted resets.
+  const conceptMatch = m.match(/concept\s*#?\s*(\d+)/);
+  const targetIndex = conceptMatch ? parseInt(conceptMatch[1], 10) : null;
+
+  // RESTART / START OVER — the user wants to wipe stage progress and begin again.
+  const restartPhrases = [
+    "start all over",
+    "start over",
+    "restart",
+    "restart from",
+    "begin again",
+    "from scratch",
+    "fresh start",
+    "wipe progress",
+    "clear progress",
+    "reset progress",
+    "resync",
+    "re-sync",
+    "re sync",
+  ];
+  if (restartPhrases.some((p) => m.includes(p))) {
+    // Dismiss every unanswered open question. Don't touch the pohcLog —
+    // entries stay for legal continuity, but the agent's routing will
+    // recompute fresh on the next turn.
+    await db
+      .update(coachOpenQuestions)
+      .set({ dismissedAt: new Date() })
+      .where(
+        and(
+          eq(coachOpenQuestions.projectId, projectId),
+          sql`${coachOpenQuestions.answeredAt} IS NULL`,
+          sql`${coachOpenQuestions.dismissedAt} IS NULL`,
+        ),
+      );
+    return { kind: "restart", targetIndex };
+  }
+
+  // RESET CONCEPT N — undo the completion for that concept so the agent can
+  // walk the inventor through it again. Dismiss matching log entries (don't
+  // delete — keep the record) and any open question that mentions the target.
+  const resetPhrases = ["reset", "redo", "go back to", "back to"];
+  if (targetIndex !== null && resetPhrases.some((p) => m.includes(p))) {
+    const targetTag = `Concept ${targetIndex}`;
+    await db
+      .update(coachLogEntries)
+      .set({ dismissedAt: new Date() })
+      .where(
+        and(
+          eq(coachLogEntries.projectId, projectId),
+          sql`${coachLogEntries.entryType} IN ('first_conceptual_leap', 'pohc_answer')`,
+          sql`${targetTag} = ANY(${coachLogEntries.tags})`,
+          sql`${coachLogEntries.dismissedAt} IS NULL`,
+        ),
+      );
+    // Also dismiss any open question — the agent will reopen on Turn A.
+    await db
+      .update(coachOpenQuestions)
+      .set({ dismissedAt: new Date() })
+      .where(
+        and(
+          eq(coachOpenQuestions.projectId, projectId),
+          sql`${coachOpenQuestions.answeredAt} IS NULL`,
+          sql`${coachOpenQuestions.dismissedAt} IS NULL`,
+        ),
+      );
+    return { kind: "reset", targetIndex };
+  }
+
+  // SKIP — the inventor wants to bypass the current leap target. Record a
+  // skip decision (so the legal log shows the inventor declined verbatim
+  // capture) and dismiss the open question. Routing's next pass will pick
+  // the next non-complete target.
+  const skipPhrases = [
+    "skip this",
+    "skip it",
+    "skip for now",
+    "move on",
+    "next one",
+    "next concept",
+    "i can't",
+    "i cannot",
+    "i don't know",
+    "i dont know",
+  ];
+  if (skipPhrases.some((p) => m.includes(p))) {
+    // Find the currently-open question to identify what's being skipped.
+    const [openQ] = await db
+      .select()
+      .from(coachOpenQuestions)
+      .where(
+        and(
+          eq(coachOpenQuestions.projectId, projectId),
+          sql`${coachOpenQuestions.answeredAt} IS NULL`,
+          sql`${coachOpenQuestions.dismissedAt} IS NULL`,
+        ),
+      )
+      .limit(1);
+
+    if (openQ) {
+      await db.insert(coachLogEntries).values({
+        projectId,
+        entryType: "concept_decision",
+        verbatimText: "Inventor opted to move on without capturing a verbatim leap.",
+        capturedBy: "auto",
+        tags: ["skipped"],
+      });
+      await db
+        .update(coachOpenQuestions)
+        .set({ dismissedAt: new Date() })
+        .where(eq(coachOpenQuestions.id, openQ.id));
+      return { kind: "skip", targetIndex };
+    }
+  }
+
+  return { kind: null, targetIndex: null };
+}
+
 export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEvent> {
   const projectId = payload.projectContext?.projectId;
   const persistent = typeof projectId === "string" && projectId.length > 0;
   const MAX_TOOL_TURNS = 3;
+
+  // INTENT PREEMPTION — before loading state, look for "reset / restart /
+  // skip" phrases and apply the corresponding state change directly. This
+  // makes the agent see post-action state and removes its opportunity to
+  // refuse with "contact support."
+  let recoveryApplied: { kind: "reset" | "skip" | "restart" | null; targetIndex: number | null } = {
+    kind: null,
+    targetIndex: null,
+  };
+  if (persistent) {
+    recoveryApplied = await applyRecoveryIntent(projectId!, payload.message);
+  }
 
   // ─── 1. Load module-owned state ─────────────────────────────────────────────
   let visibleLog: Array<any> = [];
@@ -772,7 +916,15 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     if (payload.pageSnapshot) {
       s.push(`## CURRENT PAGE\n${renderPageSnapshot(payload.pageSnapshot)}`);
     }
-    return `${s.join("\n\n")}\n\n## NEW USER MESSAGE\n${payload.message}`;
+    let recoveryNote = "";
+    if (recoveryApplied.kind === "restart") {
+      recoveryNote = `\n\n## SERVER NOTICE\nThe server has already wiped open questions for this stage in response to the inventor's restart request. State is clean. Proceed with Turn A for the lowest-numbered non-complete target in scope. Do NOT describe what the server did. Do NOT mention state, contradictions, support, or refresh. Just begin teaching.`;
+    } else if (recoveryApplied.kind === "reset" && recoveryApplied.targetIndex !== null) {
+      recoveryNote = `\n\n## SERVER NOTICE\nThe server has reset Concept ${recoveryApplied.targetIndex} to not_started and cleared any open question in response to the inventor's reset request. State is clean. Proceed with Turn A for Concept ${recoveryApplied.targetIndex}. Do NOT describe what the server did. Do NOT mention state, contradictions, support, or refresh. Just begin teaching.`;
+    } else if (recoveryApplied.kind === "skip") {
+      recoveryNote = `\n\n## SERVER NOTICE\nThe server has recorded the inventor's decision to move on from the current leap target and cleared the open question. Routing has advanced. Proceed with Turn A for the next non-complete target in scope. Do NOT describe what the server did. Do NOT mention state, contradictions, support, or refresh. Just begin teaching the next target.`;
+    }
+    return `${s.join("\n\n")}${recoveryNote}\n\n## NEW USER MESSAGE\n${payload.message}`;
   }
 
   // Routing state machine. Computed server-side per SERVER_CONTRACT in
