@@ -237,6 +237,27 @@ async function executeTool(call: ToolCall, ctx: ToolContext): Promise<ToolResult
             tags: finalTags,
           })
           .returning();
+        // If this entry completes the current leap target, auto-close any
+        // open questions for the same project as "answered" (capturedBy=auto).
+        // Without this, a missed closeOpenQuestion call leaves the question
+        // orphaned, and the next turn's routing sees a contradiction:
+        // currentLeapTarget has advanced but the prior leap's question is
+        // still listed as open. The agent refuses to operate in that state.
+        if (COMPLETION_ENTRY_TYPES.has(a.entryType)) {
+          await db
+            .update(coachOpenQuestions)
+            .set({
+              answeredAt: new Date(),
+              answeredInMessageId: ctx.assistantMessageId,
+            })
+            .where(
+              and(
+                eq(coachOpenQuestions.projectId, ctx.projectId),
+                sql`${coachOpenQuestions.answeredAt} IS NULL`,
+                sql`${coachOpenQuestions.dismissedAt} IS NULL`,
+              ),
+            );
+        }
         return { name: call.name, ok: true, result: { entryId: row.id, entryType: row.entryType, tags: finalTags } };
       }
       case "updateArticulation": {
@@ -1070,6 +1091,80 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         role: "user",
         parts: [{ text: rebuiltMessage }],
       };
+    }
+  }
+
+  // Last-resort prose pass. If the tool dance consumed every allowed turn
+  // and Gemini emitted zero text, the user sees only chips. Force one final
+  // call with no tool declarations and a direct instruction to reply.
+  if (!usedFallback && allTokens.join("").trim().length === 0) {
+    const proseStarted = Date.now();
+    try {
+      contents.push({
+        role: "user",
+        parts: [
+          {
+            text: "Tools have finished executing. Compose your prose reply now based on the current TURN ROUTER STATE — do not call any more tools.",
+          },
+        ],
+      });
+      let stream;
+      try {
+        stream = await gemini.models.generateContentStream({
+          model: CONFIG.model,
+          contents,
+          config: {
+            systemInstruction: SYSTEM_PROMPT,
+            temperature: CONFIG.temperature,
+            topP: CONFIG.topP,
+            maxOutputTokens: CONFIG.maxTokens,
+            safetySettings: GEMINI_SAFETY_OFF,
+          },
+        });
+      } catch (primaryErr: any) {
+        if (geminiSecondary) {
+          stream = await geminiSecondary.models.generateContentStream({
+            model: CONFIG.model,
+            contents,
+            config: {
+              systemInstruction: SYSTEM_PROMPT,
+              temperature: CONFIG.temperature,
+              topP: CONFIG.topP,
+              maxOutputTokens: CONFIG.maxTokens,
+              safetySettings: GEMINI_SAFETY_OFF,
+            },
+          });
+        } else {
+          throw primaryErr;
+        }
+      }
+      let lastProseChunk: any = null;
+      for await (const chunk of stream) {
+        lastProseChunk = chunk;
+        const t = (chunk as any).text;
+        if (t) {
+          allTokens.push(t);
+          yield { type: "token", data: { delta: t } };
+        }
+      }
+      void recordUsage({
+        userId: payload.userId ?? null,
+        userEmail: payload.userEmail ?? null,
+        projectId: projectId ?? null,
+        agentCode: "module0/qa-assistant",
+        model: CONFIG.model,
+        ...extractGeminiUsage(lastProseChunk),
+        durationMs: Date.now() - proseStarted,
+        status: "ok",
+        requestId: payload.requestId ?? null,
+        metadata: { phase: "prose-fallback" },
+      });
+    } catch (proseErr: any) {
+      console.warn("[QA-Assistant] Prose fallback failed:", proseErr?.message);
+      // Emit a minimal acknowledgement so the user isn't left with only chips.
+      const ack = "Recorded. (No additional commentary this turn.)";
+      allTokens.push(ack);
+      yield { type: "token", data: { delta: ack } };
     }
   }
 
