@@ -31,6 +31,7 @@ import {
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../../db";
 import { recordUsage, extractGeminiUsage, extractOpenAIUsage } from "../../ai/usage-log";
+import { computeRouting, renderRouting, type RoutingFields } from "./routing";
 
 // ─── Module-owned table declarations ────────────────────────────────────────
 // These point at physical tables already created in the inventor_geyser schema
@@ -120,13 +121,18 @@ const GEMINI_SAFETY_OFF = [
 
 // ─── Tool argument schemas + Gemini tool declarations ───────────────────────
 
+// entryType is intentionally NOT enum-restricted — the prompt drives the
+// vocabulary (`conception`, `contribution`, `concept_decision`, `pohc_answer`,
+// `first_conceptual_leap`, `technical_spec`, `date_fact`, `metric`, `raw_idea`,
+// `key_concept_decision`, …). Locking the enum at the API level rejects
+// legitimate categories the prompt asks the model to use.
 const recordEntryArgs = z.object({
-  entryType: z.enum(["pohc", "leap", "both"]),
+  entryType: z.string().min(1),
   verbatimText: z.string().min(1),
   tags: z.array(z.string()).optional(),
 });
-const updateArticulationArgs = z.object({ markdown: z.string().min(1) });
-const addOpenQuestionArgs = z.object({ question: z.string().min(1) });
+const updateArticulationArgs = z.object({ newArticulationText: z.string().min(1) });
+const addOpenQuestionArgs = z.object({ questionText: z.string().min(1) });
 const closeOpenQuestionArgs = z.object({ questionId: z.string().min(1) });
 const flagScopeDriftArgs = z.object({ note: z.string().min(1) });
 
@@ -134,11 +140,11 @@ const TOOL_DECLARATIONS = [
   {
     name: "recordEntry",
     description:
-      "Record a POHC (Proof of Human Conception) or Conceptual Leap entry from the user's latest message. verbatimText must be the user's exact words, copied not paraphrased. Use entryType 'both' when a single utterance is both new conception evidence and a first-time naming of a mechanism.",
+      "Append a verbatim entry to the POHC/LEAP log. verbatimText must carry the user's exact wording, surface noise included — no paraphrase, no cleanup. entryType is a short categorical label the prompt drives (e.g. 'conception', 'contribution', 'concept_decision', 'key_concept_decision', 'pohc_answer', 'first_conceptual_leap', 'technical_spec', 'date_fact', 'metric', 'raw_idea').",
     parameters: {
       type: "object",
       properties: {
-        entryType: { type: "string", enum: ["pohc", "leap", "both"] },
+        entryType: { type: "string" },
         verbatimText: { type: "string" },
         tags: { type: "array", items: { type: "string" } },
       },
@@ -148,20 +154,20 @@ const TOOL_DECLARATIONS = [
   {
     name: "updateArticulation",
     description:
-      "Rewrite the Current Articulation of the invention as a new versioned snapshot. Use only the inventor's own words.",
+      "Write a new immutable version of the Current Articulation. Fires when the user's input materially shifts the invention's scope, terminology, or framing.",
     parameters: {
       type: "object",
-      properties: { markdown: { type: "string" } },
-      required: ["markdown"],
+      properties: { newArticulationText: { type: "string" } },
+      required: ["newArticulationText"],
     },
   },
   {
     name: "addOpenQuestion",
-    description: "Add a question to the open-questions list when the inventor might overlook it.",
+    description: "Create an open question with a server-minted stable id. Fires when the agent identifies a gap or ambiguity it cannot answer without operator input.",
     parameters: {
       type: "object",
-      properties: { question: { type: "string" } },
-      required: ["question"],
+      properties: { questionText: { type: "string" } },
+      required: ["questionText"],
     },
   },
   {
@@ -228,7 +234,7 @@ async function executeTool(call: ToolCall, ctx: ToolContext): Promise<ToolResult
         const insertRes = await db.execute(sql`
           INSERT INTO inventor_geyser.idea_snapshots
             (project_id, version, snapshot_type, content)
-          VALUES (${ctx.projectId}, ${nextVersion}, 'coach_articulation', ${a.markdown})
+          VALUES (${ctx.projectId}, ${nextVersion}, 'coach_articulation', ${a.newArticulationText})
           RETURNING id
         `);
         const snapshotId = (insertRes as any).rows?.[0]?.id;
@@ -240,7 +246,7 @@ async function executeTool(call: ToolCall, ctx: ToolContext): Promise<ToolResult
           .insert(coachOpenQuestions)
           .values({
             projectId: ctx.projectId,
-            question: a.question,
+            question: a.questionText,
             askedInMessageId: ctx.assistantMessageId,
           })
           .returning();
@@ -283,6 +289,8 @@ interface QAPayload {
     approvedIdeas?: any[];
     expandedConcepts?: any[];
     selectedConcepts?: any[];
+    conceptAnalyses?: any[];
+    selectedKeyConcepts?: any[];
     priorArtResults?: string;
     whiteSpaceAnalysis?: string;
     claimsGenerated?: number;
@@ -676,6 +684,17 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         : visibleOpenQs.map((q) => `- ${q.displayId}: ${q.question}`).join("\n")
     }`,
   );
+  // Routing state machine. Computed server-side per SERVER_CONTRACT in
+  // qa-assistant.md — the agent reads these fields verbatim and never
+  // re-derives them from pohcLog or openQuestions.
+  const routing: RoutingFields = computeRouting(
+    typeof pc.currentStage === "number" ? pc.currentStage : null,
+    pc,
+    visibleLog,
+    visibleOpenQs,
+  );
+  sections.push(`## TURN ROUTER STATE\n${renderRouting(routing)}`);
+
   sections.push(`## AGENT MODULE STATE\n${renderProjectContext(pc)}`);
 
   // Snapshot of what's on the user's screen right now (registered per-page,
@@ -938,6 +957,45 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         },
       })),
     });
+
+    // Re-compute routing state for the next iteration. The tools we just
+    // executed (recordEntry / addOpenQuestion / closeOpenQuestion) mutated
+    // the underlying tables, so leapProgress / currentLeapTarget / currentLeapPhase
+    // need fresh reads — the agent's next turn must see post-tool state per
+    // SERVER_CONTRACT.POST-TOOL_STATE_MANAGEMENT.
+    if (persistent) {
+      const refreshedLog = await db
+        .select()
+        .from(coachLogEntries)
+        .where(eq(coachLogEntries.projectId, projectId!))
+        .orderBy(coachLogEntries.capturedAt);
+      const refreshedOpenQs = await db
+        .select()
+        .from(coachOpenQuestions)
+        .where(eq(coachOpenQuestions.projectId, projectId!))
+        .orderBy(coachOpenQuestions.createdAt);
+      const visibleRefreshedLog = refreshedLog.filter((r) => r.dismissedAt === null);
+      const visibleRefreshedOpenQs = refreshedOpenQs.filter(
+        (r) => r.answeredAt === null && r.dismissedAt === null,
+      );
+      const updatedRouting = computeRouting(
+        typeof pc.currentStage === "number" ? pc.currentStage : null,
+        pc,
+        visibleRefreshedLog,
+        visibleRefreshedOpenQs,
+      );
+      // Inject the refreshed routing as a synthetic user message so the
+      // agent sees it on the very next streaming pass. Wrapped in a
+      // recognizable banner so it's never confused with operator input.
+      contents.push({
+        role: "user",
+        parts: [
+          {
+            text: `## POST-TOOL ROUTER STATE\n${renderRouting(updatedRouting)}`,
+          },
+        ],
+      });
+    }
   }
 
   // ─── 5. Persist final assistant content + tool-call log ────────────────────

@@ -6172,9 +6172,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         extractedIdeas: agent1Obj?.extractedIdeas || agent1Obj?.unifiedIdeas || [],
         approvedIdeas: agent1Obj?.approvedIdeas || [],
         expandedConcepts: agent2Obj?.expandedConcepts || [],
-        selectedConcepts: agent2Obj?.selectedConcepts || [],
+        // Stage 4 scope source — concepts that survived prior-art selection and
+        // entered whitespace analysis. New shape is conceptAnalyses; legacy is
+        // nuggetAnalyses. Either one's array indices define the Concept N ids
+        // routing.ts uses for the leap protocol.
+        conceptAnalyses: agent4Obj?.conceptAnalyses || agent4Obj?.nuggetAnalyses || [],
         priorArtResults: agent3Obj?.priorArtResults ? 'Prior art research completed' : 'Not yet completed',
         whiteSpaceAnalysis: agent4Obj?.nuggetAnalyses ? 'White space analysis completed' : 'Not yet completed',
+        // Stage 5 scope source — Key Concept Sets selected after 4b.
+        selectedKeyConcepts: agent4Obj?.selectedKeyConcepts || [],
         claimsGenerated: agent4Obj?.selectedKeyConcepts?.length || 0,
         provisionalDraftStatus: agent4Obj?.provisionalDraft ? 'Draft generated' : 'Not yet generated',
         hasProvisionalDraft: !!agent5Obj?.provisionalDraft,

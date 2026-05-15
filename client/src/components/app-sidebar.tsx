@@ -21,10 +21,15 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { CurrentIdeaModal } from "@/components/current-idea-modal";
-import { Home, LogOut, Sparkles, Wrench, Search, TrendingUp, Image, Lightbulb, Code, FileSearch, MessageCircleQuestion, Settings } from "lucide-react";
+import { Home, LogOut, Sparkles, Wrench, Search, TrendingUp, Image, Lightbulb, Code, FileSearch, Settings } from "lucide-react";
 import { CodeModal } from "@/components/code-modal";
 import type { Project, User } from "@shared/schema";
 import geyserLogo from "@/assets/geyser-logo.png";
+// Three-state AI Helper icon: light/dark variants for when the panel is
+// closed, selected variant for when the panel is open on the right.
+import aiHelperIconLight from "@/assets/icon lightmode.png";
+import aiHelperIconDark from "@/assets/icon darkmode.png";
+import aiHelperIconSelected from "@/assets/icon selected.png";
 
 const agentStages = [
   { number: 1, name: "Brainstorm", icon: Sparkles, description: "Advocate/Examiner", substages: [
@@ -50,6 +55,12 @@ const agentStages = [
 interface AppSidebarProps {
   projectId?: string;
   /**
+   * True when the AI Helper panel is currently open on the right. Drives the
+   * "selected" variant of the sidebar's AI Helper icon. Optional so existing
+   * call sites that don't track the helper state still compile.
+   */
+  helperOpen?: boolean;
+  /**
    * Called when the user clicks the AI Helper trigger. Optionally carries a
    * pre-fill string (e.g. selected text from an Ask AI event).
    */
@@ -68,7 +79,36 @@ function getLocationDescription(path: string): string {
   return "Patent Geyser Application";
 }
 
-export function AppSidebar({ projectId, onOpenAIHelper }: AppSidebarProps) {
+export function AppSidebar({ projectId, onOpenAIHelper, helperOpen }: AppSidebarProps) {
+  // Track current theme so we can swap the light/dark AI-Helper icon. Reads
+  // the `dark` class off <html>, refreshes on class mutations.
+  const [isDark, setIsDark] = useState<boolean>(() => {
+    if (typeof document === "undefined") return false;
+    return document.documentElement.classList.contains("dark");
+  });
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const root = document.documentElement;
+    const observer = new MutationObserver(() => {
+      setIsDark(root.classList.contains("dark"));
+    });
+    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+  // Preload all three icon variants so theme toggles and panel-open transitions
+  // swap instantly instead of waiting on a first-time fetch/decode.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    [aiHelperIconLight, aiHelperIconDark, aiHelperIconSelected].forEach((src) => {
+      const img = new window.Image();
+      img.src = src;
+    });
+  }, []);
+  const aiHelperIcon = helperOpen
+    ? aiHelperIconSelected
+    : isDark
+      ? aiHelperIconDark
+      : aiHelperIconLight;
   const [location, setLocation] = useLocation();
   const { open } = useSidebar();
   const [ideaModalOpen, setIdeaModalOpen] = useState(false);
@@ -245,7 +285,7 @@ export function AppSidebar({ projectId, onOpenAIHelper }: AppSidebarProps) {
                         data-testid="button-qa-assistant"
                         className="group-data-[collapsible=icon]:justify-center bg-accent/50 border border-accent text-foreground font-medium hover:bg-accent group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:hover:bg-sidebar-accent"
                       >
-                        <MessageCircleQuestion className="h-4 w-4" />
+                        <img src={aiHelperIcon} alt="" className="h-4 w-4 shrink-0 object-contain" />
                         <span className="group-data-[collapsible=icon]:hidden">AI Helper</span>
                       </SidebarMenuButton>
                     </TooltipTrigger>

@@ -375,7 +375,7 @@ function ShellWithHelperPanel({
 
   return (
     <div className="flex h-screen w-full">
-      <AppSidebar projectId={projectId} onOpenAIHelper={openHelper} />
+      <AppSidebar projectId={projectId} onOpenAIHelper={openHelper} helperOpen={helperOpen} />
       <div className="flex-1 flex flex-col overflow-hidden">{children}</div>
       {helperOpen && projectId && (
         <aside
