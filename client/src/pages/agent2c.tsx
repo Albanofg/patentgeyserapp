@@ -9,6 +9,7 @@ import { AgentHeader } from "@/components/agent-header";
 import { Loader2, Lightbulb, CheckCircle, XCircle, ChevronRight } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { Project } from "@shared/schema";
+import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 
 interface ExtractedIdea {
   id: string;
@@ -167,6 +168,49 @@ export default function Agent2c() {
   const deselectAllIdeas = () => {
     setSelectedIdeas(new Set());
   };
+
+  // ── Page snapshot for the AI Helper ─────────────────────────────────────
+  // 2c is a select-extracted-ideas page (read-only items, checkbox state).
+  const snapshot = useMemo<PageSnapshot>(() => ({
+    pageName: "Select Patentable Ideas (Stage 2c)",
+    route: `/project/${projectId}/agent/2c`,
+    description:
+      "User reviews extracted patentable ideas and selects which to research for prior art. Items are read-only; only selection state changes.",
+    items: extractedIdeas.map((idea: ExtractedIdea, i: number) => ({
+      id: `extracted_idea_${i + 1}`,
+      type: "extracted_idea",
+      status: selectedIdeas.has(idea.id) ? "selected" : "deselected",
+      editable: false,
+      content: { ideaId: idea.id, title: idea.title, description: idea.description },
+    })),
+    drafts: {},
+    actions: extractedIdeas.length === 0
+      ? []
+      : [
+          {
+            id: "select-all",
+            label: "Select All",
+            kind: "secondary",
+            enabled: selectedIdeas.size < extractedIdeas.length,
+          },
+          {
+            id: "deselect-all",
+            label: "Deselect All",
+            kind: "secondary",
+            enabled: selectedIdeas.size > 0,
+          },
+          {
+            id: "proceed-to-prior-art",
+            label: "Proceed to Prior Art Research",
+            kind: "primary",
+            enabled: !proceedMutation.isPending && selectedIdeas.size > 0,
+            reason: selectedIdeas.size === 0 ? "No ideas selected" : undefined,
+            navigatesTo: `/project/${projectId}/agent/3`,
+          },
+        ],
+    source: "structured",
+  }), [extractedIdeas, selectedIdeas, proceedMutation.isPending, projectId]);
+  usePageSnapshot(snapshot);
 
   if (projectLoading || agent2Loading) {
     return (

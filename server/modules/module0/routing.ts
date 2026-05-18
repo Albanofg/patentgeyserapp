@@ -122,17 +122,46 @@ function computeLeapProgress(
     ? new Set(["pohc_answer"])
     : new Set(["first_conceptual_leap"]);
 
+  // First pass: mark complete-or-not_started without considering open
+  // questions. We do this independently because the agent's
+  // `addOpenQuestion` tool doesn't always tag the question with the leap
+  // target, so a tag-based match was producing false negatives — the
+  // question existed in the raw list but routing reported `not_started`,
+  // and the prompt treated that pair as a state contradiction.
   for (const id of scope) {
     const completed = pohcLog.some(
       (e) => completionTypes.has(e.entryType || "") && tagsInclude(e.tags, id),
     );
-    if (completed) {
-      out[id] = "complete";
-      continue;
-    }
-    const hasOpenQ = openQuestions.some((q) => tagsInclude(q.tags ?? null, id));
-    out[id] = hasOpenQ ? "turn_b_pending" : "not_started";
+    out[id] = completed ? "complete" : "not_started";
   }
+
+  // SERVER_CONTRACT enforces "one open question at a time, attached to the
+  // current leap target" (addOpenQuestion dismisses all prior open questions
+  // when a new one is added). So if any open question exists, it belongs to
+  // the lowest-numbered non-complete scope id — that's the currentLeapTarget
+  // by definition. Mark that id as turn_b_pending. If the question is
+  // explicitly tagged to a scope id, prefer that tag — but never produce
+  // the "question exists but everyone is not_started" contradiction.
+  const anyOpenQ = openQuestions.length > 0;
+  if (anyOpenQ) {
+    const explicitlyTagged = scope.filter((id) =>
+      openQuestions.some((q) => tagsInclude(q.tags ?? null, id)),
+    );
+    const idsToFlag = explicitlyTagged.length > 0
+      ? explicitlyTagged
+      : (() => {
+          const nonComplete = scope
+            .filter((id) => out[id] !== "complete")
+            .sort(compareIds);
+          return nonComplete.length > 0 ? [nonComplete[0]] : [];
+        })();
+    for (const id of idsToFlag) {
+      if (out[id] !== "complete") {
+        out[id] = "turn_b_pending";
+      }
+    }
+  }
+
   return out;
 }
 

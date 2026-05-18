@@ -11,6 +11,7 @@ import { Loader2, Lightbulb, Sparkles, Edit, CheckCircle, XCircle, Plus, Chevron
 import { Checkbox } from "@/components/ui/checkbox";
 import type { Project } from "@shared/schema";
 import ReactMarkdown from "react-markdown";
+import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 
 interface ExtractedIdea {
   id: string;
@@ -213,6 +214,23 @@ export default function Agent2() {
       });
     },
   });
+
+  // ── Page snapshot for the AI Helper ─────────────────────────────────────
+  // This route is a redirect entry-point for stage 2; the useEffect above
+  // sends the user to the active substage (default 2a). The page itself
+  // renders only a spinner during the redirect; expose a minimal snapshot
+  // that names the situation so the helper doesn't try to "advise" on a
+  // page that is mid-redirect.
+  const snapshot = useMemo<PageSnapshot>(() => ({
+    pageName: "Stage 2 (redirecting)",
+    route: `/project/${projectId}/agent/2`,
+    description: "Stage 2 entry point — auto-redirects to the active substage (2a or 2b).",
+    items: [],
+    drafts: {},
+    actions: [],
+    source: "structured",
+  }), [projectId]);
+  usePageSnapshot(snapshot);
 
   if (projectLoading || agent2Loading) {
     return (

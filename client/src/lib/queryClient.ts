@@ -9,7 +9,19 @@ async function throwIfResNotOk(res: Response, url?: string) {
     } catch {
       // non-JSON response
     }
-    const err: any = new Error(body?.message || text);
+    // Prefer a server-supplied message. Fall back to a generic status line so
+    // we never dump an entire serialized response body into toasts/UI when the
+    // server forgets to include a `message` field.
+    const friendlyFromBody =
+      typeof body?.message === "string"
+        ? body.message
+        : typeof body?.error === "string"
+          ? body.error
+          : null;
+    const looksLikeJsonBlob = text.length > 240 || text.trimStart().startsWith("{") || text.trimStart().startsWith("[");
+    const fallback = `Request failed (${res.status} ${res.statusText || ""})`.trim();
+    const message = friendlyFromBody ?? (looksLikeJsonBlob ? fallback : text);
+    const err: any = new Error(message);
     err.status = res.status;
     err.body = body;
     throw err;

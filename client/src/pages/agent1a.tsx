@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Loader2, Sparkles, MessageSquare, Search, ArrowRight, ArrowLeft, Clipboard } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Project } from "@shared/schema";
+import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 
 interface IdeaSnapshot {
   id: string;
@@ -127,6 +128,129 @@ export default function Agent1a() {
       });
     },
   });
+
+  // ── Page snapshot for the AI Helper ─────────────────────────────────────
+  // 1a is the initial Advocate/Examiner brainstorm. Two display modes:
+  // (1) no rounds yet → a single editable idea Textarea + "Send to A/E";
+  // (2) rounds exist → read-only debate panels, plus "Inspect & Refine"
+  // (extract ideas) or "Continue to Stage 2" actions.
+  const snapshot = useMemo<PageSnapshot>(() => {
+    const roundsLocal = (agent1Data?.data?.rounds || []) as ConversationRound[];
+    const hasStartedLocal = roundsLocal.length > 0;
+    const brainstormRoundsLocal = roundsLocal.filter((r) => r.roundType !== "mechanic");
+    const latestRound = brainstormRoundsLocal[brainstormRoundsLocal.length - 1];
+    const hasDebateLocal = !!(latestRound?.agentsDebate && Array.isArray(latestRound.agentsDebate));
+    const originalIdeaLocal = brainstormRoundsLocal[0]?.userMessage || "";
+    const hasRound2Local =
+      brainstormRoundsLocal.length > 1 &&
+      brainstormRoundsLocal[brainstormRoundsLocal.length - 1]?.agentsDebate &&
+      hasAuditFormat(brainstormRoundsLocal[brainstormRoundsLocal.length - 1].agentsDebate);
+
+    const items: NonNullable<PageSnapshot["items"]> = [];
+    const drafts: Record<string, string> = {};
+
+    if (!hasStartedLocal) {
+      if (initialIdea) drafts["idea"] = initialIdea;
+      items.push({
+        id: "idea_input",
+        type: "invention_description_field",
+        status: initialIdea.trim() ? "drafted" : "empty",
+        editable: true,
+        editTarget: "idea",
+        content: { currentValue: initialIdea },
+      });
+    } else {
+      items.push({
+        id: "original_idea",
+        type: "invention_description",
+        status: "submitted",
+        editable: false,
+        content: originalIdeaLocal,
+      });
+      if (latestRound?.agentsDebate && Array.isArray(latestRound.agentsDebate)) {
+        latestRound.agentsDebate.forEach((agent: any, idx: number) => {
+          const speaker = agent.speaker || (idx === 0 ? "Advocate" : idx === 1 ? "Examiner" : `Agent ${idx + 1}`);
+          items.push({
+            id: `debate_${speaker.toLowerCase()}_${idx}`,
+            type: "debate_panel",
+            editable: false,
+            content: { speaker, message: agent.message ?? "" },
+          });
+        });
+      }
+    }
+
+    const actions: NonNullable<PageSnapshot["actions"]> = [];
+    if (!hasStartedLocal) {
+      actions.push({
+        id: "paste-idea",
+        label: "Paste",
+        kind: "secondary",
+        enabled: !startBrainstormMutation.isPending,
+      });
+      actions.push({
+        id: "start-brainstorm",
+        label: "Send to Advocate / Examiner",
+        kind: "primary",
+        enabled: !startBrainstormMutation.isPending && initialIdea.trim().length > 0,
+        reason: !initialIdea.trim() ? "Idea field is empty" : undefined,
+      });
+    } else {
+      if (hasRound2Local) {
+        actions.push({
+          id: "view-round-2-audit",
+          label: "View Round 2 Audit",
+          kind: "secondary",
+          enabled: true,
+          navigatesTo: `/project/${projectId}/agent/1a-audit`,
+        });
+      }
+      actions.push({
+        id: "inspect-and-refine",
+        label: "Inspect & Refine",
+        kind: "secondary",
+        enabled:
+          !inspectAndRefineMutation.isPending &&
+          !continueToAgent2Mutation.isPending &&
+          hasDebateLocal,
+        reason: !hasDebateLocal ? "Debate has not produced results yet" : undefined,
+        navigatesTo: `/project/${projectId}/agent/1b`,
+      });
+      actions.push({
+        id: "continue-to-stage-2",
+        label: "Continue to Stage 2",
+        kind: "primary",
+        enabled:
+          !continueToAgent2Mutation.isPending &&
+          !inspectAndRefineMutation.isPending &&
+          hasDebateLocal,
+        reason: !hasDebateLocal ? "Debate has not produced results yet" : undefined,
+        navigatesTo: `/project/${projectId}/agent/2a`,
+      });
+    }
+
+    return {
+      pageName: hasStartedLocal
+        ? "Advocate / Examiner Debate (Stage 1a)"
+        : "Describe Your Invention (Stage 1a)",
+      route: `/project/${projectId}/agent/1a`,
+      description: hasStartedLocal
+        ? "User reviews the Advocate/Examiner debate of their invention idea. The idea field is no longer editable on this page; user can move on by inspecting+refining or by continuing to stage 2."
+        : "User describes their invention in a Textarea, then sends it to the Advocate/Examiner debate. The Textarea is the only editable surface.",
+      items,
+      drafts,
+      actions,
+      source: "structured",
+    };
+  }, [
+    agent1Data,
+    initialIdea,
+    startBrainstormMutation.isPending,
+    inspectAndRefineMutation.isPending,
+    continueToAgent2Mutation.isPending,
+    projectId,
+  ]);
+  usePageSnapshot(snapshot);
 
   if (projectLoading || dataLoading) {
     return (

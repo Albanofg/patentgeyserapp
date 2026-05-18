@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
+import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 
 function similarityLabel(score: number | undefined): { label: string; variant: "default" | "secondary" | "outline" | "destructive" } | null {
   if (score === undefined || score === null || Number.isNaN(score)) return null;
@@ -152,6 +153,71 @@ export default function Agent3() {
       });
     },
   });
+
+  // ── Page snapshot for the AI Helper ─────────────────────────────────────
+  // Stage 3 is the prior-art research review. Read-only — the page either
+  // shows "no results yet" with a Search action, or a list of per-concept
+  // prior-art findings with Re-search and Proceed actions.
+  const snapshot = useMemo<PageSnapshot>(() => {
+    const a3 = agent3Data?.data as any;
+    const results = (a3?.priorArtResults || []) as any[];
+    const hasResults = results.length > 0;
+
+    const items: NonNullable<PageSnapshot["items"]> = results.map((r: any, i: number) => ({
+      id: `prior_art_concept_${i + 1}`,
+      type: "prior_art_concept_result",
+      editable: false,
+      content: {
+        conceptId: r.conceptId ?? `Concept ${i + 1}`,
+        priorArtCount: Array.isArray(r.priorArt) ? r.priorArt.length : 0,
+      },
+    }));
+
+    const actions: NonNullable<PageSnapshot["actions"]> = hasResults
+      ? [
+          {
+            id: "re-search-prior-art",
+            label: "Re-search Prior Art",
+            kind: "secondary",
+            enabled: !searchMutation.isPending,
+          },
+          {
+            id: "back-to-refinement",
+            label: "Back to Refinement",
+            kind: "secondary",
+            enabled: true,
+            navigatesTo: `/project/${projectId}/agent/2a`,
+          },
+          {
+            id: "proceed-to-whitespace",
+            label: "Proceed to White Space Analysis",
+            kind: "primary",
+            enabled: !proceedMutation.isPending,
+            navigatesTo: `/project/${projectId}/agent/4`,
+          },
+        ]
+      : [
+          {
+            id: "search-prior-art",
+            label: "Search Prior Art",
+            kind: "primary",
+            enabled: !searchMutation.isPending,
+          },
+        ];
+
+    return {
+      pageName: "Prior Art Research (Stage 3)",
+      route: `/project/${projectId}/agent/3`,
+      description: hasResults
+        ? "User reviews prior-art findings per concept. Read-only. Next action is proceeding to white-space analysis."
+        : "Prior art search has not been run yet.",
+      items,
+      drafts: {},
+      actions,
+      source: "structured",
+    };
+  }, [agent3Data, searchMutation.isPending, proceedMutation.isPending, projectId]);
+  usePageSnapshot(snapshot);
 
   if (projectLoading || agent3Loading || !project) {
     return (

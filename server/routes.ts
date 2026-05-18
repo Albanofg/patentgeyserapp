@@ -4287,9 +4287,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const allowedNext = validTransitions[currentSubstage] || [];
 
+      // Idempotent for backward moves too: if the project is already past the
+      // requested substage (e.g. user rolled back the UI and triggered a
+      // generate-claims flow that targets 4b again while DB still says 4c),
+      // accept the call as a no-op rather than 400. The user shouldn't get a
+      // hostile error just because their saved state is ahead of the page
+      // they're acting on.
+      const substageOrder = ['2a', '2b', '4a', '4b', '4c'];
+      const currentIdx = substageOrder.indexOf(currentSubstage);
+      const targetIdx = substageOrder.indexOf(substage);
+      if (currentIdx >= 0 && targetIdx >= 0 && currentIdx > targetIdx) {
+        return res.json({ success: true, substage, alreadyPastSubstage: true });
+      }
+
       if (!allowedNext.includes(substage)) {
-        return res.status(400).json({ 
-          message: `Invalid substage progression. Cannot move from ${currentSubstage} to ${substage}. Expected one of: ${allowedNext.join(', ') || 'none'}` 
+        return res.status(400).json({
+          message: `Invalid substage progression. Cannot move from ${currentSubstage} to ${substage}. Expected one of: ${allowedNext.join(', ') || 'none'}`
         });
       }
 
@@ -4636,6 +4649,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const project = await storage.getProject(req.params.id);
       if (!project) {
         return res.status(404).json({ message: "Project not found" });
+      }
+
+      // AI fires only once: if claim variations are already stored for this
+      // project, return them rather than re-firing the agent. Callers can
+      // force a fresh run with { regenerate: true } in the body (used by the
+      // "Regenerate" UI affordance), in which case we fall through to the
+      // generation path below.
+      const existingAgent4 = await storage.getAgentData(req.params.id, 4);
+      const existingAgent4Obj = existingAgent4?.data as any;
+      const existingVariations = Array.isArray(existingAgent4Obj?.claimVariations)
+        ? existingAgent4Obj.claimVariations
+        : null;
+      const forceRegenerate = req.body?.regenerate === true;
+      if (existingVariations && existingVariations.length > 0 && !forceRegenerate) {
+        return res.json({
+          success: true,
+          alreadyGenerated: true,
+          variationsCount: existingVariations.length,
+          variations: existingVariations,
+        });
       }
 
       // Get Agent 1 data for session ID and main idea
@@ -6162,10 +6195,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const agent4Obj = agent4Data?.data as any;
       const agent5Obj = agent5Data?.data as any;
 
+      // Trust the user's actual location. project.currentStage in the DB only
+      // advances when a "proceed" mutation fires; if the user navigates the
+      // URL directly, the DB lags. We derive the stage from the page the user
+      // is on (pageSnapshot.route, falling back to the location label) and
+      // use whichever is further along. The helper then never sees a
+      // contradictory stage and won't generate "state ambiguity, please
+      // refresh" replies.
+      const urlPath: string =
+        (pageSnapshot && typeof pageSnapshot === "object" && typeof (pageSnapshot as any).route === "string"
+          ? (pageSnapshot as any).route
+          : "") || (typeof currentLocation === "string" ? currentLocation : "");
+      const agentMatch = urlPath.match(/\/agent\/(\d+)([a-z\-]*)?/i);
+      const urlStage = agentMatch ? parseInt(agentMatch[1], 10) : 0;
+      const urlSubstageRaw = agentMatch ? (agentMatch[2] || "").replace(/^-/, "") : "";
+      const urlSubstage = urlSubstageRaw || null;
+      const dbStage = typeof project.currentStage === "number" ? project.currentStage : 0;
+      const effectiveStage = Math.max(dbStage, urlStage);
+
       const projectContext = {
         projectId: req.params.id,
         projectTitle: project.title,
-        currentStage: project.currentStage,
+        currentStage: effectiveStage,
+        currentSubstage: urlSubstage,
         ideaSummary: agent1Obj?.ideaSummary || agent1Obj?.currentIdea || '',
         advocatePoints: agent1Obj?.advocatePoints || [],
         examinerPoints: agent1Obj?.examinerPoints || [],
@@ -6195,9 +6247,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.setHeader("Connection", "keep-alive");
       (res as any).flushHeaders?.();
 
+      // Track whether the client is still connected. When the tab/panel
+      // closes, the SSE stream is torn down — we keep draining the generator
+      // so its final persistence step (coachMessages.content) still runs,
+      // but stop writing to a dead socket.
+      let clientConnected = true;
+      req.on("close", () => { clientConnected = false; });
       const send = (event: string, data: any) => {
-        res.write(`event: ${event}\n`);
-        res.write(`data: ${JSON.stringify(data)}\n\n`);
+        if (!clientConnected || res.writableEnded) return;
+        try {
+          res.write(`event: ${event}\n`);
+          res.write(`data: ${JSON.stringify(data)}\n\n`);
+        } catch {
+          clientConnected = false;
+        }
       };
 
       try {
@@ -6229,6 +6292,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           pageSnapshot: pageSnapshot ?? null,
         })) {
           send(ev.type, ev.data);
+          // On an unrecoverable error we still stop iterating; on "done" the
+          // generator has already run its final persistence step, so we can
+          // break safely. If the client is gone, keep draining so the
+          // generator reaches its own step 5 and the assistant message is
+          // saved.
           if (ev.type === "done" || (ev.type === "error" && !ev.data?.recoverable)) break;
         }
       } catch (streamErr: any) {

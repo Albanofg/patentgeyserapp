@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -250,6 +251,58 @@ export default function Agent5Practitioner() {
     ? agent5Obj.practitionerMatchResults
     : [];
   const matchedAt = agent5Obj?.practitionerMatchedAt;
+
+  // ── Page snapshot for the AI Helper ─────────────────────────────────────
+  // Practitioner-match page. Read-only list of matched practitioners after
+  // running the match. Requires diagrams (stage 5 prereq); without them the
+  // only action is going back to the Showcase.
+  const practitionerSnapshot = useMemo<PageSnapshot>(() => ({
+    pageName: "Find a Patent Practitioner",
+    route: `/project/${projectId}/agent/5-practitioner`,
+    description: prereqsMet
+      ? "User can run the practitioner-match search or review existing matches. Items are read-only practitioner cards."
+      : "Diagrams have not been generated yet — the match feature is gated until stage 5 produces drawings.",
+    items: practitioners.map((p: any, i: number) => ({
+      id: `practitioner_${i + 1}`,
+      type: "practitioner_match",
+      editable: false,
+      content: {
+        name: p.name ?? null,
+        firm: p.firm ?? null,
+        url: p.url ?? null,
+        specialty: p.specialty ?? null,
+      },
+    })),
+    drafts: {},
+    actions: prereqsMet
+      ? [
+          {
+            id: "find-practitioner",
+            label: practitioners.length > 0 ? "Re-run Practitioner Match" : "Find Practitioners",
+            kind: "primary",
+            enabled: true,
+          },
+          {
+            id: "back-to-showcase",
+            label: "Back to The Showcase",
+            kind: "secondary",
+            enabled: true,
+            navigatesTo: `/project/${projectId}/agent/5`,
+          },
+        ]
+      : [
+          {
+            id: "go-generate-diagrams",
+            label: "Go to The Showcase (generate diagrams first)",
+            kind: "primary",
+            enabled: true,
+            navigatesTo: `/project/${projectId}/agent/5`,
+            reason: "Diagrams are required before practitioner matching can run",
+          },
+        ],
+    source: "structured",
+  }), [prereqsMet, practitioners, projectId]);
+  usePageSnapshot(practitionerSnapshot);
 
   const practitionerMatchMutation = useMutation({
     mutationFn: async () => apiRequest("POST", `/api/projects/${projectId}/practitioner-match`, {}),

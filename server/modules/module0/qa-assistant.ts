@@ -336,6 +336,7 @@ interface QAPayload {
     projectId?: string;
     projectTitle?: string;
     currentStage?: number;
+    currentSubstage?: string | null;
     ideaSummary?: string;
     extractedIdeas?: any[];
     approvedIdeas?: any[];
@@ -374,9 +375,24 @@ interface QAPayload {
     pageName: string;
     route: string;
     description?: string;
-    items?: Array<{ id: string; type: string; status?: string; content: any }>;
+    items?: Array<{
+      id: string;
+      type: string;
+      status?: string;
+      content: any;
+      editable?: boolean;
+      editTarget?: string;
+    }>;
     drafts?: Record<string, string>;
     focused?: string;
+    actions?: Array<{
+      id: string;
+      label: string;
+      kind?: "primary" | "secondary" | "destructive";
+      enabled: boolean;
+      reason?: string;
+      navigatesTo?: string;
+    }>;
     source?: "structured" | "fallback";
     capturedAt?: string;
   } | null;
@@ -448,11 +464,18 @@ function renderPageSnapshot(snap: NonNullable<QAPayload["pageSnapshot"]>): strin
   if (snap.capturedAt) lines.push(`Captured: ${snap.capturedAt}`);
   if (snap.description) lines.push(`\n${snap.description}`);
 
-  const items = snap.items ?? [];
+  const items = (snap.items ?? []) as Array<any>;
   if (items.length > 0) {
     lines.push(`\n### Items on page (${items.length})`);
     for (const it of items) {
-      const head = `- [${it.id}] (${it.type}${it.status ? `, ${it.status}` : ""})`;
+      // editable is opt-in. Anything not explicitly `true` is rendered as
+      // false so the model never infers editability from absence.
+      const editable = it.editable === true;
+      const editTargetSuffix =
+        editable && typeof it.editTarget === "string" && it.editTarget.length > 0
+          ? `, editTarget=${it.editTarget}`
+          : "";
+      const head = `- [${it.id}] (${it.type}${it.status ? `, ${it.status}` : ""}, editable=${editable}${editTargetSuffix})`;
       let body: string;
       if (it.content == null) body = "(empty)";
       else if (typeof it.content === "string") body = it.content;
@@ -471,6 +494,26 @@ function renderPageSnapshot(snap: NonNullable<QAPayload["pageSnapshot"]>): strin
     lines.push(`\n### Items on page\n(none captured)`);
   }
 
+  // Actions: structured pages declare the buttons that exist; an empty array
+  // means "no actions on this page", which is different from "unknown". We
+  // render both states explicitly so the model can tell them apart.
+  if (Array.isArray(snap.actions)) {
+    if (snap.actions.length === 0) {
+      lines.push(`\n### Actions on page\n(none — this page declares no actions the user can invoke)`);
+    } else {
+      lines.push(`\n### Actions on page (${snap.actions.length})`);
+      for (const a of snap.actions) {
+        const kind = a.kind ? `, ${a.kind}` : "";
+        const enabled = `enabled=${a.enabled === true}`;
+        const reason = a.enabled === false && a.reason ? `, reason="${a.reason}"` : "";
+        const navTo = a.navigatesTo ? `, navigatesTo=${a.navigatesTo}` : "";
+        lines.push(`- [${a.id}] "${a.label}" (${enabled}${kind}${reason}${navTo})`);
+      }
+    }
+  } else {
+    lines.push(`\n### Actions on page\n(unknown — page has not registered an actions list)`);
+  }
+
   const draftEntries = Object.entries(snap.drafts ?? {});
   if (draftEntries.length > 0) {
     lines.push(`\n### Unsaved drafts`);
@@ -483,7 +526,7 @@ function renderPageSnapshot(snap: NonNullable<QAPayload["pageSnapshot"]>): strin
 
   if (snap.source === "fallback") {
     lines.push(
-      `\n(Note: this page has not registered a structured snapshot — the body above is a best-effort scrape. Treat ids as approximate and prefer asking the user to clarify when precision matters.)`,
+      `\n(Note: this page has not registered a structured snapshot — the body above is a best-effort scrape. Items default to editable=false and the actions list is empty. Do not infer the existence of edit fields or buttons that are not explicitly listed here.)`,
     );
   }
 
@@ -855,6 +898,19 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         break;
       }
     }
+    // Clamp previousStage to never trail behind where the user actually is.
+    // Forward navigation without "proceed" used to leave previousStage stuck
+    // at the old stage, which the prompt treated as a state-drift signal and
+    // refused to proceed. Treating prior turns as "already caught up" lets
+    // the helper just continue helping on the new page.
+    const pcStageNow = (payload.projectContext as any)?.currentStage;
+    if (
+      typeof pcStageNow === "number" &&
+      typeof previousStage === "number" &&
+      previousStage < pcStageNow
+    ) {
+      previousStage = pcStageNow;
+    }
   } else {
     // Stateless fallback: use the conversationHistory the client sent.
     recentChrono = (payload.conversationHistory ?? []).map((m) => ({
@@ -880,6 +936,9 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     if (pc.projectTitle) meta.push(`Title: ${pc.projectTitle}`);
     if (pc.currentStage !== undefined && pc.currentStage !== null) {
       meta.push(`currentLocation.stage: ${pc.currentStage}`);
+    }
+    if (pc.currentSubstage) {
+      meta.push(`currentLocation.substage: ${pc.currentSubstage}`);
     }
     if (payload.currentLocation) meta.push(`Location label: ${payload.currentLocation}`);
     meta.push(`previousStage: ${previousStage === null ? "null" : String(previousStage)}`);
@@ -937,7 +996,24 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     visibleOpenQs,
   );
 
-  const fullUserMessage = buildUserMessage(visibleLog, visibleOpenQs, routing);
+  // Hide log entries and open questions whose tags don't intersect the
+  // current stage's scope. Old-stage signals leaking into a new stage are
+  // exactly what triggers the helper's "state inconsistency / please refresh"
+  // refusals. The data stays in the DB — we just don't show it to the model
+  // until the user is on a stage where it's actionable again.
+  const scopeSet = new Set(routing.scope);
+  const inScope = (tags: any) =>
+    Array.isArray(tags) && tags.some((t) => typeof t === "string" && scopeSet.has(t));
+  const filteredVisibleLog =
+    scopeSet.size === 0
+      ? visibleLog
+      : visibleLog.filter((e: any) => !Array.isArray(e.tags) || e.tags.length === 0 || inScope(e.tags));
+  const filteredVisibleOpenQs =
+    scopeSet.size === 0
+      ? visibleOpenQs
+      : visibleOpenQs.filter((q: any) => !Array.isArray(q.tags) || q.tags.length === 0 || inScope(q.tags));
+
+  const fullUserMessage = buildUserMessage(filteredVisibleLog, filteredVisibleOpenQs, routing);
 
   // ─── 3. Persist the user message + a placeholder assistant message ─────────
   let userMsgId: string | null = null;
@@ -989,6 +1065,33 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
   const allTokens: string[] = [];
   const allToolCalls: Array<ToolCall & { result?: ToolResult }> = [];
   let usedFallback = false;
+
+  // Incremental persistence — every ~500ms while streaming, push the running
+  // token buffer to coachMessages.content. Survives client disconnect on
+  // Vercel where the function may be terminated before the final write below.
+  let lastFlushedContent = "";
+  let flushTimer: NodeJS.Timeout | null = null;
+  const flushPartialContent = async () => {
+    if (!persistent || !assistantMessageId) return;
+    const next = allTokens.join("").trim();
+    if (next === lastFlushedContent) return;
+    lastFlushedContent = next;
+    try {
+      await db
+        .update(coachMessages)
+        .set({ content: next })
+        .where(eq(coachMessages.id, assistantMessageId));
+    } catch (e: any) {
+      console.warn("[QA-Assistant] partial flush failed:", e?.message);
+    }
+  };
+  const scheduleFlush = () => {
+    if (flushTimer) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      void flushPartialContent();
+    }, 500);
+  };
 
   let geminiFailedOnFirstTurn = false;
 
@@ -1047,6 +1150,7 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         if (t) {
           turnText.push(t);
           allTokens.push(t);
+          scheduleFlush();
           yield { type: "token", data: { delta: t } };
         }
         // Walk the candidate parts to preserve functionCall metadata
@@ -1117,6 +1221,7 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         });
         const text = completion.choices[0]?.message?.content ?? "";
         allTokens.push(text);
+        scheduleFlush();
         yield { type: "token", data: { delta: text } };
         void recordUsage({
           userId: payload.userId ?? null,
@@ -1229,14 +1334,31 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         ...r,
         displayId: `q_${pad4(i + 1)}`,
       }));
+      // Same scope filter as the first turn — keep out-of-scope leap signals
+      // from leaking into the next tool turn.
+      const updatedScopeSet = new Set(updatedRouting.scope);
+      const updatedInScope = (tags: any) =>
+        Array.isArray(tags) && tags.some((t) => typeof t === "string" && updatedScopeSet.has(t));
+      const filteredRefreshedLog =
+        updatedScopeSet.size === 0
+          ? refreshedLogWithIds
+          : refreshedLogWithIds.filter(
+              (e: any) => !Array.isArray(e.tags) || e.tags.length === 0 || updatedInScope(e.tags),
+            );
+      const filteredRefreshedOpenQs =
+        updatedScopeSet.size === 0
+          ? refreshedOpenQsWithIds
+          : refreshedOpenQsWithIds.filter(
+              (q: any) => !Array.isArray(q.tags) || q.tags.length === 0 || updatedInScope(q.tags),
+            );
       // Overwrite the original user message in place so the agent only sees
       // the CURRENT TURN ROUTER STATE — not the pre-tool snapshot. Without
       // this, LAW_TURN_ROUTER_PRIMACY makes the agent anchor on stale state
       // (e.g. currentLeapPhase=not_started) even after a completion entry
       // landed in pohcLog.
       const rebuiltMessage = buildUserMessage(
-        refreshedLogWithIds,
-        refreshedOpenQsWithIds,
+        filteredRefreshedLog,
+        filteredRefreshedOpenQs,
         updatedRouting,
       );
       contents[originalUserMsgIndex] = {
@@ -1296,6 +1418,7 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         const t = (chunk as any).text;
         if (t) {
           allTokens.push(t);
+          scheduleFlush();
           yield { type: "token", data: { delta: t } };
         }
       }
@@ -1316,19 +1439,26 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
       // Emit a minimal acknowledgement so the user isn't left with only chips.
       const ack = "Recorded. (No additional commentary this turn.)";
       allTokens.push(ack);
+      scheduleFlush();
       yield { type: "token", data: { delta: ack } };
     }
   }
 
   // ─── 5. Persist final assistant content + tool-call log ────────────────────
+  // Cancel any pending debounced flush — we're about to write the final state.
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
   if (persistent && assistantMessageId) {
-    await db
-      .update(coachMessages)
-      .set({
-        content: allTokens.join("").trim(),
-        toolCalls: allToolCalls.length ? (allToolCalls as any) : null,
-      })
-      .where(eq(coachMessages.id, assistantMessageId));
+    try {
+      await db
+        .update(coachMessages)
+        .set({
+          content: allTokens.join("").trim(),
+          toolCalls: allToolCalls.length ? (allToolCalls as any) : null,
+        })
+        .where(eq(coachMessages.id, assistantMessageId));
+    } catch (e: any) {
+      console.warn("[QA-Assistant] final persistence failed:", e?.message);
+    }
   }
 
   // Suppress unused-variable diagnostic; this flag exists for future telemetry.

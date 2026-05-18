@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -11,6 +11,7 @@ import { AgentHeader } from "@/components/agent-header";
 import { Loader2, AlertTriangle, Shield, FileText, PencilLine, ChevronDown, ChevronUp, CheckCircle, XCircle } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import type { Project } from "@shared/schema";
+import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 
 // Defensive filter: strip any string that contains legal-advice vocabulary
 // before it renders. Old DB rows from earlier whitespace runs may still
@@ -153,6 +154,109 @@ export default function Agent4() {
     setExpandedConcepts(next);
     setHasInitializedExpansion(true);
   }, [isNewFormat, conceptAnalyses.length, nuggetAnalyses.length, hasInitializedExpansion]);
+
+  // ── Page snapshot for the AI Helper ─────────────────────────────────────
+  // 4a is the White-Space Strategy review page. Users see per-concept strategy
+  // analysis, can edit a "Your Additional Notes" textarea per concept, save
+  // those notes, and then click "Generate Patent Key Concept Ideas" to move
+  // to 4b. The notes textareas are the ONLY editable surface on this page.
+  // Hook must run unconditionally (before any early return), so it derives
+  // its own view of agent4 data instead of depending on the post-return
+  // locals further down the file.
+  const snapshot = useMemo<PageSnapshot>(() => {
+    const items: NonNullable<PageSnapshot["items"]> = [];
+    const drafts: Record<string, string> = {};
+
+    const dataObj = agent4Data?.data as any;
+    const analysis = Array.isArray(dataObj) ? dataObj[0] : (dataObj || {});
+    const conceptAnalysesLocal = analysis?.conceptAnalyses || [];
+    const nuggetAnalysesLocal = analysis?.nuggetAnalyses || [];
+    const isNewFormatLocal = conceptAnalysesLocal.length > 0;
+    const sourceArray = isNewFormatLocal ? conceptAnalysesLocal : nuggetAnalysesLocal;
+    const agent4DataObjLocal = dataObj || {};
+
+    sourceArray.forEach((entry: any, idx: number) => {
+      const conceptId = `Concept ${idx + 1}`;
+      const noteFieldId = `user-notes-${idx}`;
+      if (userNotes[idx]) drafts[noteFieldId] = userNotes[idx];
+      const savedNote = (agent4DataObjLocal?.userNotes?.[idx] || "") as string;
+      const noteIsDirty = (userNotes[idx] || "") !== savedNote;
+
+      items.push({
+        id: conceptId,
+        type: isNewFormatLocal ? "concept_strategy" : "nugget_strategy",
+        status: noteIsDirty ? "notes_unsaved" : "notes_saved",
+        editable: false,
+        content: {
+          conceptTitle: entry?.conceptTitle ?? entry?.title ?? conceptId,
+          whiteSpaceStrategy: entry?.strategy?.whiteSpaceStrategy ?? entry?.whiteSpaceStrategy ?? "",
+          differentiationLogic: entry?.differentiationLogic ?? "",
+          notesFieldId: noteFieldId,
+          savedNote,
+          unsavedNote: userNotes[idx] ?? "",
+        },
+      });
+
+      items.push({
+        id: noteFieldId,
+        type: "user_notes_field",
+        status: noteIsDirty ? "unsaved" : "saved",
+        editable: true,
+        editTarget: noteFieldId,
+        content: userNotes[idx] ?? "",
+      });
+    });
+
+    const hasAnalysis = sourceArray.length > 0;
+    const actions: PageSnapshot["actions"] = hasAnalysis
+      ? [
+          {
+            id: "edit-user-notes",
+            label: "Edit additional notes per concept",
+            kind: "secondary",
+            enabled: true,
+          },
+          ...sourceArray.map((_: any, idx: number) => ({
+            id: `save-notes-${idx}`,
+            label: `Save Notes (Concept ${idx + 1})`,
+            kind: "secondary" as const,
+            enabled:
+              (userNotes[idx] ?? "") !== ((agent4DataObjLocal?.userNotes?.[idx] ?? "") as string) &&
+              !saveNoteMutation.isPending,
+            reason:
+              (userNotes[idx] ?? "") === ((agent4DataObjLocal?.userNotes?.[idx] ?? "") as string)
+                ? "No unsaved changes"
+                : undefined,
+          })),
+          {
+            id: "generate-key-concept-ideas",
+            label: "Generate Patent Key Concept Ideas",
+            kind: "primary",
+            enabled: !proceedToClaimsMutation.isPending,
+            navigatesTo: `/project/${projectId}/agent/4b`,
+          },
+        ]
+      : [];
+
+    return {
+      pageName: "White Space Strategy (Stage 4a)",
+      route: `/project/${projectId}/agent/4a`,
+      description: hasAnalysis
+        ? "User reviews per-concept white-space strategy and optionally adds notes per concept, then triggers key-concept generation to advance to 4b."
+        : "White-space analysis has not been produced yet.",
+      items,
+      drafts,
+      actions,
+      source: "structured",
+    };
+  }, [
+    agent4Data,
+    userNotes,
+    saveNoteMutation.isPending,
+    proceedToClaimsMutation.isPending,
+    projectId,
+  ]);
+  usePageSnapshot(snapshot);
 
   const getRiskBadgeVariant = (riskLevel: string) => {
     const level = riskLevel?.toLowerCase();

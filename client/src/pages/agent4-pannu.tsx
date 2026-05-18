@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { AgentHeader } from "@/components/agent-header";
+import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 import { Loader2, Shield, CheckCircle, CheckCircle2, Circle, AlertCircle, HelpCircle, ArrowRight, ChevronDown, ChevronUp, Sparkles, SkipForward, FileText } from "lucide-react";
 import {
   AlertDialog,
@@ -402,6 +403,161 @@ export default function Agent4Pannu() {
     setLoadingAiSuggestion(key);
     getAiSuggestionMutation.mutate({ claim, question, factor });
   };
+
+  // ── Page snapshot for the AI Helper ─────────────────────────────────────
+  // Pannu validation page. Per concept: status (pending/answering/certified/
+  // needs_clarification/rejected/skipped), generated questions, and three
+  // answer textareas (the editable surfaces — one per Pannu factor). The
+  // helper can suggest which concept to tackle next and which textarea to
+  // write into, but only when those textareas actually exist (i.e. after the
+  // questions for that concept have been generated).
+  const snapshot = useMemo<PageSnapshot>(() => {
+    const items: NonNullable<PageSnapshot["items"]> = [];
+    const drafts: Record<string, string> = {};
+    const actions: NonNullable<PageSnapshot["actions"]> = [];
+
+    // canProceed mirrors the same condition declared further down the
+    // component file; we compute it inline here to avoid a temporal-dead-zone
+    // reference (the original `canProceed` is declared after the early
+    // return, which runs after this hook).
+    const canProceedLocal =
+      keyConceptsForValidation.length === 0 ||
+      keyConceptsForValidation.some((c) => {
+        const s = validationStates[c.conceptId]?.status;
+        return s === "certified" || s === "needs_clarification" || s === "rejected";
+      });
+
+    keyConceptsForValidation.forEach((claim) => {
+      const state = validationStates[claim.conceptId];
+      const status = state?.status ?? "pending";
+      const questions = state?.questions ?? [];
+      const claimAnswers = currentAnswers[claim.conceptId] || {};
+
+      items.push({
+        id: `key_concept_${claim.number}`,
+        type: "pannu_claim",
+        status,
+        editable: false,
+        content: {
+          conceptId: claim.conceptId,
+          claimNumber: claim.number,
+          claimText: claim.claimText,
+          claimType: claim.type,
+          certificationStatus: state?.certificationStatus ?? null,
+          confidenceScore: state?.confidenceScore ?? null,
+          factorsCovered: questions.map((q) => q.factor),
+        },
+      });
+
+      questions.forEach((q) => {
+        const fieldId = `pannu-${claim.conceptId}-${q.factor}`;
+        const draftValue = claimAnswers[q.factor] || "";
+        if (draftValue) drafts[fieldId] = draftValue;
+        items.push({
+          id: fieldId,
+          type: "pannu_answer_field",
+          status: draftValue ? "drafted" : "empty",
+          editable: true,
+          editTarget: fieldId,
+          content: {
+            forConceptId: claim.conceptId,
+            forKeyConcept: `Key Concept ${claim.number}`,
+            factor: q.factor,
+            question: q.question,
+            hint: q.hint ?? null,
+            currentValue: draftValue,
+          },
+        });
+      });
+
+      // Per-claim actions reflect the actual stage of the per-claim card.
+      if (status === "pending") {
+        actions.push({
+          id: `generate-questions-${claim.number}`,
+          label: `Generate Questions for Key Concept ${claim.number}`,
+          kind: "secondary",
+          enabled: !generateQuestionsMutation.isPending,
+        });
+      } else if (status === "answering" && questions.length > 0) {
+        actions.push({
+          id: `ask-ai-${claim.number}`,
+          label: `Ask AI for a draft on Key Concept ${claim.number}`,
+          kind: "secondary",
+          enabled: loadingAiSuggestion === null,
+          reason: loadingAiSuggestion !== null ? "An AI suggestion is already in flight" : undefined,
+        });
+        const allAnswered = questions.every((q) => (claimAnswers[q.factor] || "").trim().length > 0);
+        actions.push({
+          id: `submit-answers-${claim.number}`,
+          label: `Submit Answers for Key Concept ${claim.number}`,
+          kind: "primary",
+          enabled: allAnswered && !validateAnswersMutation.isPending,
+          reason: !allAnswered ? "Not every factor has an answer yet" : undefined,
+        });
+        actions.push({
+          id: `skip-${claim.number}`,
+          label: `Skip Key Concept ${claim.number}`,
+          kind: "secondary",
+          enabled: true,
+        });
+      } else if (status === "needs_clarification" || status === "rejected") {
+        actions.push({
+          id: `retry-${claim.number}`,
+          label: `Retry validation for Key Concept ${claim.number}`,
+          kind: "secondary",
+          enabled: true,
+        });
+      }
+    });
+
+    actions.push({
+      id: "back-to-pannu-intro",
+      label: "Back",
+      kind: "secondary",
+      enabled: true,
+      navigatesTo: `/project/${projectId}/agent/4-conception-intro`,
+    });
+    actions.push({
+      id: "skip-pannu",
+      label: "Skip Inventorship Validation",
+      kind: "secondary",
+      enabled: !skipPannuMutation.isPending,
+      navigatesTo: `/project/${projectId}/agent/5`,
+      reason: skipPannuMutation.isPending ? "Skip in progress" : undefined,
+    });
+    actions.push({
+      id: "finalize-provisional",
+      label: "Finalize Provisional",
+      kind: "primary",
+      enabled: canProceedLocal && !proceedMutation.isPending,
+      reason: !canProceedLocal
+        ? "At least one key concept must reach a terminal status (certified, needs clarification, rejected, or skipped) before finalizing"
+        : undefined,
+      navigatesTo: `/project/${projectId}/agent/5`,
+    });
+
+    return {
+      pageName: "Proof of Human Conception (Stage 4 — Pannu)",
+      route: `/project/${projectId}/agent/4-conception`,
+      description:
+        "Per-key-concept inventorship validation. For each concept the user generates three factor questions, fills in the answer textareas (the only editable surfaces), then submits to receive a certification status.",
+      items,
+      drafts,
+      actions,
+      source: "structured",
+    };
+  }, [
+    keyConceptsForValidation,
+    validationStates,
+    currentAnswers,
+    generateQuestionsMutation.isPending,
+    validateAnswersMutation.isPending,
+    proceedMutation.isPending,
+    skipPannuMutation.isPending,
+    loadingAiSuggestion,
+    projectId,
+  ]);
+  usePageSnapshot(snapshot);
 
   if (projectLoading || agent4Loading || !project) {
     return (

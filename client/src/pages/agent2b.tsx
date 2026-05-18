@@ -11,6 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 import { Label } from "@/components/ui/label";
 import type { Project } from "@shared/schema";
 
@@ -246,6 +247,101 @@ export default function Agent2b() {
         // Softer UX - no red banner
       });
     },
+  });
+
+  // ── Page snapshot for the AI Helper ─────────────────────────────────────
+  // Stage 2b shows extracted patentable ideas with selection checkboxes.
+  // Items are read-only (ideas can't be edited inline here — only added
+  // anew via the Custom Idea dialog or re-extracted). The custom-idea
+  // textarea inside the dialog is the only editable surface.
+  const snapshotItems: NonNullable<PageSnapshot["items"]> = extractedIdeas.map((idea: ExtractedIdea, i: number) => ({
+    id: `extracted_idea_${i + 1}`,
+    type: "extracted_idea",
+    status: selectedIdeas.has(idea.id) ? "selected" : "deselected",
+    editable: false,
+    content: { ideaId: idea.id, title: idea.title, description: idea.description },
+  }));
+  if (isDialogOpen) {
+    snapshotItems.push({
+      id: "custom_idea_field",
+      type: "custom_idea_field",
+      status: customIdeaText.trim() ? "drafted" : "empty",
+      editable: true,
+      editTarget: "custom-idea-text",
+      content: { currentValue: customIdeaText },
+    });
+  }
+  const snapshotDrafts: Record<string, string> = isDialogOpen && customIdeaText
+    ? { "custom-idea-text": customIdeaText }
+    : {};
+
+  const snapshotActions: NonNullable<PageSnapshot["actions"]> = [];
+  if (extractedIdeas.length === 0) {
+    snapshotActions.push({
+      id: "extract-ideas",
+      label: "Extract Patentable Ideas",
+      kind: "primary",
+      enabled: !extractIdeasMutation.isPending,
+    });
+  } else {
+    snapshotActions.push({
+      id: "select-all",
+      label: "Select All",
+      kind: "secondary",
+      enabled: selectedIdeas.size < extractedIdeas.length,
+    });
+    snapshotActions.push({
+      id: "deselect-all",
+      label: "Deselect All",
+      kind: "secondary",
+      enabled: selectedIdeas.size > 0,
+    });
+    snapshotActions.push({
+      id: "re-extract",
+      label: "Re-extract Ideas",
+      kind: "secondary",
+      enabled: !extractIdeasMutation.isPending,
+    });
+    snapshotActions.push({
+      id: "open-add-custom-idea",
+      label: "Add Custom Idea",
+      kind: "secondary",
+      enabled: true,
+    });
+    if (isDialogOpen) {
+      snapshotActions.push({
+        id: "save-custom-idea",
+        label: "Save Custom Idea",
+        kind: "primary",
+        enabled: !addCustomIdeaMutation.isPending && customIdeaText.trim().length > 0,
+        reason: !customIdeaText.trim() ? "Custom-idea field is empty" : undefined,
+      });
+      snapshotActions.push({
+        id: "cancel-custom-idea",
+        label: "Cancel",
+        kind: "secondary",
+        enabled: true,
+      });
+    }
+    snapshotActions.push({
+      id: "proceed-to-prior-art",
+      label: "Proceed to Prior Art Research",
+      kind: "primary",
+      enabled: !proceedMutation.isPending && selectedIdeas.size > 0,
+      reason: selectedIdeas.size === 0 ? "No ideas selected" : undefined,
+      navigatesTo: `/project/${projectId}/agent/3`,
+    });
+  }
+
+  usePageSnapshot({
+    pageName: "Select Patentable Ideas (Stage 2b)",
+    route: `/project/${projectId}/agent/2b`,
+    description:
+      "User reviews extracted patentable ideas and selects which ones to research for prior art in stage 3. Ideas are not inline-editable; the only editable surface is the custom-idea textarea inside the add-idea dialog.",
+    items: snapshotItems,
+    drafts: snapshotDrafts,
+    actions: snapshotActions,
+    source: "structured",
   });
 
   if (projectLoading || agent2Loading) {

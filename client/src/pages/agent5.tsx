@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, lazy, Suspense } from "react";
+import { useEffect, useRef, useState, useMemo, lazy, Suspense } from "react";
+import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -238,6 +239,134 @@ export default function Agent5() {
       });
     },
   });
+
+  // ── Page snapshot for the AI Helper ─────────────────────────────────────
+  // Stage 5 is the Showcase. Spec sections are individually editable (one
+  // at a time via Pencil button → MDEditor → Save). Diagrams are read-only
+  // image cards. Top-level actions: generate/regenerate diagrams, download
+  // (PDF/DOCX), regenerate the whole draft, go to practitioner page,
+  // complete project.
+  const snapshot = useMemo<PageSnapshot>(() => {
+    const a5 = agent5Data as any;
+    const sections = (specSections || []) as Array<{ key: string; label: string; content: string }>;
+    const diagrams = (a5?.diagrams || a5?.data?.diagrams || []) as any[];
+
+    const items: NonNullable<PageSnapshot["items"]> = [];
+    const drafts: Record<string, string> = {};
+
+    sections.forEach((sec) => {
+      const isEditing = editingSection === sec.key;
+      if (isEditing) drafts[`spec-${sec.key}`] = editContent;
+      items.push({
+        id: `spec_section_${sec.key}`,
+        type: "spec_section",
+        status: isEditing ? "editing" : "saved",
+        editable: true,
+        editTarget: `spec-${sec.key}`,
+        content: {
+          label: sec.label,
+          length: typeof sec.content === "string" ? sec.content.length : 0,
+        },
+      });
+    });
+
+    diagrams.forEach((d: any, i: number) => {
+      items.push({
+        id: `diagram_${i + 1}`,
+        type: "diagram",
+        editable: false,
+        content: { caption: d.caption ?? d.title ?? null, url: d.url ?? d.imageUrl ?? null },
+      });
+    });
+
+    const actions: NonNullable<PageSnapshot["actions"]> = [];
+    if (editingSection) {
+      actions.push({
+        id: `save-spec-section`,
+        label: `Save changes to "${editingSection}"`,
+        kind: "primary",
+        enabled: !saveSpecSectionMutation.isPending,
+      });
+      actions.push({
+        id: `cancel-spec-edit`,
+        label: `Cancel edit`,
+        kind: "secondary",
+        enabled: true,
+      });
+    } else {
+      sections.forEach((sec) => {
+        actions.push({
+          id: `edit-spec-${sec.key}`,
+          label: `Edit section: ${sec.label}`,
+          kind: "secondary",
+          enabled: true,
+        });
+      });
+    }
+    actions.push({
+      id: "generate-diagrams",
+      label: diagrams.length > 0 ? "Regenerate Diagrams" : "Generate Diagrams",
+      kind: "secondary",
+      enabled: !generateDiagramsMutation.isPending,
+    });
+    actions.push({
+      id: "download-pdf",
+      label: "Download PDF",
+      kind: "secondary",
+      enabled: !exportPDFMutation.isPending,
+    });
+    actions.push({
+      id: "download-docx",
+      label: "Download DOCX",
+      kind: "secondary",
+      enabled: !exportDOCXMutation.isPending,
+    });
+    actions.push({
+      id: "regenerate-draft",
+      label: "Regenerate Full Draft",
+      kind: "destructive",
+      enabled: !regenerateDraftMutation.isPending,
+      reason: "Regenerating overwrites edits — confirm via the dialog",
+    });
+    actions.push({
+      id: "find-practitioner",
+      label: "Find a Patent Practitioner",
+      kind: "secondary",
+      enabled: true,
+      navigatesTo: `/project/${projectId}/agent/5-practitioner`,
+    });
+    actions.push({
+      id: "complete-project",
+      label: "Complete & Return to Dashboard",
+      kind: "primary",
+      enabled: !completeMutation.isPending,
+      navigatesTo: `/`,
+    });
+
+    return {
+      pageName: "The Showcase (Stage 5)",
+      route: `/project/${projectId}/agent/5`,
+      description:
+        "User reviews and finalizes the provisional draft. Each spec section can be edited one at a time via its Pencil icon. Diagrams are read-only image cards. Available actions: generate/regenerate diagrams, download (PDF/DOCX), regenerate the full draft, go to practitioner page, or complete the project.",
+      items,
+      drafts,
+      actions,
+      source: "structured",
+    };
+  }, [
+    agent5Data,
+    specSections,
+    editingSection,
+    editContent,
+    saveSpecSectionMutation.isPending,
+    generateDiagramsMutation.isPending,
+    exportPDFMutation.isPending,
+    exportDOCXMutation.isPending,
+    regenerateDraftMutation.isPending,
+    completeMutation.isPending,
+    projectId,
+  ]);
+  usePageSnapshot(snapshot);
 
   if (projectLoading || !project) {
     return (

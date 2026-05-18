@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -9,6 +9,7 @@ import { AgentHeader } from "@/components/agent-header";
 import { Loader2, FileText, Download } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Project } from "@shared/schema";
+import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 
 export default function Agent4c() {
   const [, params] = useRoute("/project/:id/agent/4c");
@@ -78,6 +79,91 @@ export default function Agent4c() {
       });
     },
   });
+
+  // ── Page snapshot for the AI Helper ─────────────────────────────────────
+  // 4c is the assembled provisional-draft review page. Everything on screen
+  // is read-only — the user reviews the spec, key concepts, and strategic
+  // analysis, then either goes back to 4b or proceeds to stage 5 diagrams.
+  const snapshot = useMemo<PageSnapshot>(() => {
+    const a2 = agent2Data?.data as any;
+    const a4raw = agent4Data?.data as any;
+    const a4 = Array.isArray(a4raw) ? a4raw[0] : (a4raw || {});
+    const expandedConceptLocal = a2?.provisionalDraft || a2?.draftSpecification || "";
+    const selectedKeyConceptsLocal = (a4raw?.selectedKeyConcepts || []) as any[];
+    const strategicDirectiveLocal = (a4?.strategicDirective || "") as string;
+
+    const items: NonNullable<PageSnapshot["items"]> = [];
+
+    items.push({
+      id: "technical_specification",
+      type: "draft_section",
+      editable: false,
+      content: { markdown: expandedConceptLocal },
+    });
+
+    selectedKeyConceptsLocal.forEach((concept: any, i: number) => {
+      items.push({
+        id: `selected_key_concept_${i + 1}`,
+        type: "selected_key_concept",
+        editable: false,
+        content: {
+          number: concept.number ?? i + 1,
+          variationId: concept.variationId ?? null,
+          text: concept.text ?? "",
+        },
+      });
+    });
+
+    if (strategicDirectiveLocal) {
+      items.push({
+        id: "strategic_analysis_summary",
+        type: "draft_section",
+        editable: false,
+        content: { markdown: strategicDirectiveLocal },
+      });
+    }
+
+    const hasConcepts = selectedKeyConceptsLocal.length > 0;
+    const actions: PageSnapshot["actions"] = hasConcepts
+      ? [
+          {
+            id: "back-to-key-concepts",
+            label: "Back to Key Concepts",
+            kind: "secondary",
+            enabled: true,
+            navigatesTo: `/project/${projectId}/agent/4b`,
+          },
+          {
+            id: "generate-diagrams",
+            label: "Generate Diagrams",
+            kind: "primary",
+            enabled: !proceedMutation.isPending,
+            navigatesTo: `/project/${projectId}/agent/5`,
+          },
+        ]
+      : [
+          {
+            id: "back-to-key-concepts",
+            label: "Back to Key Concepts Selection",
+            kind: "primary",
+            enabled: true,
+            navigatesTo: `/project/${projectId}/agent/4b`,
+          },
+        ];
+
+    return {
+      pageName: "Provisional Draft Review (Stage 4c)",
+      route: `/project/${projectId}/agent/4c`,
+      description: hasConcepts
+        ? "User reviews the assembled provisional draft (spec, selected key concepts, strategic analysis). Read-only. Next action is generating diagrams in stage 5."
+        : "No key concepts have been selected yet; the only available action is returning to 4b.",
+      items,
+      drafts: {},
+      actions,
+      source: "structured",
+    };
+  }, [agent2Data, agent4Data, proceedMutation.isPending, projectId]);
+  usePageSnapshot(snapshot);
 
   if (projectLoading || !project) {
     return (

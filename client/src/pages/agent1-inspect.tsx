@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Project } from "@shared/schema";
-import { usePageSnapshot } from "@/lib/page-snapshot";
+import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 
 interface UnifiedIdea {
   id: string;
@@ -356,22 +356,55 @@ const handleApplyAiSuggestion = (id: string) => {
     addIdeaMutation.mutate(newIdeaContent.trim());
   };
 
+  // Per-idea actions (approve / edit / discard / ask-AI / save edit) are
+  // surfaced inline below the page-level actions. The helper can address them
+  // by id "<action>-<conceptN>". Items themselves are editable because the
+  // user can rewrite each idea via Edit mode or via the AI-modifier rewrite.
+  const perIdeaActions = ideas.flatMap((idea, i) => {
+    const conceptId = `Concept ${i + 1}`;
+    const isEditingThis = editingId === idea.id;
+    const isPending = idea.status === "pending";
+    const isApproved = idea.status === "approved" || idea.status === "edited";
+    const isDiscarded = idea.status === "discarded";
+    const out: NonNullable<PageSnapshot["actions"]> = [];
+    if (isPending && !isEditingThis) {
+      out.push({ id: `approve-${conceptId}`, label: `Approve ${conceptId}`, kind: "primary", enabled: true });
+      out.push({ id: `edit-${conceptId}`, label: `Edit ${conceptId}`, kind: "secondary", enabled: true });
+      out.push({ id: `ask-ai-${conceptId}`, label: `Ask AI to improve ${conceptId}`, kind: "secondary", enabled: !idea.isLoadingAi });
+      out.push({ id: `discard-${conceptId}`, label: `Discard ${conceptId}`, kind: "destructive", enabled: true });
+    }
+    if (isEditingThis) {
+      out.push({ id: `save-edit-${conceptId}`, label: `Save edit for ${conceptId}`, kind: "primary", enabled: editContent.trim().length > 0, reason: editContent.trim().length === 0 ? "Edit field is empty" : undefined });
+      out.push({ id: `cancel-edit-${conceptId}`, label: `Cancel edit for ${conceptId}`, kind: "secondary", enabled: true });
+    }
+    if (isApproved && !isEditingThis) {
+      out.push({ id: `edit-${conceptId}`, label: `Edit ${conceptId}`, kind: "secondary", enabled: true });
+      out.push({ id: `discard-${conceptId}`, label: `Discard ${conceptId}`, kind: "destructive", enabled: true });
+    }
+    if (isDiscarded) {
+      out.push({ id: `restore-${conceptId}`, label: `Restore ${conceptId}`, kind: "secondary", enabled: true });
+    }
+    return out;
+  });
+
   usePageSnapshot({
     pageName: "Inspect & Refine Ideas (Stage 1b)",
     route: typeof window !== "undefined" ? window.location.pathname : "",
     description:
       "User is reviewing extracted ideas from their original disclosure. Each idea has a status (pending/approved/edited/discarded). " +
-      "Pending ideas can be approved as-is, edited, discarded, or sent to the AI modifier for an improved rewrite. " +
+      "Pending ideas can be approved as-is, edited inline, discarded, or sent to the AI modifier for an improved rewrite. " +
       "Once all ideas are resolved, the user advances to Stage 2.",
     items: [
       ...(agent1Data?.data?.ideaSummary
         ? [{
             id: "idea_summary",
             type: "idea_summary",
+            editable: false,
             content: agent1Data.data.ideaSummary.slice(0, 1200),
           }]
         : []),
       ...ideas.map((idea, i) => {
+        const conceptId = `Concept ${i + 1}`;
         const isFocused = editingId === idea.id;
         const content: Record<string, any> = {
           item: idea.editedContent || idea.item,
@@ -389,9 +422,13 @@ const handleApplyAiSuggestion = (id: string) => {
           if (idea.improvementsMade) content.improvementsMade = idea.improvementsMade;
         }
         return {
-          id: `Concept ${i + 1}`,
+          id: conceptId,
           type: "extracted_idea",
           status: idea.status,
+          // editable=true only while Edit mode is active for this concept,
+          // since the textarea only exists in that mode.
+          editable: isFocused,
+          editTarget: isFocused ? `edit_${idea.id}` : undefined,
           content,
         };
       }),
@@ -403,6 +440,53 @@ const handleApplyAiSuggestion = (id: string) => {
     focused: editingId
       ? `Concept ${ideas.findIndex((i) => i.id === editingId) + 1}`
       : undefined,
+    actions: [
+      {
+        id: "back-to-debate",
+        label: "Back to Advocate/Examiner Debate",
+        kind: "secondary",
+        enabled: true,
+        navigatesTo: `/project/${projectId}/agent/1a`,
+      },
+      {
+        id: "reanalyze",
+        label: "Re-analyze (Round 2 audit)",
+        kind: "secondary",
+        enabled: !reanalyzeMutation.isPending,
+        reason: reanalyzeMutation.isPending ? "Re-analysis in progress" : undefined,
+        navigatesTo: `/project/${projectId}/agent/1a-audit`,
+      },
+      {
+        id: "add-new-idea",
+        label: showAddForm ? "Save new idea" : "Add a new idea",
+        kind: "secondary",
+        enabled: showAddForm
+          ? !addIdeaMutation.isPending && newIdeaContent.trim().length > 0
+          : true,
+        reason:
+          showAddForm && newIdeaContent.trim().length === 0
+            ? "New-idea field is empty"
+            : undefined,
+      },
+      ...perIdeaActions,
+      {
+        id: "continue-to-stage-2",
+        label: "Continue to Stage 2",
+        kind: "primary",
+        enabled:
+          !saveAndContinueMutation.isPending &&
+          ideas.length > 0 &&
+          ideas.every((i) => i.status !== "pending"),
+        reason:
+          ideas.length === 0
+            ? "No extracted ideas yet"
+            : ideas.some((i) => i.status === "pending")
+              ? "Some ideas are still pending — approve, edit, discard, or improve them first"
+              : undefined,
+        navigatesTo: `/project/${projectId}/agent/2a`,
+      },
+    ],
+    source: "structured",
   });
 
   if (projectLoading || dataLoading || ideasLoading) {

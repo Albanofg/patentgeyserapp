@@ -5,6 +5,8 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+import { useMemo } from "react";
+import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 import { useToast } from "@/hooks/use-toast";
 import { AgentHeader } from "@/components/agent-header";
 import { Loader2, Lightbulb, Sparkles, Edit, ChevronRight, RefreshCw } from "lucide-react";
@@ -170,6 +172,105 @@ export default function Agent2a() {
       });
     },
   });
+
+  // ── Page snapshot for the AI Helper ─────────────────────────────────────
+  // Stage 2a expands the user's idea into a provisional draft. Two phases:
+  // (1) no draft yet → additional-notes Textarea + "Expand Idea" action;
+  // (2) draft exists → read-only draft display + refinement Textarea +
+  // "Regenerate with Feedback" + "Proceed to 2b".
+  const snapshot = useMemo<PageSnapshot>(() => {
+    const draftLocal =
+      agent2Data?.data?.provisionalDraft ||
+      ((agent2Data?.data as any)?.patentableIdeas as string | undefined);
+    const hasDraftLocal = !!draftLocal;
+
+    const items: NonNullable<PageSnapshot["items"]> = [];
+    const drafts: Record<string, string> = {};
+
+    if (additionalNotes) drafts["additional-notes"] = additionalNotes;
+    items.push({
+      id: "additional_notes_field",
+      type: "additional_notes_field",
+      status: additionalNotes !== (agent2Data?.data?.additionalNotes || "") ? "unsaved" : "saved",
+      editable: true,
+      editTarget: "additional-notes",
+      content: { currentValue: additionalNotes },
+    });
+
+    if (hasDraftLocal) {
+      items.push({
+        id: "provisional_draft",
+        type: "provisional_draft",
+        editable: false,
+        content: { markdown: draftLocal },
+      });
+      if (refinementFeedback) drafts["refinement-feedback"] = refinementFeedback;
+      items.push({
+        id: "refinement_feedback_field",
+        type: "refinement_feedback_field",
+        status: refinementFeedback.trim() ? "drafted" : "empty",
+        editable: true,
+        editTarget: "refinement-feedback",
+        content: { currentValue: refinementFeedback },
+      });
+    }
+
+    const actions: NonNullable<PageSnapshot["actions"]> = [];
+    actions.push({
+      id: "save-additional-notes",
+      label: "Save Additional Notes",
+      kind: "secondary",
+      enabled: additionalNotes !== (agent2Data?.data?.additionalNotes || "") && !saveMutation.isPending,
+      reason:
+        additionalNotes === (agent2Data?.data?.additionalNotes || "")
+          ? "No unsaved changes"
+          : undefined,
+    });
+    if (!hasDraftLocal) {
+      actions.push({
+        id: "expand-idea",
+        label: "Expand Idea",
+        kind: "primary",
+        enabled: !draftMutation.isPending,
+      });
+    } else {
+      actions.push({
+        id: "regenerate-with-feedback",
+        label: "Regenerate with Feedback",
+        kind: "secondary",
+        enabled: !draftMutation.isPending && refinementFeedback.trim().length > 0,
+        reason: !refinementFeedback.trim() ? "Refinement feedback field is empty" : undefined,
+      });
+      actions.push({
+        id: "proceed-to-2b",
+        label: "Extract Patentable Ideas",
+        kind: "primary",
+        enabled: !proceedTo2b.isPending,
+        navigatesTo: `/project/${projectId}/agent/2b`,
+      });
+    }
+
+    return {
+      pageName: "Concept Expansion (Stage 2a)",
+      route: `/project/${projectId}/agent/2a`,
+      description: hasDraftLocal
+        ? "User reviews the expanded provisional draft and optionally refines via feedback, then proceeds to 2b. Draft itself is read-only; the refinement field is the only editable surface besides additional notes."
+        : "User adds optional additional notes, then clicks Expand Idea to generate the provisional draft.",
+      items,
+      drafts,
+      actions,
+      source: "structured",
+    };
+  }, [
+    agent2Data,
+    additionalNotes,
+    refinementFeedback,
+    saveMutation.isPending,
+    draftMutation.isPending,
+    proceedTo2b.isPending,
+    projectId,
+  ]);
+  usePageSnapshot(snapshot);
 
   if (projectLoading || agent2Loading) {
     return (

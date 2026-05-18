@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { AgentHeader } from "@/components/agent-header";
+import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 import { Loader2, Shield, SkipForward, Brain, FileCheck, Scale, FileText, CheckCircle2, Circle, ArrowRight } from "lucide-react";
 import {
   AlertDialog,
@@ -79,6 +80,56 @@ export default function Agent4PannuIntro() {
     }, 20000);
     return () => clearTimeout(timer);
   }, [isGenerating, visibleSteps]);
+
+  // ── Page snapshot for the AI Helper ─────────────────────────────────────
+  // Pannu intro is a pure explainer page. No editable content. Three
+  // navigation actions: back to 4b, skip the validation entirely, or start
+  // the Pannu flow at /agent/4-conception.
+  const snapshot = useMemo<PageSnapshot>(() => ({
+    pageName: "Proof of Human Conception — Introduction",
+    route: `/project/${projectId}/agent/4-conception-intro`,
+    description:
+      "Explainer page for the Pannu (Proof of Human Conception) inventorship validation. Read-only. User chooses to start the validation, skip it, or go back to 4b.",
+    items: [
+      {
+        id: "pannu_explainer",
+        type: "explainer",
+        editable: false,
+        content: {
+          framework: "Pannu / Proof of Human Conception",
+          factors: ["Conception", "Quality of Contribution", "Beyond Known Concepts"],
+          estimatedMinutes: "10-15",
+        },
+      },
+    ],
+    drafts: {},
+    actions: [
+      {
+        id: "back-to-key-concepts",
+        label: "Back to Key Concepts",
+        kind: "secondary",
+        enabled: true,
+        navigatesTo: `/project/${projectId}/agent/4b`,
+      },
+      {
+        id: "skip-pannu",
+        label: "Skip This Step",
+        kind: "secondary",
+        enabled: !skipPannuMutation.isPending,
+        navigatesTo: `/project/${projectId}/agent/5`,
+        reason: skipPannuMutation.isPending ? "Skip in progress" : undefined,
+      },
+      {
+        id: "start-pannu",
+        label: "Start Proof of Human Conception",
+        kind: "primary",
+        enabled: true,
+        navigatesTo: `/project/${projectId}/agent/4-conception`,
+      },
+    ],
+    source: "structured",
+  }), [projectId, skipPannuMutation.isPending]);
+  usePageSnapshot(snapshot);
 
   if (projectLoading || !project) {
     return (

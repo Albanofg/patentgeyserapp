@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -8,6 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Loader2, Search, ArrowRight, ArrowLeft } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Project } from "@shared/schema";
+import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 
 interface IdeaSnapshot {
   id: string;
@@ -98,6 +100,81 @@ export default function Agent1aAudit() {
       });
     },
   });
+
+  // ── Page snapshot for the AI Helper ─────────────────────────────────────
+  // Round-2 audit review page. Read-only display of the second-round
+  // Advocate/Examiner audit. Two actions: inspect & refine (extract ideas →
+  // 1b) or continue to stage 2.
+  const snapshot = useMemo<PageSnapshot>(() => {
+    const roundsLocal = (agent1Data?.data?.rounds || []) as ConversationRound[];
+    const brainstormRoundsLocal = roundsLocal.filter((r) => r.roundType !== "mechanic");
+    const latestRound = brainstormRoundsLocal[brainstormRoundsLocal.length - 1];
+    const hasAudit =
+      !!(latestRound?.agentsDebate &&
+        Array.isArray(latestRound.agentsDebate) &&
+        hasAuditFormat(latestRound.agentsDebate));
+
+    const items: NonNullable<PageSnapshot["items"]> = [];
+    if (hasAudit && Array.isArray(latestRound!.agentsDebate)) {
+      latestRound!.agentsDebate.forEach((agent: any, idx: number) => {
+        const speaker = agent.speaker || (idx === 0 ? "Advocate" : "Examiner");
+        items.push({
+          id: `audit_${speaker.toLowerCase()}_${idx}`,
+          type: "audit_panel",
+          editable: false,
+          content: { speaker, message: agent.message ?? "" },
+        });
+      });
+    }
+
+    return {
+      pageName: "Round 2 Audit (Stage 1a)",
+      route: `/project/${projectId}/agent/1a-audit`,
+      description: hasAudit
+        ? "User reviews the round-2 audit where Advocate/Examiner check which prior concerns were preserved or fixed. Read-only."
+        : "The round-2 audit has not been produced yet.",
+      items,
+      drafts: {},
+      actions: [
+        {
+          id: "back-to-debate",
+          label: "Back to Round 1 Debate",
+          kind: "secondary",
+          enabled: true,
+          navigatesTo: `/project/${projectId}/agent/1a`,
+        },
+        {
+          id: "inspect-and-refine",
+          label: "Inspect & Refine",
+          kind: "secondary",
+          enabled:
+            !inspectAndRefineMutation.isPending &&
+            !continueToAgent2Mutation.isPending &&
+            hasAudit,
+          reason: !hasAudit ? "Audit data not available" : undefined,
+          navigatesTo: `/project/${projectId}/agent/1b`,
+        },
+        {
+          id: "continue-to-stage-2",
+          label: "Continue to Stage 2",
+          kind: "primary",
+          enabled:
+            !continueToAgent2Mutation.isPending &&
+            !inspectAndRefineMutation.isPending &&
+            hasAudit,
+          reason: !hasAudit ? "Audit data not available" : undefined,
+          navigatesTo: `/project/${projectId}/agent/2a`,
+        },
+      ],
+      source: "structured",
+    };
+  }, [
+    agent1Data,
+    inspectAndRefineMutation.isPending,
+    continueToAgent2Mutation.isPending,
+    projectId,
+  ]);
+  usePageSnapshot(snapshot);
 
   if (projectLoading || dataLoading) {
     return (

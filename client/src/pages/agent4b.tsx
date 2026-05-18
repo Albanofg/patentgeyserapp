@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -10,6 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { AgentHeader } from "@/components/agent-header";
 import { Loader2, FileText, Check, CheckCircle2, ChevronDown, ChevronUp, ArrowRight } from "lucide-react";
 import type { Project } from "@shared/schema";
+import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 
 type KeyConceptItem = {
   id: string;
@@ -209,6 +210,118 @@ export default function Agent4b() {
       });
     },
   });
+
+  // ── Page snapshot for the AI Helper ─────────────────────────────────────
+  // Declares exactly what's on this page (groups + their concepts), which
+  // items are selected, and which buttons the user can actually click.
+  // editable=false everywhere — this page is select-only; the helper must
+  // not suggest "paste this into the box" because no edit box exists.
+  const snapshot = useMemo<PageSnapshot>(() => {
+    const agent4DataObj = (agent4Data?.data ?? {}) as any;
+    const variations = (agent4DataObj?.claimVariations ?? []) as any[];
+
+    const items = variations.map((variation: any, gIdx: number) => {
+      const concepts = allConcepts
+        .filter((c) => c.variationId === variation.id)
+        .map((c) => ({
+          conceptId: c.id,
+          number: c.number,
+          selected: selectedClaimIds.has(c.id),
+          text: c.text,
+        }));
+      const selectedInGroup = concepts.filter((c) => c.selected).length;
+      return {
+        id: `key_concept_group_${gIdx + 1}`,
+        type: "key_concept_group",
+        status:
+          concepts.length === 0
+            ? "empty"
+            : selectedInGroup === 0
+              ? "none_selected"
+              : selectedInGroup === concepts.length
+                ? "all_selected"
+                : "partially_selected",
+        editable: false,
+        content: {
+          variationId: variation.id,
+          strategySummary: variation.strategySummary ?? "",
+          totalConcepts: concepts.length,
+          selectedConcepts: selectedInGroup,
+          concepts,
+        },
+      };
+    });
+
+    const hasAnyVariations = variations.length > 0;
+    const hasSelection = selectedClaimIds.size > 0;
+
+    const actions: PageSnapshot["actions"] = hasAnyVariations
+      ? [
+          {
+            id: "toggle-concept",
+            label: "Toggle concept checkbox",
+            kind: "secondary",
+            enabled: true,
+          },
+          {
+            id: "toggle-all-in-group",
+            label: "Select All / Deselect All within a group",
+            kind: "secondary",
+            enabled: true,
+          },
+          {
+            id: "save-selection",
+            label: "Save Selection",
+            kind: "secondary",
+            enabled: hasSelection && !saveSelectionMutation.isPending,
+            reason: !hasSelection ? "No concepts selected yet" : undefined,
+          },
+          {
+            id: "validate-inventorship",
+            label: "Validate Inventorship",
+            kind: "primary",
+            enabled: hasSelection && !proceedMutation.isPending,
+            reason: !hasSelection ? "No concepts selected yet" : undefined,
+            navigatesTo: `/project/${projectId}/agent/4-conception-intro`,
+          },
+          {
+            id: "back-to-strategy",
+            label: "Back to Strategy",
+            kind: "secondary",
+            enabled: true,
+            navigatesTo: `/project/${projectId}/agent/4a`,
+          },
+        ]
+      : [
+          {
+            id: "back-to-strategy",
+            label: "Back to Strategy",
+            kind: "primary",
+            enabled: true,
+            navigatesTo: `/project/${projectId}/agent/4a`,
+          },
+        ];
+
+    return {
+      pageName: "Key Concepts Selection (Stage 4b)",
+      route: `/project/${projectId}/agent/4b`,
+      description: hasAnyVariations
+        ? "User reviews AI-generated key-concept groups and selects which concepts to carry into the Pannu inventorship validation step. No text on this page is editable — selection only."
+        : "Key-concept generation has not produced any groups yet. The only action available is returning to Strategy.",
+      items,
+      drafts: {},
+      actions,
+      source: "structured",
+    };
+  }, [
+    agent4Data,
+    allConcepts,
+    selectedClaimIds,
+    saveSelectionMutation.isPending,
+    proceedMutation.isPending,
+    projectId,
+  ]);
+  usePageSnapshot(snapshot);
 
   if (projectLoading || !project) {
     return (
