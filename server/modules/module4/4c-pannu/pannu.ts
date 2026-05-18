@@ -71,52 +71,93 @@ interface PannuScorerPayload {
   human_answers: PannuAnswer[] | Record<string, any>;
 }
 
-interface PannuScorerResult {
+interface BatchedScorerResultRow {
+  claim_id: string;
   certification_status: "Certified" | "Needs Clarification" | "Rejected";
-  concept_id?: string;
   confidence_score: number;
+  factor_scores: { conception: number; quality: number; known_concepts: number };
   pannu_record_text: string;
+  weak_factors: Array<"conception" | "quality" | "known_concepts">;
+}
+
+interface BatchedScorerResult {
+  results: BatchedScorerResultRow[];
 }
 
 const VALID_STATUSES = new Set(["Certified", "Needs Clarification", "Rejected"]);
+
+function normalizeAnswers(
+  raw: PannuAnswer[] | Record<string, any>,
+): { conception: { text: string; sources: string[] }; quality: { text: string; sources: string[] }; known_concepts: { text: string; sources: string[] } } {
+  const out = {
+    conception: { text: "", sources: [] as string[] },
+    quality: { text: "", sources: [] as string[] },
+    known_concepts: { text: "", sources: [] as string[] },
+  };
+  if (Array.isArray(raw)) {
+    for (const a of raw) {
+      const key = a?.factor as keyof typeof out;
+      if (key in out) out[key].text = a?.answer ?? "";
+    }
+  } else if (raw && typeof raw === "object") {
+    for (const key of Object.keys(out) as Array<keyof typeof out>) {
+      const v = (raw as any)[key];
+      if (typeof v === "string") out[key].text = v;
+      else if (v && typeof v === "object" && typeof v.text === "string") {
+        out[key].text = v.text;
+        if (Array.isArray(v.sources)) out[key].sources = v.sources;
+      }
+    }
+  }
+  return out;
+}
 
 export async function runPannuScorer(payload: PannuScorerPayload) {
   console.log(">>> [M4-4c PANNU/SCORER] <<< scoring answers for", payload.concept_id);
 
   try {
     const config = loadAgentConfig("module4/4c-pannu/scorer.config.json");
-    const systemPrompt = loadPrompt("module4/4c-pannu/scorer.md");
+    const systemPrompt = loadPrompt("module4/4c-pannu/pannu-scorer.md");
 
-    const userMessage =
-      `Claim Text: ${payload.claim_text}\n\n` +
-      `Concept ID: ${payload.concept_id}\n\n` +
-      `Human Answers:\n${JSON.stringify(payload.human_answers, null, 2)}\n\n` +
-      `Analyze and provide the compliance score in the required JSON format.`;
+    const batchedInput = {
+      project_context: { white_space_strategy: "" },
+      claims: [
+        {
+          claim_id: payload.concept_id,
+          claim_text: payload.claim_text,
+          answers: normalizeAnswers(payload.human_answers),
+        },
+      ],
+    };
 
-    const parsed = await callAgentJSON<PannuScorerResult>({
+    const userMessage = JSON.stringify(batchedInput);
+
+    const parsed = await callAgentJSON<BatchedScorerResult>({
       systemPrompt,
       userMessage,
       config,
       usage: { agentCode: "module4/4c-pannu-scorer" },
     });
 
-    if (!VALID_STATUSES.has(parsed.certification_status)) {
-      throw new Error(`Invalid certification_status: ${parsed.certification_status}`);
+    const row = parsed?.results?.[0];
+    if (!row) throw new Error("Batched scorer returned no results");
+    if (!VALID_STATUSES.has(row.certification_status)) {
+      throw new Error(`Invalid certification_status: ${row.certification_status}`);
     }
     if (
-      typeof parsed.confidence_score !== "number" ||
-      parsed.confidence_score < 0 ||
-      parsed.confidence_score > 1
+      typeof row.confidence_score !== "number" ||
+      row.confidence_score < 0 ||
+      row.confidence_score > 1
     ) {
-      throw new Error(`confidence_score out of range: ${parsed.confidence_score}`);
+      throw new Error(`confidence_score out of range: ${row.confidence_score}`);
     }
 
     return {
       success: true as const,
-      certification_status: parsed.certification_status,
-      concept_id: payload.concept_id,
-      confidence_score: parsed.confidence_score,
-      pannu_record_text: parsed.pannu_record_text || "",
+      certification_status: row.certification_status,
+      concept_id: row.claim_id || payload.concept_id,
+      confidence_score: row.confidence_score,
+      pannu_record_text: row.pannu_record_text || "",
     };
   } catch (error: any) {
     console.error(">>> [M4-4c PANNU/SCORER] <<< failed:", error);

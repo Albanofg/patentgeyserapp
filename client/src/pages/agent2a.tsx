@@ -374,23 +374,21 @@ export default function Agent2a() {
                       onChange={(e) => setRefinementFeedback(e.target.value)}
                       className="min-h-24"
                     />
-                    {refinementFeedback && (
-                      <Button
-                        className="mt-4"
-                        onClick={() => draftMutation.mutate()}
-                        disabled={draftMutation.isPending}
-                        data-testid="button-refine"
-                      >
-                        {draftMutation.isPending ? (
-                          <>
-                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                            Refining...
-                          </>
-                        ) : (
-                          "Regenerate with Feedback"
-                        )}
-                      </Button>
-                    )}
+                    <Button
+                      className="mt-4"
+                      onClick={() => draftMutation.mutate()}
+                      disabled={draftMutation.isPending || !refinementFeedback.trim()}
+                      data-testid="button-refine"
+                    >
+                      {draftMutation.isPending ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Refining...
+                        </>
+                      ) : (
+                        "Regenerate with Feedback"
+                      )}
+                    </Button>
                   </CardContent>
                 </Card>
 
