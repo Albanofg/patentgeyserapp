@@ -1019,7 +1019,7 @@ export default function Agent4Pannu() {
                                     value={currentText}
                                     onChange={(e) => updateAnswer(claim.conceptId, q.factor, e.target.value)}
                                     placeholder="Write your answer in your own words, or use what you already wrote earlier in the app."
-                                    className="min-h-[100px]"
+                                    className="min-h-25"
                                     data-testid={`textarea-answer-${index}-${qIndex}`}
                                   />
 

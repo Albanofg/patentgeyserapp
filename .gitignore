@@ -1,13 +1,16 @@
 node_modules
 dist
 .DS_Store
+Thumbs.db
 server/public
 api/index.js.map
 vite.config.ts.*
 *.tar.gz
 
-# Secrets
+# Secrets — keep .env.example tracked (it's the template)
 .env
+.env.local
+.env.*.local
 
 # Database dumps
 *.sql
@@ -28,6 +31,28 @@ AGENT_MIGRATION.md
 # Claude
 .claude
 .local
+
+# Local tool / config caches (npm, agent state, etc.)
+.config
+.agents
+
+# Editor / IDE local settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build & lint caches
+*.tsbuildinfo
+.eslintcache
+.cache/
+coverage/
+
+# Log files
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
 
 # Documentation images
 image/
