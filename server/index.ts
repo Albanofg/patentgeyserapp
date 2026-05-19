@@ -3,6 +3,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import cors from "cors";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import { probeSchema } from "./schema-probe";
 
 const app = express();
 
@@ -63,6 +64,11 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Fail loud at boot if any required table is missing. We do this here
+  // (not inside individual query sites) so the failure mode is honest —
+  // the app refuses to serve traffic against a half-migrated database.
+  await probeSchema();
+
   const server = await registerRoutes(app);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {

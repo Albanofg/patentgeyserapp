@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Textarea } from "@/components/ui/textarea";
 import { useMemo } from "react";
 import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
+import { useHumanInputWriter } from "@/lib/human-inputs";
 import { useToast } from "@/hooks/use-toast";
 import { AgentHeader } from "@/components/agent-header";
 import { Loader2, Lightbulb, Sparkles, Edit, ChevronRight, RefreshCw } from "lucide-react";
@@ -272,6 +273,26 @@ export default function Agent2a() {
   ]);
   usePageSnapshot(snapshot);
 
+  // Human-input ledger writers — feed Pannu pre-fill from the user's
+  // verbatim words in module 2a. additionalNotes tend to capture
+  // problem/implementation framing; refinementFeedback captures specific
+  // mechanism reasoning. Both are project-wide (no conceptId), since
+  // module 2a precedes per-concept work.
+  useHumanInputWriter({
+    projectId,
+    source: "module2/additional-notes",
+    promptText: "Additional Notes — anything else about the invention you want to capture",
+    answerText: additionalNotes,
+    tags: ["problem_narrative", "implementation_detail"],
+  });
+  useHumanInputWriter({
+    projectId,
+    source: "module2/refinement",
+    promptText: "Refinement Feedback — what you want the AI to change about the expanded draft",
+    answerText: refinementFeedback,
+    tags: ["conception_mechanism", "implementation_detail"],
+  });
+
   if (projectLoading || agent2Loading) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -314,7 +335,7 @@ export default function Agent2a() {
               <CardHeader>
                 <div className="flex items-center gap-2">
                   <Lightbulb className="h-5 w-5 text-primary" />
-                  <CardTitle>Your Current Idea</CardTitle>
+                  <CardTitle>Invention Record</CardTitle>
                 </div>
                 <CardDescription>
                   {hasBeenRefined 

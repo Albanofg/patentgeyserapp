@@ -256,10 +256,10 @@ export function AppSidebar({ projectId, onOpenAIHelper, helperOpen }: AppSidebar
                         className="group-data-[collapsible=icon]:justify-center bg-primary/10 border border-primary/30 text-primary font-medium hover:bg-primary/20 group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:hover:bg-sidebar-accent"
                       >
                         <Lightbulb className="h-4 w-4 text-primary fill-primary/20" />
-                        <span className="group-data-[collapsible=icon]:hidden">Your Current Idea</span>
+                        <span className="group-data-[collapsible=icon]:hidden">Invention Record</span>
                       </SidebarMenuButton>
                     </TooltipTrigger>
-                    {!open && <TooltipContent side="right">Your Current Idea</TooltipContent>}
+                    {!open && <TooltipContent side="right">Invention Record</TooltipContent>}
                   </Tooltip>
                 </SidebarMenuItem>
                 <SidebarMenuItem>

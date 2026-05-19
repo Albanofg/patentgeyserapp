@@ -12,6 +12,7 @@ import { Loader2, AlertTriangle, Shield, FileText, PencilLine, ChevronDown, Chev
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import type { Project } from "@shared/schema";
 import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
+import { useHumanInputWriter } from "@/lib/human-inputs";
 
 // Defensive filter: strip any string that contains legal-advice vocabulary
 // before it renders. Old DB rows from earlier whitespace runs may still
@@ -569,6 +570,11 @@ export default function Agent4() {
                           onChange={(e) => setUserNotes({ ...userNotes, [index]: e.target.value })}
                           className="min-h-20 text-sm"
                         />
+                        <ConceptNoteLedgerWriter
+                          projectId={projectId}
+                          conceptIndex={index}
+                          note={userNotes[index] || ""}
+                        />
                         <div className="flex items-center justify-between mt-2">
                           <Button
                             variant="outline"
@@ -718,4 +724,32 @@ export default function Agent4() {
       </main>
     </div>
   );
+}
+
+// Per-concept ledger writer for the "Your Additional Notes" textarea on 4a.
+// Mounted once per concept inside the per-concept card so each note has its
+// own debounced upsert keyed by (source, sourceRefId).
+//
+// Tags: `whitespace_rationale` + `differentiation` — the notes are the
+// user's strategic reasoning about the concept's distinguishing position,
+// which is exactly what Pannu's known_concepts factor consumes.
+function ConceptNoteLedgerWriter({
+  projectId,
+  conceptIndex,
+  note,
+}: {
+  projectId: string | undefined;
+  conceptIndex: number;
+  note: string;
+}) {
+  useHumanInputWriter({
+    projectId,
+    source: "module4a/concept-notes",
+    sourceRefId: `Concept ${conceptIndex + 1}`,
+    promptText: "Your Additional Notes (Optional) — strategic considerations, refinements, or implementation details",
+    answerText: note,
+    tags: ["whitespace_rationale", "differentiation"],
+    conceptId: `Concept ${conceptIndex + 1}`,
+  });
+  return null;
 }

@@ -31,6 +31,32 @@ type PannuQuestion = {
   hint?: string;
 };
 
+// The three POHC factors are universal — same for every key concept. We
+// surface them as static headers rather than asking an AI to invent
+// per-concept questions, which (a) wastes a model call, and (b) introduced
+// the "Generate Questions" friction step that blocked the page from
+// showing pre-filled evidence on land.
+const STATIC_POHC_FACTORS: PannuQuestion[] = [
+  {
+    factor: "conception",
+    question:
+      "What you wrote about how this specific technical mechanism came together — the path of thought that produced it.",
+    hint: "Pulled from your earlier notes about how you got here.",
+  },
+  {
+    factor: "quality",
+    question:
+      "What you wrote about why this is a real technical advance — not just stacking known parts in an obvious way.",
+    hint: "Pulled from your additional notes and refinement feedback.",
+  },
+  {
+    factor: "known_concepts",
+    question:
+      "What you wrote about how this differs from what already exists in the field.",
+    hint: "Pulled from your strategy notes per concept and your awareness of prior art.",
+  },
+];
+
 type ClaimForValidation = {
   id: string;
   conceptId: string;
@@ -69,6 +95,14 @@ export default function Agent4Pannu() {
   const [expandedClaims, setExpandedClaims] = useState<Set<string>>(new Set());
   const [currentAnswers, setCurrentAnswers] = useState<Record<string, Record<string, string>>>({});
   const [aiSuggestions, setAiSuggestions] = useState<Record<string, Record<string, string>>>({});
+  // Pre-fill metadata per concept → per factor. Holds source chip info and
+  // a coverage score so the UI can show "drafted from Module 2 / Module 4a"
+  // and indicate strong/weak/empty material without re-fetching.
+  const [prefillMeta, setPrefillMeta] = useState<Record<string, Record<string, {
+    sources: Array<{ source: string; sourceLabel: string; text: string }>;
+    coverage: number;
+    draft: string;
+  }>>>({});
   const [loadingAiSuggestion, setLoadingAiSuggestion] = useState<string | null>(null);
   const [generationStep, setGenerationStep] = useState<GenerationStep>('idle');
   const [visibleSteps, setVisibleSteps] = useState(0);
@@ -140,16 +174,17 @@ export default function Agent4Pannu() {
     if (pannuRecords && pannuRecords.length > 0 && !initializedFromDb) {
       const states: Record<string, ValidationState> = {};
       pannuRecords.forEach((record) => {
-        const hasQuestions = Array.isArray(record.questions) && record.questions.length > 0;
-        const status = record.certificationStatus === 'Certified' ? 'certified' 
+        const status = record.certificationStatus === 'Certified' ? 'certified'
           : record.certificationStatus === 'Needs Clarification' ? 'needs_clarification'
           : record.certificationStatus === 'Rejected' ? 'rejected'
-          : hasQuestions ? 'answering' 
-          : 'pending';
-        
+          : 'answering';
+
         states[record.conceptId] = {
           status,
-          questions: hasQuestions ? record.questions as PannuQuestion[] : undefined,
+          // Always use the static factors — we don't ask an AI to invent
+          // per-concept questions anymore. If the persisted record happened
+          // to carry old AI-generated questions, we ignore them.
+          questions: STATIC_POHC_FACTORS,
           answers: record.answers as { factor: string; answer: string }[] | undefined,
           pannuRecordId: record.id,
           certificationStatus: record.certificationStatus || undefined,
@@ -162,19 +197,110 @@ export default function Agent4Pannu() {
     }
   }, [pannuRecords, initializedFromDb]);
 
-  // Auto-expand first pending claim
+  // For every selected concept that doesn't yet have a validation state,
+  // seed it with the three static factors so the page renders the three
+  // pre-fillable fields without requiring any "Generate Questions" click.
+  // Concepts with a persisted record (above) keep that record's answers.
+  useEffect(() => {
+    if (keyConceptsForValidation.length === 0) return;
+    setValidationStates(prev => {
+      let mutated = false;
+      const next = { ...prev };
+      for (const claim of keyConceptsForValidation) {
+        if (!next[claim.conceptId]) {
+          next[claim.conceptId] = {
+            status: 'answering',
+            questions: STATIC_POHC_FACTORS,
+          };
+          mutated = true;
+        } else if (!next[claim.conceptId].questions) {
+          next[claim.conceptId] = {
+            ...next[claim.conceptId],
+            questions: STATIC_POHC_FACTORS,
+          };
+          mutated = true;
+        }
+      }
+      return mutated ? next : prev;
+    });
+  }, [keyConceptsForValidation]);
+
+  // Hydrate currentAnswers from persisted records so the textareas show
+  // whatever the user last submitted (or last drafted, if we extended the
+  // record shape later).
+  useEffect(() => {
+    if (!pannuRecords) return;
+    setCurrentAnswers(prev => {
+      let mutated = false;
+      const next = { ...prev };
+      for (const record of pannuRecords) {
+        if (next[record.conceptId]) continue;
+        const ans = record.answers as { factor: string; answer: string }[] | undefined;
+        if (!Array.isArray(ans) || ans.length === 0) continue;
+        const map: Record<string, string> = {};
+        for (const a of ans) {
+          if (a && typeof a.factor === "string" && typeof a.answer === "string") {
+            map[a.factor] = a.answer;
+          }
+        }
+        if (Object.keys(map).length > 0) {
+          next[record.conceptId] = map;
+          mutated = true;
+        }
+      }
+      return mutated ? next : prev;
+    });
+  }, [pannuRecords]);
+
+  // Whenever a concept enters the "answering"-or-later state without prefill
+  // metadata yet, fetch it. Covers both the fresh-generate path (which sets
+  // status='answering' via the mutation) and the persisted-record path
+  // (which loads validationStates from pannu_records without firing the
+  // generate-questions mutation, so the mutation's onSuccess never ran).
+  useEffect(() => {
+    if (!projectId) return;
+    for (const claim of keyConceptsForValidation) {
+      const cid = claim.conceptId;
+      const state = validationStates[cid];
+      if (!state) continue;
+      if (state.status === 'pending' || state.status === 'generating') continue;
+      if (prefillMeta[cid]) continue;
+      (async () => {
+        try {
+          const res = await fetch(
+            `/api/projects/${projectId}/pannu/prefill?conceptId=${encodeURIComponent(cid)}`,
+            { credentials: "include" },
+          );
+          if (!res.ok) return;
+          const prefill = await res.json();
+          const meta: Record<string, { sources: any[]; coverage: number; draft: string }> = {};
+          for (const factor of ["conception", "quality", "known_concepts"] as const) {
+            const f = prefill?.factors?.[factor];
+            meta[factor] = {
+              sources: Array.isArray(f?.sources) ? f.sources : [],
+              coverage: typeof f?.coverage === "number" ? f.coverage : 0,
+              draft: typeof f?.draft === "string" ? f.draft : "",
+            };
+          }
+          setPrefillMeta(prev => (prev[cid] ? prev : { ...prev, [cid]: meta }));
+        } catch (e) {
+          console.warn("[pannu] on-mount prefill fetch failed:", e);
+        }
+      })();
+    }
+    // We don't include prefillMeta in deps — only the keys we already
+    // fetched matter, and we read those via the early-return check above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, keyConceptsForValidation, validationStates]);
+
+  // Auto-expand every concept on land. The page is meant to land fully
+  // populated — pre-filled factor fields visible per concept — so the user
+  // can scan and edit, not click-to-reveal one by one.
   useEffect(() => {
     if (keyConceptsForValidation.length > 0 && expandedClaims.size === 0) {
-      const firstPending = keyConceptsForValidation.find(c => 
-        !validationStates[c.conceptId] || validationStates[c.conceptId].status === 'pending'
-      );
-      if (firstPending) {
-        setExpandedClaims(new Set([firstPending.id]));
-      } else {
-        setExpandedClaims(new Set([keyConceptsForValidation[0].id]));
-      }
+      setExpandedClaims(new Set(keyConceptsForValidation.map((c) => c.id)));
     }
-  }, [keyConceptsForValidation, validationStates]);
+  }, [keyConceptsForValidation]);
 
   const generateQuestionsMutation = useMutation({
     mutationFn: async (claim: ClaimForValidation) => {
@@ -185,7 +311,7 @@ export default function Agent4Pannu() {
       });
       return response;
     },
-    onSuccess: (data, claim) => {
+    onSuccess: async (data, claim) => {
       setValidationStates(prev => ({
         ...prev,
         [claim.conceptId]: {
@@ -195,7 +321,32 @@ export default function Agent4Pannu() {
           pannuRecordId: data.pannuRecordId,
         },
       }));
-      // Don't invalidate immediately - local state is already updated
+
+      // Fetch the pre-fill envelope but DON'T auto-populate the textareas.
+      // The user opts in per factor via the "Use what I already wrote" button
+      // below each field — they retain agency, and we never confirm AI-
+      // generated material as their own work.
+      try {
+        const prefillRes = await fetch(
+          `/api/projects/${projectId}/pannu/prefill?conceptId=${encodeURIComponent(claim.conceptId)}`,
+          { credentials: "include" },
+        );
+        if (prefillRes.ok) {
+          const prefill = await prefillRes.json();
+          const meta: Record<string, { sources: any[]; coverage: number; draft: string }> = {};
+          for (const factor of ["conception", "quality", "known_concepts"] as const) {
+            const f = prefill?.factors?.[factor];
+            meta[factor] = {
+              sources: Array.isArray(f?.sources) ? f.sources : [],
+              coverage: typeof f?.coverage === "number" ? f.coverage : 0,
+              draft: typeof f?.draft === "string" ? f.draft : "",
+            };
+          }
+          setPrefillMeta(prev => ({ ...prev, [claim.conceptId]: meta }));
+        }
+      } catch (e) {
+        console.warn("[pannu] prefill fetch failed:", e);
+      }
     },
     onError: (error: Error, claim) => {
       toast({
@@ -366,11 +517,12 @@ export default function Agent4Pannu() {
   };
 
   const getAiSuggestionMutation = useMutation({
-    mutationFn: async ({ claim, question, factor }: { claim: ClaimForValidation; question: string; factor: string }) => {
+    mutationFn: async ({ claim, question, factor, userDraft }: { claim: ClaimForValidation; question: string; factor: string; userDraft: string }) => {
       const response = await apiRequest("POST", `/api/projects/${projectId}/conception/ai-suggestion`, {
         keyConceptText: claim.claimText,
         question,
         factor,
+        userDraft,
       });
       return response;
     },
@@ -384,14 +536,14 @@ export default function Agent4Pannu() {
       }));
       setLoadingAiSuggestion(null);
       toast({
-        title: "AI suggestion generated",
-        description: "Use this as guidance to craft your answer.",
+        title: "Rephrased",
+        description: "Polished version below — edit and submit.",
       });
     },
     onError: (error: Error) => {
       setLoadingAiSuggestion(null);
       toast({
-        title: "Failed to generate AI suggestion",
+        title: "Rephrase failed",
         description: error.message,
         // Softer UX - no red banner
       });
@@ -401,7 +553,8 @@ export default function Agent4Pannu() {
   const handleAskAi = (claim: ClaimForValidation, question: string, factor: string) => {
     const key = `${claim.conceptId}-${factor}`;
     setLoadingAiSuggestion(key);
-    getAiSuggestionMutation.mutate({ claim, question, factor });
+    const userDraft = currentAnswers[claim.conceptId]?.[factor] || "";
+    getAiSuggestionMutation.mutate({ claim, question, factor, userDraft });
   };
 
   // ── Page snapshot for the AI Helper ─────────────────────────────────────
@@ -772,25 +925,10 @@ export default function Agent4Pannu() {
                           <p className="text-sm whitespace-pre-wrap">{claim.claimText}</p>
                         </div>
 
-                        {/* Pending State - Show Generate Button */}
-                        {state.status === 'pending' && (
-                          <Button
-                            onClick={() => handleGenerateQuestions(claim)}
-                            className="w-full"
-                            data-testid={`button-generate-questions-${index}`}
-                          >
-                            <Shield className="h-4 w-4 mr-2" />
-                            Start Validation
-                          </Button>
-                        )}
-
-                        {/* Generating State */}
-                        {state.status === 'generating' && (
-                          <div className="flex items-center justify-center py-8">
-                            <Loader2 className="h-6 w-6 animate-spin text-primary mr-2" />
-                            <span className="text-muted-foreground">Generating validation questions...</span>
-                          </div>
-                        )}
+                        {/* No "Pending" or "Generating" states anymore —
+                            the three POHC factors are static, so each
+                            concept opens directly into the answering
+                            state below with pre-fillable fields. */}
 
                         {/* Answering State - No Questions (Failed to load) - Show Retry */}
                         {(state.status === 'answering' || state.status === 'needs_clarification') && (!Array.isArray(state.questions) || state.questions.length === 0) && (
@@ -853,9 +991,22 @@ export default function Agent4Pannu() {
                               const suggestionKey = `${claim.conceptId}-${q.factor}`;
                               const isLoadingSuggestion = loadingAiSuggestion === suggestionKey;
                               const suggestion = aiSuggestions[claim.conceptId]?.[q.factor];
-                              
+                              const factorMeta = prefillMeta[claim.conceptId]?.[q.factor];
+                              const sources = factorMeta?.sources || [];
+                              const prefillDraft = factorMeta?.draft || "";
+                              const hasPrefill = prefillDraft.trim().length > 0;
+                              const currentText = claimAnswers[q.factor] || '';
+                              const insertPrefill = () => {
+                                if (!hasPrefill) return;
+                                // Replace whatever is currently in the textarea
+                                // with the pre-fill draft. We don't merge —
+                                // if the user wants the old text back, the
+                                // browser's undo (Ctrl+Z) works on textareas.
+                                updateAnswer(claim.conceptId, q.factor, prefillDraft);
+                              };
+
                               return (
-                                <div key={q.factor} className="space-y-2">
+                                <div key={q.factor} className="space-y-2 border-l-2 border-muted pl-3">
                                   <label className="text-sm font-medium">
                                     {qIndex + 1}. {getFactorLabel(q.factor)}
                                   </label>
@@ -863,48 +1014,94 @@ export default function Agent4Pannu() {
                                   {q.hint && (
                                     <p className="text-xs text-muted-foreground italic">{q.hint}</p>
                                   )}
-                                  
-                                  {/* Ask AI Button */}
-                                  <div className="flex justify-end">
+
+                                  <Textarea
+                                    value={currentText}
+                                    onChange={(e) => updateAnswer(claim.conceptId, q.factor, e.target.value)}
+                                    placeholder="Write your answer in your own words, or use what you already wrote earlier in the app."
+                                    className="min-h-[100px]"
+                                    data-testid={`textarea-answer-${index}-${qIndex}`}
+                                  />
+
+                                  {/* Source preview line — appears above the
+                                      "Use what I already wrote" button so the
+                                      user knows what's about to drop in.
+                                      Repeated source labels collapse into
+                                      "N <label>" so the line stays scannable
+                                      when there are many ledger rows. */}
+                                  {hasPrefill && (() => {
+                                    const counts = new Map<string, number>();
+                                    for (const s of sources) {
+                                      counts.set(s.sourceLabel, (counts.get(s.sourceLabel) ?? 0) + 1);
+                                    }
+                                    const parts: string[] = [];
+                                    for (const [label, count] of counts.entries()) {
+                                      // Naive pluralization: append "s" when count > 1
+                                      // and the label doesn't already end in "s".
+                                      const plural =
+                                        count > 1 && !/s$/i.test(label) ? `${label}s` : label;
+                                      parts.push(count > 1 ? `${count} ${plural}` : label);
+                                    }
+                                    return (
+                                      <p className="text-xs text-muted-foreground">
+                                        From: {parts.join(" · ")}
+                                      </p>
+                                    );
+                                  })()}
+
+                                  <div className="flex flex-wrap items-center justify-end gap-2">
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={insertPrefill}
+                                      disabled={!hasPrefill}
+                                      data-testid={`button-insert-prefill-${index}-${qIndex}`}
+                                      title={
+                                        hasPrefill
+                                          ? "Insert what you typed about this earlier — you can still edit after"
+                                          : "Nothing on file yet from earlier modules for this factor"
+                                      }
+                                    >
+                                      {hasPrefill ? "Use what I already wrote" : "No earlier notes for this factor"}
+                                    </Button>
                                     <Button
                                       variant="outline"
                                       size="sm"
                                       onClick={() => handleAskAi(claim, q.question, q.factor)}
-                                      disabled={isLoadingSuggestion}
-                                      data-testid={`button-ask-ai-${index}-${qIndex}`}
+                                      disabled={isLoadingSuggestion || !currentText.trim()}
+                                      data-testid={`button-rephrase-${index}-${qIndex}`}
+                                      title={
+                                        !currentText.trim()
+                                          ? "Write or insert something first — rephrase polishes what you've written"
+                                          : "Rephrase the current text"
+                                      }
                                     >
                                       {isLoadingSuggestion ? (
                                         <>
                                           <Loader2 className="h-3 w-3 mr-2 animate-spin" />
-                                          Generating...
+                                          Rephrasing...
                                         </>
                                       ) : (
                                         <>
                                           <Sparkles className="h-3 w-3 mr-2" />
-                                          Ask AI
+                                          Rephrase
                                         </>
                                       )}
                                     </Button>
                                   </div>
-                                  
-                                  {/* AI Suggestion Display */}
+
+                                  {/* Rephraser output (polished version or
+                                      "insufficient material" bullet list
+                                      from the new prompt). */}
                                   {suggestion && (
                                     <div className="bg-primary/5 border border-primary/20 p-3 rounded-md">
                                       <div className="flex items-start gap-2 mb-2">
                                         <Sparkles className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                                        <span className="text-xs font-semibold text-primary">AI Suggestion</span>
+                                        <span className="text-xs font-semibold text-primary">Rephrased version</span>
                                       </div>
                                       <p className="text-sm text-muted-foreground whitespace-pre-wrap">{suggestion}</p>
                                     </div>
                                   )}
-                                  
-                                  <Textarea
-                                    value={claimAnswers[q.factor] || ''}
-                                    onChange={(e) => updateAnswer(claim.conceptId, q.factor, e.target.value)}
-                                    placeholder="Describe your specific contribution..."
-                                    className="min-h-[100px]"
-                                    data-testid={`textarea-answer-${index}-${qIndex}`}
-                                  />
                                 </div>
                               );
                             })}

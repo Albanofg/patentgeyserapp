@@ -33,6 +33,9 @@ import { runExtractConcepts } from "./modules/module2/2b-extract-concepts/extrac
 import { runWhitespace } from "./modules/module4/4a-whitespace/whitespace";
 import { runClaims } from "./modules/module4/4b-key-concepts/claims";
 import { runPannuQuestions, runPannuScorer } from "./modules/module4/4c-pannu/pannu";
+import { recordHumanInput, deleteHumanInput, listHumanInputs } from "./modules/human-inputs/ledger";
+import { buildPannuPrefill } from "./modules/human-inputs/prefill";
+import { HUMAN_INPUT_TAGS } from "./modules/human-inputs/tags";
 import { runPannuSuggestion } from "./modules/module4/4d-suggestion/suggestion";
 import { runDiagrams } from "./modules/module5/5b-diagrams/diagrams";
 import { runBroaderClaims } from "./modules/module5/5c-broader-key-concepts/broader-claims";
@@ -4925,29 +4928,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Create snapshot for claims selection (Agent 4b)
       const claimsVersion = await storage.getNextSnapshotVersion(req.params.id);
-      const independentClaims = selectedKeyConcepts.filter((c: any) => 
+      // Group by primary vs. supporting key concepts. The underlying data
+      // still uses the legacy `independent` / `dependent` labels from the
+      // upstream agent — we read those internally but render neutral
+      // user-facing language ("primary" / "supporting") in the snapshot
+      // content so the Invention Record never uses legal-practice vocabulary.
+      const primaryKeyConcepts = selectedKeyConcepts.filter((c: any) =>
         c.type === 'independent' || c.claimType === 'independent' || c.label?.includes('Independent')
       );
-      const dependentClaims = selectedKeyConcepts.filter((c: any) => 
+      const supportingKeyConcepts = selectedKeyConcepts.filter((c: any) =>
         c.type === 'dependent' || c.claimType === 'dependent' || c.label?.includes('Dependent')
       );
-      
-      const keyConceptsContent = `**Patent Claims Selected:**\n\n` +
-        `**Independent Claims (${independentClaims.length}):**\n${independentClaims.map((c: any, i: number) => `${i + 1}. ${c.text?.substring(0, 150)}...`).join('\n')}\n\n` +
-        `**Dependent Claims (${dependentClaims.length}):**\n${dependentClaims.map((c: any, i: number) => `${i + 1}. ${c.text?.substring(0, 100)}...`).join('\n')}`;
-      
+
+      const keyConceptsContent =
+        `**Key Concepts Selected:**\n\n` +
+        `**Primary Key Concepts (${primaryKeyConcepts.length}):**\n${primaryKeyConcepts.map((c: any, i: number) => `${i + 1}. ${c.text?.substring(0, 150)}...`).join('\n')}\n\n` +
+        `**Supporting Key Concepts (${supportingKeyConcepts.length}):**\n${supportingKeyConcepts.map((c: any, i: number) => `${i + 1}. ${c.text?.substring(0, 100)}...`).join('\n')}`;
+
       await storage.createIdeaSnapshot({
         projectId: req.params.id,
         version: claimsVersion,
         snapshotType: '4b_claims',
-        title: `${selectedKeyConcepts.length} Claims Selected`,
+        title: `${selectedKeyConcepts.length} Key Concepts Selected`,
         content: keyConceptsContent,
-        metadata: { 
+        metadata: {
           stage: 4,
           substage: '4b',
           totalKeyConcepts: selectedKeyConcepts.length,
-          independentCount: independentClaims.length,
-          dependentCount: dependentClaims.length,
+          primaryCount: primaryKeyConcepts.length,
+          supportingCount: supportingKeyConcepts.length,
         },
       });
 
@@ -5972,6 +5981,79 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ============================================
+  // HUMAN-INPUT LEDGER ROUTES
+  // ============================================
+  // Pure passthrough — every textarea answer the user types across modules
+  // 0–4b lands here, tagged with controlled-vocabulary tags so the Pannu
+  // pre-fill engine (and future flows) can draft answers from the user's
+  // own earlier words instead of asking them to retype.
+
+  // Upsert (or delete on empty) a single ledger row. The key triple is
+  // (projectId, source, sourceRefId). Body: { source, sourceRefId?,
+  // promptText?, answerText, tags?, conceptId? }.
+  app.post("/api/projects/:id/human-inputs", isAuthenticated, async (req, res) => {
+    try {
+      const body = req.body ?? {};
+      const source = typeof body.source === "string" ? body.source.trim() : "";
+      if (!source) return res.status(400).json({ message: "source is required" });
+      const answerText = typeof body.answerText === "string" ? body.answerText : "";
+      const sourceRefId = body.sourceRefId ?? null;
+      const tags = Array.isArray(body.tags) ? body.tags.filter((t: any) => typeof t === "string") : [];
+      for (const t of tags) {
+        if (!(HUMAN_INPUT_TAGS as readonly string[]).includes(t)) {
+          return res.status(400).json({ message: `unknown tag: ${t}` });
+        }
+      }
+      // Empty answer ⇒ delete the row (so the user clearing a field removes
+      // its contribution to pre-fill rather than leaving a stale row behind).
+      if (!answerText.trim()) {
+        await deleteHumanInput({ projectId: req.params.id, source, sourceRefId });
+        return res.json({ success: true, deleted: true });
+      }
+      const row = await recordHumanInput({
+        projectId: req.params.id,
+        source,
+        sourceRefId,
+        promptText: body.promptText ?? null,
+        answerText,
+        tags,
+        conceptId: body.conceptId ?? null,
+      });
+      res.json({ success: true, input: row });
+    } catch (error: any) {
+      console.error("Human-input upsert error:", error);
+      res.status(500).json({ message: error.message || "Failed to record human input" });
+    }
+  });
+
+  // List all ledger rows for a project (optionally concept-scoped). Used for
+  // admin/debug surfaces and by the Pannu pre-fill page to render source chips.
+  app.get("/api/projects/:id/human-inputs", isAuthenticated, async (req, res) => {
+    try {
+      const conceptId = typeof req.query.conceptId === "string" ? req.query.conceptId : null;
+      const rows = await listHumanInputs({ projectId: req.params.id, conceptId });
+      res.json({ inputs: rows });
+    } catch (error: any) {
+      console.error("Human-input list error:", error);
+      res.status(500).json({ message: error.message || "Failed to load human inputs" });
+    }
+  });
+
+  // Build the Pannu pre-fill payload for a given concept. Returns one entry
+  // per Pannu factor with a deterministic draft + the source list that
+  // contributed to it. No AI runs here.
+  app.get("/api/projects/:id/pannu/prefill", isAuthenticated, async (req, res) => {
+    try {
+      const conceptId = typeof req.query.conceptId === "string" ? req.query.conceptId : null;
+      const prefill = await buildPannuPrefill({ projectId: req.params.id, conceptId });
+      res.json(prefill);
+    } catch (error: any) {
+      console.error("Pannu pre-fill error:", error);
+      res.status(500).json({ message: error.message || "Failed to build Pannu pre-fill" });
+    }
+  });
+
+  // ============================================
   // PANNU TEST ROUTES
   // ============================================
 
@@ -6146,12 +6228,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Get AI suggestion for Pannu test answer
   app.post("/api/projects/:id/conception/ai-suggestion", isAuthenticated, async (req, res) => {
     try {
-      const { keyConceptText, question, factor } = req.body;
+      const { keyConceptText, question, factor, userDraft } = req.body;
 
       const webhookPayload = {
         keyConceptText,
         question,
         factor,
+        userDraft: typeof userDraft === "string" ? userDraft : "",
       };
 
       console.log("Calling Module 4/4d Pannu suggestion agent...");

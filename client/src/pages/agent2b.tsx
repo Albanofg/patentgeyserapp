@@ -259,7 +259,15 @@ export default function Agent2b() {
     type: "extracted_idea",
     status: selectedIdeas.has(idea.id) ? "selected" : "deselected",
     editable: false,
-    content: { ideaId: idea.id, title: idea.title, description: idea.description },
+    // Mirror the same fallback chain the page renders so the helper sees
+    // the actual idea text — current data shape uses `text`, legacy rows
+    // used `title` + `description`.
+    content: {
+      ideaId: idea.id,
+      text: (idea as any).text || idea.title || idea.description || "",
+      title: idea.title,
+      description: idea.description,
+    },
   }));
   if (isDialogOpen) {
     snapshotItems.push({

@@ -24,6 +24,14 @@ interface LogEntry {
   tags: string[] | null;
   dismissedAt: string | null;
   sourceMessageId: string | null;
+  // Enriched by the server from the source assistant message's currentLocation.
+  // The trail is a plain-English string like "Key Concepts Selection · Concept 4"
+  // — present when we know where the entry came from, null for older rows
+  // captured before location stamping landed.
+  capturedAtStage?: number | null;
+  capturedAtSubstage?: string | null;
+  capturedAtLabel?: string | null;
+  capturedAtTrail?: string | null;
 }
 
 interface OpenQ {
@@ -230,13 +238,32 @@ export function CurrentIdeaModal({ projectId, open, onOpenChange }: CurrentIdeaM
           <div className="space-y-2">
             {filteredLog.map((e) => (
               <div key={e.id} className="border rounded-md p-3">
-                <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
-                  <div>
-                    <span className="inline-block px-2 py-0.5 rounded bg-primary/10 text-primary font-medium mr-2">
-                      {e.entryType === "both" ? "LEAP · POHC" : e.entryType.toUpperCase()}
-                    </span>
-                    {new Date(e.capturedAt).toLocaleString()} · {e.capturedBy}
-                  </div>
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground mb-1">
+                  <span className="inline-block px-2 py-0.5 rounded bg-primary/10 text-primary font-medium">
+                    {e.entryType === "both" ? "LEAP · POHC" : e.entryType.toUpperCase()}
+                  </span>
+                  <span title={new Date(e.capturedAt).toISOString()}>
+                    {new Date(e.capturedAt).toLocaleString()}
+                  </span>
+                  <span>·</span>
+                  <span>{e.capturedBy === "auto" ? "captured from AI Helper" : "added by you"}</span>
+                  {Array.isArray(e.tags) && e.tags.length > 0 && (
+                    <>
+                      <span>·</span>
+                      <span className="flex flex-wrap gap-1">
+                        {e.tags.map((t) => (
+                          <span
+                            key={t}
+                            className="inline-block px-1.5 py-0.5 rounded bg-muted text-foreground/70 font-mono text-[10px]"
+                            title={`Scope tag: ${t}`}
+                          >
+                            {t}
+                          </span>
+                        ))}
+                      </span>
+                    </>
+                  )}
+                  <span className="flex-1" />
                   <div className="flex gap-1">
                     <Button
                       size="icon"
@@ -259,6 +286,24 @@ export function CurrentIdeaModal({ projectId, open, onOpenChange }: CurrentIdeaM
                     </Button>
                   </div>
                 </div>
+                {/* "Captured during" trail — tells the user which workflow
+                    step produced this entry. Falls back gracefully when the
+                    server didn't record a source location (older entries). */}
+                {e.capturedAtTrail ? (
+                  <p className="text-[11px] text-muted-foreground mb-1">
+                    <span className="text-foreground/80">Captured during:</span>{" "}
+                    {e.capturedAtTrail}
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground italic mb-1">
+                    Captured during an earlier session — workflow location not recorded.
+                  </p>
+                )}
+                {e.editedText && e.editedText !== e.verbatimText && (
+                  <p className="text-[10px] text-muted-foreground italic mb-1">
+                    Edited from your original — original preserved for the record.
+                  </p>
+                )}
                 {editingId === e.id ? (
                   <div className="space-y-2">
                     <Textarea value={editText} onChange={(ev) => setEditText(ev.target.value)} className="h-20" />

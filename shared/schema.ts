@@ -138,6 +138,37 @@ export const pannuRecords = pgTable("pannu_records", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+// Human-input ledger — every verbatim statement the user types into any
+// agent page, captured at save-time, tagged so downstream steps can pre-fill
+// answers from prior typing instead of asking the user to retype.
+//
+// Pure passthrough: NO AI ever rewrites these rows. The promptText / answerText
+// are exactly what the user saw and typed. Tags map to factor categories
+// (see server/modules/human-inputs/tags.ts for the controlled vocabulary).
+// The Pannu pre-fill engine reads this table to draft answers from the user's
+// own earlier words across Modules 0 / 1 / 2 / 3 / 4.
+export const humanInputs = pgTable("human_inputs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  projectId: varchar("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  // Where the input came from — e.g. "module0/qa-assistant",
+  // "module2/refinement", "module4a/concept-notes", "module4b/rationale".
+  source: text("source").notNull(),
+  // Optional within-source ref (e.g. a concept index, a message id).
+  sourceRefId: text("source_ref_id"),
+  // The prompt or placeholder the user saw (null for free-form inputs).
+  promptText: text("prompt_text"),
+  // The user's verbatim words — never AI-rewritten.
+  answerText: text("answer_text").notNull(),
+  // Controlled-vocabulary tags. See server/modules/human-inputs/tags.ts.
+  tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
+  // Optional concept scoping — when the input is about a specific
+  // concept, set this so pre-fill can filter.
+  conceptId: text("concept_id"),
+  charCount: integer("char_count").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 // AI usage log — one row per server-side AI call across the app.
 // Lives in the `inventor_geyser_admin` schema so observability data stays
 // out of the product schema. Written fire-and-forget so a failed log never
@@ -270,6 +301,18 @@ export const insertPriorArtSearchSchema = createInsertSchema(priorArtSearches, {
   createdAt: true,
 });
 
+export const insertHumanInputSchema = createInsertSchema(humanInputs, {
+  tags: z.array(z.string()).default([]),
+  sourceRefId: z.string().nullable().optional(),
+  promptText: z.string().nullable().optional(),
+  conceptId: z.string().nullable().optional(),
+}).omit({
+  id: true,
+  charCount: true, // server computes
+  createdAt: true,
+  updatedAt: true,
+});
+
 // Types
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
@@ -285,6 +328,8 @@ export type InsertIdeaSnapshot = z.infer<typeof insertIdeaSnapshotSchema>;
 export type IdeaSnapshot = typeof ideaSnapshots.$inferSelect;
 export type InsertPriorArtSearch = z.infer<typeof insertPriorArtSearchSchema>;
 export type PriorArtSearch = typeof priorArtSearches.$inferSelect;
+export type InsertHumanInput = z.infer<typeof insertHumanInputSchema>;
+export type HumanInput = typeof humanInputs.$inferSelect;
 
 // Email whitelist table — only listed emails may register or log in
 export const emailWhitelist = pgTable("email_whitelist", {

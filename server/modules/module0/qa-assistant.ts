@@ -28,7 +28,7 @@ import {
   jsonb,
   timestamp,
 } from "drizzle-orm/pg-core";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../../db";
 import { recordUsage, extractGeminiUsage, extractOpenAIUsage } from "../../ai/usage-log";
 import { computeRouting, renderRouting, type RoutingFields } from "./routing";
@@ -594,6 +594,38 @@ export async function getQAMessages(projectId: string, limit = 50) {
     .then((rows) => rows.reverse());
 }
 
+// Plain-English label for a (stage, substage) pair, matching what users see
+// in the sidebar / page headers. Used to enrich log entries with a "captured
+// during: Key Concepts Selection" trail so users can place each entry in
+// the workflow without learning the internal substage codes.
+function friendlyStageLabel(stage: number | null | undefined, substage: string | null | undefined): string | null {
+  if (stage == null) return null;
+  const s = typeof substage === "string" ? substage : "";
+  if (stage === 1) {
+    if (s === "1b" || s.includes("inspect")) return "Inspect & Refine";
+    return "Idea Intake";
+  }
+  if (stage === 2) {
+    if (s === "2a") return "Concept Expansion";
+    if (s === "2b" || s === "2c") return "Patentable Ideas";
+    return "Concept Refinement";
+  }
+  if (stage === 3) return "Prior Art Research";
+  if (stage === 4) {
+    if (s === "4a") return "White Space Strategy";
+    if (s === "4b") return "Key Concepts Selection";
+    if (s.includes("conception-intro")) return "Inventorship Validation — Intro";
+    if (s.includes("conception")) return "Inventorship Validation";
+    if (s === "4c") return "Provisional Draft Review";
+    return "White Space & Key Concepts";
+  }
+  if (stage === 5) {
+    if (s.includes("practitioner")) return "Find a Practitioner";
+    return "The Showcase";
+  }
+  return null;
+}
+
 export async function getQALog(projectId: string, includeDismissed = false) {
   // Load all rows (including dismissed) so display ids are stable across calls.
   const all = await db
@@ -601,7 +633,55 @@ export async function getQALog(projectId: string, includeDismissed = false) {
     .from(coachLogEntries)
     .where(eq(coachLogEntries.projectId, projectId))
     .orderBy(coachLogEntries.capturedAt);
-  const withDisplay = all.map((row, i) => ({ ...row, displayId: `entry_${pad4(i + 1)}` }));
+
+  // Join each entry with its source assistant message to recover the page
+  // the user was on when it was captured. We do this in two batched lookups
+  // instead of per-row joins to keep the read cheap.
+  const messageIds = Array.from(
+    new Set(all.map((r) => r.sourceMessageId).filter((id): id is string => !!id)),
+  );
+  const messageLocations = new Map<string, { stage: number | null; substage: string | null; label: string | null }>();
+  if (messageIds.length > 0) {
+    try {
+      const msgRows = await db
+        .select()
+        .from(coachMessages)
+        .where(and(eq(coachMessages.projectId, projectId), inArray(coachMessages.id, messageIds)));
+      for (const m of msgRows) {
+        const cl = (m.currentLocation ?? {}) as any;
+        messageLocations.set(m.id, {
+          stage: typeof cl.stage === "number" ? cl.stage : null,
+          substage: typeof cl.substage === "string" ? cl.substage : null,
+          label: typeof cl.label === "string" ? cl.label : null,
+        });
+      }
+    } catch (joinErr: any) {
+      // Location enrichment is best-effort — never fail the log fetch just
+      // because the join had trouble. Entries fall through with null
+      // capturedAtTrail and the modal shows the "earlier session" fallback.
+      console.warn("[qa-assistant] log location join failed:", joinErr?.message);
+    }
+  }
+
+  const withDisplay = all.map((row, i) => {
+    const loc = row.sourceMessageId ? messageLocations.get(row.sourceMessageId) : undefined;
+    const stageLabel = friendlyStageLabel(loc?.stage ?? null, loc?.substage ?? null);
+    // Concept-scoped tags (e.g. "Concept 4", "Key Concept Set 2") become
+    // part of the trail when present.
+    const conceptTagList = Array.isArray(row.tags)
+      ? row.tags.filter((t): t is string => typeof t === "string" && /^(Concept|Key Concept Set)\s+\d+/.test(t))
+      : [];
+    const capturedAtTrail = [stageLabel, ...conceptTagList].filter(Boolean).join(" · ");
+    return {
+      ...row,
+      displayId: `entry_${pad4(i + 1)}`,
+      capturedAtStage: loc?.stage ?? null,
+      capturedAtSubstage: loc?.substage ?? null,
+      capturedAtLabel: stageLabel,
+      capturedAtTrail: capturedAtTrail || null,
+    };
+  });
+
   return includeDismissed
     ? withDisplay
     : withDisplay.filter((row) => row.dismissedAt === null);
@@ -1025,7 +1105,11 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         projectId: projectId!,
         role: "user",
         content: payload.message,
-        currentLocation: { stage: pc.currentStage ?? null, label: payload.currentLocation ?? null } as any,
+        currentLocation: {
+          stage: pc.currentStage ?? null,
+          substage: (pc as any).currentSubstage ?? null,
+          label: payload.currentLocation ?? null,
+        } as any,
       })
       .returning();
     userMsgId = userMsg.id;
@@ -1036,7 +1120,11 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         projectId: projectId!,
         role: "assistant",
         content: "",
-        currentLocation: { stage: pc.currentStage ?? null, label: payload.currentLocation ?? null } as any,
+        currentLocation: {
+          stage: pc.currentStage ?? null,
+          substage: (pc as any).currentSubstage ?? null,
+          label: payload.currentLocation ?? null,
+        } as any,
       })
       .returning();
     assistantMessageId = assistantMsg.id;

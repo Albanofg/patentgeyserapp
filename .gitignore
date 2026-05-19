@@ -11,6 +11,9 @@ vite.config.ts.*
 
 # Database dumps
 *.sql
+# …but keep migration files tracked. They're required by the schema-probe
+# at server boot; if a deploy is missing them, the server refuses to start.
+!migrations/*.sql
 
 # Replit
 .replit
@@ -20,6 +23,7 @@ replit.md
 attached_assets
 design_guidelines.md
 docs
+AGENT_MIGRATION.md
 
 # Claude
 .claude

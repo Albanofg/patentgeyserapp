@@ -12,6 +12,7 @@ import { Loader2, Sparkles, MessageSquare, Search, ArrowRight, ArrowLeft, Clipbo
 import ReactMarkdown from "react-markdown";
 import type { Project } from "@shared/schema";
 import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
+import { useHumanInputWriter } from "@/lib/human-inputs";
 
 interface IdeaSnapshot {
   id: string;
@@ -251,6 +252,17 @@ export default function Agent1a() {
     projectId,
   ]);
   usePageSnapshot(snapshot);
+
+  // Human-input ledger writer for the original idea description. Captures
+  // the very first thing the user typed about the invention — high-value
+  // material for Pannu's conception and known_concepts factors.
+  useHumanInputWriter({
+    projectId,
+    source: "module1/initial-idea",
+    promptText: "What software, SaaS, or blockchain invention do you want to patent?",
+    answerText: initialIdea,
+    tags: ["problem_narrative", "conception_mechanism"],
+  });
 
   if (projectLoading || dataLoading) {
     return (
