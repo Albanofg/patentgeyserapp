@@ -6395,6 +6395,89 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Per-artifact regeneration. Called from the Gate 2 UI when one of the
+  // broadenings/appendings/extensions/abstract came back empty (typically from
+  // a Flash JSON parse failure that escaped the retry). Re-runs exactly one
+  // AI call and patches the result back into genusSpecies at the right index.
+  // Body: { artifactId: string }
+  app.post("/api/projects/:id/genus-species/regenerate-artifact", isAuthenticated, async (req, res) => {
+    try {
+      const {
+        regenerateBroadening,
+        regenerateAppending,
+        regenerateBackgroundExtension,
+        regenerateSummaryExtension,
+        regenerateAbstract,
+      } = await import("./modules/module5/5c-genus-and-species/orchestrator");
+
+      const artifactId: string = String(req.body?.artifactId || "");
+      if (!artifactId) return res.status(400).json({ message: "artifactId is required" });
+
+      const a5Data = await storage.getAgentData(req.params.id, 5);
+      const a5 = (a5Data?.data ?? {}) as any;
+      const gs = (a5.genusSpecies ?? {}) as any;
+      if (!gs.genus || !gs.approvedSpecies) {
+        return res.status(400).json({ message: "Workflow has no genus/species yet — start Genus & Species first" });
+      }
+
+      // Pull supporting context once.
+      const [a1Data, a2Data, a4Data] = await Promise.all([
+        storage.getAgentData(req.params.id, 1),
+        storage.getAgentData(req.params.id, 2),
+        storage.getAgentData(req.params.id, 4),
+      ]);
+      const a1 = (a1Data?.data ?? {}) as any;
+      const a2 = (a2Data?.data ?? {}) as any;
+      const a4 = (a4Data?.data ?? {}) as any;
+      const existingKeyConcepts: string[] = (a4?.selectedKeyConcepts || []).map((c: any) => c?.text || "").filter(Boolean);
+      const existingBackground: string = a2?.background || "";
+      const existingSummary: string = a2?.summary || "";
+
+      const updatedGs: any = { ...gs };
+
+      if (artifactId.startsWith("broadening_")) {
+        const idx = parseInt(artifactId.replace("broadening_", ""), 10);
+        const existing = (gs.broadenings || [])[idx];
+        if (!existing) return res.status(400).json({ message: `No broadening at index ${idx}` });
+        const original = existing.original_key_concept || existingKeyConcepts[idx] || "";
+        if (!original) return res.status(400).json({ message: "Original key concept text missing" });
+        const fresh = await regenerateBroadening({ original_key_concept: original, genus: gs.genus, approvedSpecies: gs.approvedSpecies });
+        const next = [...(gs.broadenings || [])];
+        next[idx] = fresh;
+        updatedGs.broadenings = next;
+      } else if (artifactId.startsWith("appending_")) {
+        const idx = parseInt(artifactId.replace("appending_", ""), 10);
+        const aspects = ["genus_mechanism", "species_spectrum", "hardware_optimization"] as const;
+        const existing = (gs.appendings || [])[idx];
+        const aspect = (existing?.concept_aspect || aspects[idx]) as typeof aspects[number];
+        if (!aspect) return res.status(400).json({ message: `No appending aspect at index ${idx}` });
+        const fresh = await regenerateAppending({ concept_aspect: aspect, genus: gs.genus, approvedSpecies: gs.approvedSpecies, existingKeyConcepts });
+        const next = [...(gs.appendings || [])];
+        next[idx] = fresh;
+        updatedGs.appendings = next;
+      } else if (artifactId === "background_extension") {
+        updatedGs.backgroundExtension = await regenerateBackgroundExtension({ existingBackground, genus: gs.genus, approvedSpecies: gs.approvedSpecies });
+      } else if (artifactId === "summary_extension") {
+        updatedGs.summaryExtension = await regenerateSummaryExtension({ existingSummary, genus: gs.genus, approvedSpecies: gs.approvedSpecies });
+      } else if (artifactId === "abstract") {
+        const originalAbstract: string = a1?.abstract || "";
+        const broadenedTexts = (gs.broadenings || []).map((b: any) => b?.broadened_concept_text).filter(Boolean);
+        const bgText = gs.backgroundExtension?.additional_paragraphs || (typeof gs.backgroundExtension === "string" ? gs.backgroundExtension : "");
+        const summaryText = gs.summaryExtension?.additional_paragraphs || (typeof gs.summaryExtension === "string" ? gs.summaryExtension : "");
+        const assembledSpec = [a2?.provisionalDraft || "", ...broadenedTexts, bgText, summaryText].filter(Boolean).join("\n\n");
+        updatedGs.abstractRewrite = await regenerateAbstract({ originalAbstract, assembledSpec, approvedSpecies: gs.approvedSpecies, genus: gs.genus });
+      } else {
+        return res.status(400).json({ message: `Unknown artifactId: ${artifactId}` });
+      }
+
+      await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...a5, genusSpecies: updatedGs } });
+      res.json({ success: true, artifactId });
+    } catch (error: any) {
+      console.error("[genus-species] regenerate-artifact error:", error);
+      res.status(500).json({ message: error.message || "Failed to regenerate artifact" });
+    }
+  });
+
   // Reset workflow (starts over from Stage 1).
   app.post("/api/projects/:id/genus-species/reset", isAuthenticated, async (req, res) => {
     try {

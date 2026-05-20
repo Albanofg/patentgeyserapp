@@ -381,6 +381,113 @@ export async function runAbstractRewrite(inputs: {
   return result;
 }
 
+// ─── Per-artifact regeneration ───────────────────────────────────────────────
+// Called from the Gate 2 UI when an individual artifact came back empty or
+// the user wants a fresh take. Each helper re-runs exactly one AI call using
+// the same config/prompt the stage uses, with the JSON parse retry already
+// baked into callAgentJSON.
+
+export async function regenerateBroadening(args: {
+  original_key_concept: string;
+  genus: GenusObject;
+  approvedSpecies: SpeciesRecord[];
+}): Promise<BroadenedConcept> {
+  const config = loadAgentConfig(`${PROMPT_BASE}/key-concept-broadener.config.json`);
+  const systemPrompt = loadPrompt(`${PROMPT_BASE}/key-concept-broadener.md`);
+  const result = await callAgentJSON<any>({
+    systemPrompt,
+    userMessage: buildUserMessage({
+      original_key_concept: args.original_key_concept,
+      genus: args.genus,
+      approved_species: args.approvedSpecies,
+    }),
+    config,
+    usage: { agentCode: "module5/key-concept-broadener" },
+  });
+  return {
+    original_key_concept: args.original_key_concept,
+    broadened_concept_text: extractText(result, "broadened_concept_text"),
+  };
+}
+
+export async function regenerateAppending(args: {
+  concept_aspect: AppendedConcept["concept_aspect"];
+  genus: GenusObject;
+  approvedSpecies: SpeciesRecord[];
+  existingKeyConcepts: string[];
+}): Promise<AppendedConcept> {
+  const config = loadAgentConfig(`${PROMPT_BASE}/key-concept-appender.config.json`);
+  const systemPrompt = loadPrompt(`${PROMPT_BASE}/key-concept-appender.md`);
+  const result = await callAgentJSON<any>({
+    systemPrompt,
+    userMessage: buildUserMessage({
+      concept_aspect: args.concept_aspect,
+      genus: args.genus,
+      approved_species: args.approvedSpecies,
+      existing_key_concepts: args.existingKeyConcepts,
+    }),
+    config,
+    usage: { agentCode: "module5/key-concept-appender" },
+  });
+  return {
+    concept_aspect: args.concept_aspect,
+    key_concept_text: extractText(result, "key_concept_text"),
+  };
+}
+
+export async function regenerateBackgroundExtension(args: {
+  existingBackground: string;
+  genus: GenusObject;
+  approvedSpecies: SpeciesRecord[];
+}): Promise<SectionExtension> {
+  const config = loadAgentConfig(`${PROMPT_BASE}/background-extender.config.json`);
+  const systemPrompt = loadPrompt(`${PROMPT_BASE}/background-extender.md`);
+  const raw = await callAgent({
+    systemPrompt,
+    userMessage: buildUserMessage({
+      existing_background: args.existingBackground,
+      genus: args.genus,
+      approved_species: args.approvedSpecies,
+    }),
+    config,
+    usage: { agentCode: "module5/background-extender" },
+  });
+  let text = raw.trim();
+  try { const p = JSON.parse(text); if (p?.additional_paragraphs) text = p.additional_paragraphs; } catch {}
+  return { additional_paragraphs: text };
+}
+
+export async function regenerateSummaryExtension(args: {
+  existingSummary: string;
+  genus: GenusObject;
+  approvedSpecies: SpeciesRecord[];
+}): Promise<SectionExtension> {
+  const config = loadAgentConfig(`${PROMPT_BASE}/summary-extender.config.json`);
+  const systemPrompt = loadPrompt(`${PROMPT_BASE}/summary-extender.md`);
+  const raw = await callAgent({
+    systemPrompt,
+    userMessage: buildUserMessage({
+      existing_summary: args.existingSummary,
+      genus: args.genus,
+      approved_species: args.approvedSpecies,
+    }),
+    config,
+    usage: { agentCode: "module5/summary-extender" },
+  });
+  let text = raw.trim();
+  try { const p = JSON.parse(text); if (p?.additional_paragraphs) text = p.additional_paragraphs; } catch {}
+  return { additional_paragraphs: text };
+}
+
+export async function regenerateAbstract(args: {
+  originalAbstract: string;
+  assembledSpec: string;
+  approvedSpecies: SpeciesRecord[];
+  genus: GenusObject;
+}): Promise<AbstractRewrite> {
+  return runAbstractRewrite(args);
+}
+
 // ─── Gate 2: Finalize approved artifacts into the final spec ─────────────────
 
 export function finalizeApprovals(

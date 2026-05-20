@@ -66,6 +66,15 @@ export default function Agent5() {
   const gsStatusFromAgent5 = (agent5Data as any)?.data?.genusSpecies ?? (agent5Data as any)?.genusSpecies;
   const gsIsRunning = ["running_stage1","running_stage2","running_stage3","running_stage4"].includes(gsStatusFromAgent5?.status);
 
+  // Local "I just kicked off a run" flag. The server now runs stages
+  // synchronously inside /start and /approve-species, so those mutations can
+  // take 30s–3min to resolve. Without this flag, polling wouldn't start until
+  // agent5Data refetched and showed running_*, leaving the detailed status
+  // card hidden behind the bare mutation spinner for the entire wait.
+  // Mutations toggle this on onMutate and off on onSettled.
+  const [gsRunInFlight, setGsRunInFlight] = useState(false);
+  const gsShouldPoll = gsIsRunning || gsRunInFlight;
+
   const { data: gsStatusPolled } = useQuery<any>({
     queryKey: ["/api/projects", projectId, "genus-species-status"],
     queryFn: async () => {
@@ -73,7 +82,7 @@ export default function Agent5() {
       if (!res.ok) return null;
       return res.json();
     },
-    enabled: !!projectId && gsIsRunning,
+    enabled: !!projectId && gsShouldPoll,
     refetchInterval: 4000,
   });
 
@@ -87,8 +96,9 @@ export default function Agent5() {
     }
   }, [gsStatusPolled?.status]);
 
-  // Use polled data while running, fall back to agent5 data otherwise.
-  const gsStatus = (gsIsRunning && gsStatusPolled) ? gsStatusPolled : gsStatusFromAgent5;
+  // Use polled data while running or while a mutation is in flight, fall back
+  // to agent5 data otherwise.
+  const gsStatus = (gsShouldPoll && gsStatusPolled) ? gsStatusPolled : gsStatusFromAgent5;
 
   // Cycling status messages — rotate every 4s so the UI feels alive while a stage runs.
   // The backend reports stage-level state only; this gives users per-agent visibility.
@@ -158,9 +168,11 @@ export default function Agent5() {
 
   const gsStartMutation = useMutation({
     mutationFn: async () => apiRequest("POST", `/api/projects/${projectId}/genus-species/start`, {}),
+    onMutate: () => { setGsRunInFlight(true); },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 5] });
     },
+    onSettled: () => { setGsRunInFlight(false); },
     onError: (e: Error) => toast({ title: "Couldn't start expansion", description: e.message }),
   });
 
@@ -173,9 +185,11 @@ export default function Agent5() {
       }));
       return apiRequest("POST", `/api/projects/${projectId}/genus-species/approve-species`, { approvals });
     },
+    onMutate: () => { setGsRunInFlight(true); },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 5] });
     },
+    onSettled: () => { setGsRunInFlight(false); },
     onError: (e: Error) => toast({ title: "Approval failed", description: e.message }),
   });
 
@@ -196,6 +210,32 @@ export default function Agent5() {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "genus-species-status"] });
     },
     onError: (e: Error) => toast({ title: "Finalization failed", description: e.message }),
+  });
+
+  // Per-artifact regeneration — surfaced as a "Regenerate" button on every
+  // Gate 2 card. Used when an individual broadening/appending/extension came
+  // back empty (rare after the JSON parse retry, but still possible) or when
+  // the user just wants a different take.
+  const [gsRegenInFlight, setGsRegenInFlight] = useState<Record<string, boolean>>({});
+  const regenerateArtifactMutation = useMutation({
+    mutationFn: async (artifactId: string) => {
+      const res = await apiRequest("POST", `/api/projects/${projectId}/genus-species/regenerate-artifact`, { artifactId });
+      return { artifactId, res };
+    },
+    onMutate: (artifactId: string) => {
+      setGsRegenInFlight((p) => ({ ...p, [artifactId]: true }));
+    },
+    onSuccess: (_data, artifactId) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 5] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "genus-species-status"] });
+      toast({ title: "Regenerated", description: "Refreshing card…" });
+    },
+    onError: (e: Error, artifactId) => {
+      toast({ title: "Regeneration failed", description: e.message });
+    },
+    onSettled: (_data, _err, artifactId) => {
+      setGsRegenInFlight((p) => { const n = { ...p }; delete n[artifactId]; return n; });
+    },
   });
 
   const applyToDraftMutation = useMutation({
@@ -1028,7 +1068,10 @@ export default function Agent5() {
                                       <p className="text-xs text-muted-foreground/70 italic truncate max-w-xs">{artifact.sublabel}</p>
                                     )}
                                   </div>
-                                  <div className="flex gap-1 shrink-0">
+                                  <div className="flex gap-1 shrink-0 flex-wrap">
+                                    <Button size="sm" variant="outline" className="text-xs h-6 px-2" onClick={() => regenerateArtifactMutation.mutate(artifact.id)} disabled={!!gsRegenInFlight[artifact.id]} title="Re-run this single AI call">
+                                      {gsRegenInFlight[artifact.id] ? <><Loader2 className="h-3 w-3 mr-1 animate-spin"/>…</> : "Regenerate"}
+                                    </Button>
                                     <Button size="sm" variant={(!d || d.decision === "approved") ? "default" : "outline"} className="text-xs h-6 px-2" onClick={() => setGsGate2Decisions(p => ({ ...p, [artifact.id]: { decision: "approved" } }))}>Keep</Button>
                                     <Button size="sm" variant={d?.decision === "edited" ? "default" : "outline"} className="text-xs h-6 px-2" onClick={() => setGsGate2Decisions(p => ({ ...p, [artifact.id]: { decision: "edited", editedText: d?.editedText ?? artifact.text } }))}>Edit</Button>
                                     <Button size="sm" variant={d?.decision === "rejected" ? "destructive" : "outline"} className="text-xs h-6 px-2" onClick={() => setGsGate2Decisions(p => ({ ...p, [artifact.id]: { decision: "rejected" } }))}>Remove</Button>
