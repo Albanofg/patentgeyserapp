@@ -424,8 +424,8 @@ export function finalizeApprovals(
   return {
     keyConceptsBroadened,
     keyConceptsAppended,
-    backgroundExtension: bgText ? { additional_paragraphs: bgText } : { additional_paragraphs: "" },
-    summaryExtension: summaryText ? { additional_paragraphs: summaryText } : { additional_paragraphs: "" },
+    backgroundExtension: bgText ?? "",
+    summaryExtension: summaryText ?? "",
     detailExtension: { subsections: detailSubsections },
     abstractText: abstractText ?? "",
   };
