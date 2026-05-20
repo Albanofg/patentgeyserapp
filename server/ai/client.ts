@@ -385,8 +385,11 @@ function extractJsonPayload(raw: string): string {
 }
 
 export async function callAgentJSON<T = any>(opts: AgentCallOptions): Promise<T> {
-  const attempt = async (label: string): Promise<T> => {
-    const raw = await callAgent({ ...opts, jsonMode: true });
+  // Make one call with a specific config and try to parse the response. If the
+  // response can't be parsed as JSON (even after the brace-depth extractor),
+  // throw a tagged error so the outer escalation can catch it.
+  const attemptWithConfig = async (label: string, config: AgentConfig): Promise<T> => {
+    const raw = await callAgent({ ...opts, config, jsonMode: true });
     try {
       return JSON.parse(raw) as T;
     } catch (firstErr: any) {
@@ -395,7 +398,7 @@ export async function callAgentJSON<T = any>(opts: AgentCallOptions): Promise<T>
       } catch (secondErr: any) {
         const oneLine = raw.replace(/\r?\n/g, "\\n");
         console.error(
-          `[AI] JSON parse failed (${label}, len=${raw.length}, model=${opts.config.model}): ` +
+          `[AI] JSON parse failed (${label}, len=${raw.length}, model=${config.model}): ` +
             `${secondErr?.message || firstErr?.message}. RAW: ${oneLine}`,
         );
         const err: any = new Error(
@@ -408,19 +411,31 @@ export async function callAgentJSON<T = any>(opts: AgentCallOptions): Promise<T>
     }
   };
 
+  // Escalation ladder: primary → primary retry → fallback model.
+  // Each attempt up to here costs one full AI call. We escalate because the
+  // failure modes are model-specific: Flash sometimes emits trailing garbage
+  // (caught by extractor) or unescaped quotes inside string values (NOT
+  // catchable — requires a different model). When both Flash attempts fail
+  // with a JSON parse error, swing to Pro which essentially never makes
+  // string-escape mistakes. This is the difference between a half-populated
+  // workflow and a complete one.
   try {
-    return await attempt("first");
-  } catch (e: any) {
-    // Retry once on JSON parse failure — this is exactly the failure mode that
-    // killed 5 of 8 broadenings on the demo run (Flash returning valid JSON +
-    // trailing garbage that randomly varied call-to-call). A second call almost
-    // always returns clean JSON, and the call is cheap relative to the cost of
-    // a half-populated workflow.
-    if (e?.isJsonParseFailure) {
-      console.warn(`[AI] retrying JSON call after parse failure (model=${opts.config.model})`);
-      return await attempt("retry");
+    return await attemptWithConfig("primary", opts.config);
+  } catch (e1: any) {
+    if (!e1?.isJsonParseFailure) throw e1;
+    try {
+      console.warn(`[AI] JSON retry on primary (model=${opts.config.model})`);
+      return await attemptWithConfig("primary-retry", opts.config);
+    } catch (e2: any) {
+      if (!e2?.isJsonParseFailure || !opts.config.fallback || opts.config.fallback === opts.config.model) {
+        throw e2;
+      }
+      console.warn(
+        `[AI] both ${opts.config.model} attempts produced malformed JSON; escalating to fallback ${opts.config.fallback}`,
+      );
+      const fallbackConfig: AgentConfig = { ...opts.config, model: opts.config.fallback };
+      return await attemptWithConfig("fallback", fallbackConfig);
     }
-    throw e;
   }
 }
 
