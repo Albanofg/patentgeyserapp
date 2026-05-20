@@ -6126,6 +6126,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // plain string, nested object, double-encoded JSON string, or object with
   // extra fields (language_changes, covers, etc.). Uses regex as final fallback
   // so squiggly brackets never reach the draft.
+  // Remove any embedded JSON-object blob from a text field. Looks for
+  // `{...}` substrings whose contents parse as JSON and deletes them.
+  // Catches the case where a previous broken finalize wrote a raw AI
+  // response into draft.background / draft.summary / etc.
+  function stripEmbeddedJson(text: any): string {
+    if (typeof text !== "string") return typeof text === "object" ? "" : String(text ?? "");
+    let out = text;
+    const objRegex = /\{[\s\S]*?\}(?=\s|$|\n)/g;
+    let attempts = 0;
+    while (attempts++ < 10) {
+      let changed = false;
+      out = out.replace(objRegex, (match) => {
+        try {
+          const parsed = JSON.parse(match);
+          if (parsed && typeof parsed === "object") {
+            changed = true;
+            // If the blob has a known text field, keep just that
+            const textKeys = ["additional_paragraphs", "abstract_text", "content", "broadened_concept_text", "key_concept_text"];
+            for (const k of textKeys) {
+              if (typeof parsed[k] === "string") return parsed[k];
+            }
+            return "";
+          }
+        } catch {}
+        return match;
+      });
+      if (!changed) break;
+    }
+    return out.replace(/\n{3,}/g, "\n\n").trim();
+  }
+
   function pluckText(val: any, key: string): string {
     if (val === null || val === undefined) return "";
     const flatten = (v: any): any => {
@@ -6184,35 +6215,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (rawDraft && typeof rawDraft === "object") {
           const draft = { ...rawDraft };
 
-          // Background — append extension after existing content
-          if (finalSpec?.backgroundExtension?.additional_paragraphs) {
-            draft.background = [draft.background, finalSpec.backgroundExtension.additional_paragraphs]
-              .filter(Boolean).join("\n\n");
+          // Every field runs through pluckText so no JSON blob / object reaches the draft.
+          // Strip any JSON blobs left from prior broken finalize runs, then append clean text.
+          draft.background = stripEmbeddedJson(draft.background);
+          draft.summary = stripEmbeddedJson(draft.summary);
+          draft.detailed_description = stripEmbeddedJson(draft.detailed_description);
+          draft.abstract = stripEmbeddedJson(draft.abstract);
+
+          const bgText = pluckText(finalSpec?.backgroundExtension, "additional_paragraphs");
+          if (bgText) {
+            draft.background = [draft.background, bgText].filter(Boolean).join("\n\n");
           }
 
-          // Summary — append extension
-          if (finalSpec?.summaryExtension?.additional_paragraphs) {
-            draft.summary = [draft.summary, finalSpec.summaryExtension.additional_paragraphs]
-              .filter(Boolean).join("\n\n");
+          const summaryText = pluckText(finalSpec?.summaryExtension, "additional_paragraphs");
+          if (summaryText) {
+            draft.summary = [draft.summary, summaryText].filter(Boolean).join("\n\n");
           }
 
-          // Detailed description — append subsections
           if (finalSpec?.detailExtension?.subsections?.length) {
             const newSubsections = finalSpec.detailExtension.subsections
-              .map((s: any) => `${s.title}\n\n${s.content}`)
-              .join("\n\n");
-            draft.detailed_description = [draft.detailed_description, newSubsections]
+              .map((s: any) => {
+                const title = pluckText(s, "title") || "";
+                const content = pluckText(s, "content") || "";
+                return `${title}\n\n${content}`.trim();
+              })
               .filter(Boolean).join("\n\n");
+            if (newSubsections) {
+              draft.detailed_description = [draft.detailed_description, newSubsections]
+                .filter(Boolean).join("\n\n");
+            }
           }
 
-          // Abstract — replace entirely with the approved rewrite
-          if (finalSpec?.abstractText) {
-            draft.abstract = finalSpec.abstractText;
+          const abstractText = pluckText(finalSpec, "abstractText") || pluckText(finalSpec?.abstractText, "abstract_text") || (typeof finalSpec?.abstractText === "string" ? finalSpec.abstractText : "");
+          if (abstractText) {
+            draft.abstract = abstractText;
           }
 
-          // Key concepts — replace with broadened versions + new appended concepts.
-          // Build a flat list: broadened originals first, then new appendings.
-          // pluckText guarantees plain strings — no objects or JSON blobs reach the draft.
           const broadenedTexts = (finalSpec?.keyConceptsBroadened || [])
             .map((b: any) => pluckText(b, "broadened_concept_text")).filter(Boolean);
           const appendedTexts = (finalSpec?.keyConceptsAppended || [])
@@ -6280,23 +6318,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const draft = { ...rawDraft };
 
-      if (finalSpec?.backgroundExtension?.additional_paragraphs) {
-        draft.background = [draft.background, finalSpec.backgroundExtension.additional_paragraphs]
-          .filter(Boolean).join("\n\n");
+      draft.background = stripEmbeddedJson(draft.background);
+      draft.summary = stripEmbeddedJson(draft.summary);
+      draft.detailed_description = stripEmbeddedJson(draft.detailed_description);
+      draft.abstract = stripEmbeddedJson(draft.abstract);
+
+      const bgText = pluckText(finalSpec?.backgroundExtension, "additional_paragraphs");
+      if (bgText) {
+        draft.background = [draft.background, bgText].filter(Boolean).join("\n\n");
       }
-      if (finalSpec?.summaryExtension?.additional_paragraphs) {
-        draft.summary = [draft.summary, finalSpec.summaryExtension.additional_paragraphs]
-          .filter(Boolean).join("\n\n");
+      const summaryText = pluckText(finalSpec?.summaryExtension, "additional_paragraphs");
+      if (summaryText) {
+        draft.summary = [draft.summary, summaryText].filter(Boolean).join("\n\n");
       }
       if (finalSpec?.detailExtension?.subsections?.length) {
         const newSubsections = finalSpec.detailExtension.subsections
-          .map((s: any) => `${s.title}\n\n${s.content}`)
-          .join("\n\n");
-        draft.detailed_description = [draft.detailed_description, newSubsections]
+          .map((s: any) => {
+            const title = pluckText(s, "title") || "";
+            const content = pluckText(s, "content") || "";
+            return `${title}\n\n${content}`.trim();
+          })
           .filter(Boolean).join("\n\n");
+        if (newSubsections) {
+          draft.detailed_description = [draft.detailed_description, newSubsections]
+            .filter(Boolean).join("\n\n");
+        }
       }
-      if (finalSpec?.abstractText) {
-        draft.abstract = finalSpec.abstractText;
+      const abstractText = pluckText(finalSpec, "abstractText") || pluckText(finalSpec?.abstractText, "abstract_text") || (typeof finalSpec?.abstractText === "string" ? finalSpec.abstractText : "");
+      if (abstractText) {
+        draft.abstract = abstractText;
       }
       const broadenedTexts = (finalSpec?.keyConceptsBroadened || [])
         .map((b: any) => pluckText(b, "broadened_concept_text")).filter(Boolean);
