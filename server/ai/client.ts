@@ -342,42 +342,85 @@ export async function callAgent(opts: AgentCallOptions): Promise<string> {
   }
 }
 
-// Strip markdown fences and trim to the first `{` through the last `}`.
-// Defense-in-depth for the rare case Gemini emits prose despite jsonMode.
+// Strip markdown fences and extract a complete JSON object from the response.
+// Walks the string from the first `{` tracking brace depth (and respecting
+// string literals + escapes) to find the matching close brace, ignoring any
+// trailing garbage. Gemini Flash in particular often appends `}\n}` or other
+// junk after a valid JSON object — the old "first { to last }" slice would
+// include that garbage and trigger a parse error.
 function extractJsonPayload(raw: string): string {
   let s = raw.trim();
   // Strip ```json ... ``` or ``` ... ``` wrappers.
   const fenced = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
   if (fenced) s = fenced[1].trim();
-  // Trim any leading/trailing prose by slicing to the outermost braces.
+
   const first = s.indexOf("{");
-  const last = s.lastIndexOf("}");
-  if (first !== -1 && last !== -1 && last > first) {
-    s = s.slice(first, last + 1);
+  if (first === -1) return s;
+
+  // Walk forward tracking brace depth. Skip over string contents (and their
+  // escape sequences) so braces inside a string literal don't confuse the count.
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = first; i < s.length; i++) {
+    const ch = s[i];
+    if (escape) { escape = false; continue; }
+    if (inString) {
+      if (ch === "\\") { escape = true; continue; }
+      if (ch === '"') { inString = false; }
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === "{") { depth++; continue; }
+    if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return s.slice(first, i + 1);
+      }
+    }
   }
-  return s;
+  // Unbalanced — fall back to first..last so the caller still gets a chance.
+  const last = s.lastIndexOf("}");
+  return last > first ? s.slice(first, last + 1) : s;
 }
 
 export async function callAgentJSON<T = any>(opts: AgentCallOptions): Promise<T> {
-  const raw = await callAgent({ ...opts, jsonMode: true });
-  try {
-    return JSON.parse(raw) as T;
-  } catch (firstErr: any) {
+  const attempt = async (label: string): Promise<T> => {
+    const raw = await callAgent({ ...opts, jsonMode: true });
     try {
-      return JSON.parse(extractJsonPayload(raw)) as T;
-    } catch (secondErr: any) {
-      // Log the FULL raw payload as a single line so Vercel doesn't truncate at
-      // the first newline. This is what the next person debugging will need.
-      const oneLine = raw.replace(/\r?\n/g, "\\n");
-      console.error(
-        `[AI] JSON parse failed (len=${raw.length}, model=${opts.config.model}): ` +
-          `${secondErr?.message || firstErr?.message}. RAW: ${oneLine}`,
-      );
-      throw new Error(
-        `AI returned malformed JSON (${secondErr?.message || firstErr?.message}). ` +
-          `Length=${raw.length}. Head: ${raw.substring(0, 120)} | Tail: ${raw.slice(-120)}`,
-      );
+      return JSON.parse(raw) as T;
+    } catch (firstErr: any) {
+      try {
+        return JSON.parse(extractJsonPayload(raw)) as T;
+      } catch (secondErr: any) {
+        const oneLine = raw.replace(/\r?\n/g, "\\n");
+        console.error(
+          `[AI] JSON parse failed (${label}, len=${raw.length}, model=${opts.config.model}): ` +
+            `${secondErr?.message || firstErr?.message}. RAW: ${oneLine}`,
+        );
+        const err: any = new Error(
+          `AI returned malformed JSON (${secondErr?.message || firstErr?.message}). ` +
+            `Length=${raw.length}. Head: ${raw.substring(0, 120)} | Tail: ${raw.slice(-120)}`,
+        );
+        err.isJsonParseFailure = true;
+        throw err;
+      }
     }
+  };
+
+  try {
+    return await attempt("first");
+  } catch (e: any) {
+    // Retry once on JSON parse failure — this is exactly the failure mode that
+    // killed 5 of 8 broadenings on the demo run (Flash returning valid JSON +
+    // trailing garbage that randomly varied call-to-call). A second call almost
+    // always returns clean JSON, and the call is cheap relative to the cost of
+    // a half-populated workflow.
+    if (e?.isJsonParseFailure) {
+      console.warn(`[AI] retrying JSON call after parse failure (model=${opts.config.model})`);
+      return await attempt("retry");
+    }
+    throw e;
   }
 }
 
