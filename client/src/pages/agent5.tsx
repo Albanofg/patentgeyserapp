@@ -19,7 +19,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { AgentHeader } from "@/components/agent-header";
 const MDEditor = lazy(() => import('@uiw/react-md-editor'));
-import { Loader2, Download, FileText, Image as ImageIcon, CheckCircle2, Save, RefreshCw, ExternalLink, Pencil, Users, ArrowRight } from "lucide-react";
+import { Loader2, Download, FileText, Image as ImageIcon, CheckCircle2, Save, RefreshCw, ExternalLink, Pencil, Users, ArrowRight, Sparkles } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Project } from "@shared/schema";
 
 export default function Agent5() {
@@ -32,6 +33,11 @@ export default function Agent5() {
   const [activeSpecSection, setActiveSpecSection] = useState('title');
   const [editingSection, setEditingSection] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
+
+  // Genus & Species workflow inline state
+  const [gsGate1Decisions, setGsGate1Decisions] = useState<Record<string, { decision: "approved" | "rejected"; editedText?: string }>>({});
+  const [gsGate2Decisions, setGsGate2Decisions] = useState<Record<string, { decision: "approved" | "edited" | "rejected"; editedText?: string }>>({});
+  const [gsExpandedArtifact, setGsExpandedArtifact] = useState<string | null>(null);
 
   const { data: project, isLoading: projectLoading } = useQuery<Project>({
     queryKey: ["/api/projects", projectId],
@@ -51,6 +57,89 @@ export default function Agent5() {
   const { data: specSections, isLoading: specSectionsLoading } = useQuery<{ key: string; label: string; content: string }[]>({
     queryKey: ["/api/projects", projectId, "specification-sections"],
     enabled: !!projectId,
+  });
+
+  // Genus & Species workflow status.
+  // Primary source: agent5Data (already fetched). When a stage is actively
+  // running we also poll the dedicated status endpoint every 4s so the UI
+  // updates without the user having to refresh.
+  const gsStatusFromAgent5 = (agent5Data as any)?.data?.genusSpecies ?? (agent5Data as any)?.genusSpecies;
+  const gsIsRunning = ["running_stage1","running_stage2","running_stage3","running_stage4"].includes(gsStatusFromAgent5?.status);
+
+  const { data: gsStatusPolled } = useQuery<any>({
+    queryKey: ["/api/projects", projectId, "genus-species-status"],
+    queryFn: async () => {
+      const res = await fetch(`/api/projects/${projectId}/genus-species/status`, { credentials: "include" });
+      if (!res.ok) return null;
+      return res.json();
+    },
+    enabled: !!projectId && gsIsRunning,
+    refetchInterval: 4000,
+  });
+
+  // When polling detects a transition to a stable state, invalidate agent5Data
+  // so the primary source picks up the completed state.
+  useEffect(() => {
+    if (!gsStatusPolled) return;
+    const stillRunning = ["running_stage1","running_stage2","running_stage3","running_stage4"].includes(gsStatusPolled.status);
+    if (!stillRunning) {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 5] });
+    }
+  }, [gsStatusPolled?.status]);
+
+  // Use polled data while running, fall back to agent5 data otherwise.
+  const gsStatus = (gsIsRunning && gsStatusPolled) ? gsStatusPolled : gsStatusFromAgent5;
+
+  const gsStartMutation = useMutation({
+    mutationFn: async () => apiRequest("POST", `/api/projects/${projectId}/genus-species/start`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 5] });
+    },
+    onError: (e: Error) => toast({ title: "Couldn't start expansion", description: e.message }),
+  });
+
+  const gsApproveSpeciesMutation = useMutation({
+    mutationFn: async () => {
+      const approvals = Object.entries(gsGate1Decisions).map(([species_type, d]) => ({
+        species_type,
+        decision: d.decision,
+        editedText: d.editedText,
+      }));
+      return apiRequest("POST", `/api/projects/${projectId}/genus-species/approve-species`, { approvals });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 5] });
+    },
+    onError: (e: Error) => toast({ title: "Approval failed", description: e.message }),
+  });
+
+  const gsFinalizeMutation = useMutation({
+    mutationFn: async () => {
+      const approvals: Record<string, string> = {};
+      const edits: Record<string, string> = {};
+      for (const [id, d] of Object.entries(gsGate2Decisions)) {
+        approvals[id] = d.decision;
+        if (d.editedText) edits[id] = d.editedText;
+      }
+      return apiRequest("POST", `/api/projects/${projectId}/genus-species/finalize`, { approvals, edits });
+    },
+    onSuccess: () => {
+      toast({ title: "Expansion finalized", description: "Your provisional draft has been broadened." });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 5] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "specification-sections"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "genus-species-status"] });
+    },
+    onError: (e: Error) => toast({ title: "Finalization failed", description: e.message }),
+  });
+
+  const applyToDraftMutation = useMutation({
+    mutationFn: () => apiRequest("POST", `/api/projects/${projectId}/genus-species/apply-to-draft`, {}),
+    onSuccess: () => {
+      toast({ title: "Draft updated", description: "Your provisional draft has been updated with the expanded content." });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 5] });
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "specification-sections"] });
+    },
+    onError: (e: Error) => toast({ title: "Failed to apply to draft", description: e.message }),
   });
 
   const saveSpecSectionMutation = useMutation({
@@ -582,56 +671,97 @@ export default function Agent5() {
               <Button
                 size="lg"
                 className="w-full sm:w-auto text-base"
-                data-testid="button-generate-diagrams-header"
-                onClick={() => generateDiagramsMutation.mutate()}
-                disabled={generateDiagramsMutation.isPending}
+                data-testid="button-broaden-coverage"
+                onClick={() => gsStartMutation.mutate()}
+                disabled={gsStartMutation.isPending || gsIsRunning}
               >
-                {generateDiagramsMutation.isPending ? (
+                {(gsStartMutation.isPending || gsIsRunning) ? (
                   <>
                     <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-                    Generating Diagrams...
+                    Running Genus & Species Expansion…
                   </>
                 ) : (
                   <>
-                    <ImageIcon className="h-5 w-5 mr-2" />
-                    {diagrams.length > 0 ? 'Re-Generate Diagrams' : 'Generate Diagrams'}
+                    <Sparkles className="h-5 w-5 mr-2" />
+                    Genus & Species Expansion
                   </>
                 )}
               </Button>
-              <Button
-                size="lg"
-                className="w-full sm:w-auto text-base"
-                data-testid="button-download-draft"
-                onClick={() => {
-                  if (!hasKeyConcepts) {
-                    toast({
-                      title: "Create your key concepts first",
-                      description: "You must select key concepts before downloading the final application.",
-                    });
-                    setLocation(`/project/${projectId}/agent/4b`);
-                    return;
-                  }
-                  const missingDiagrams = diagrams.length === 0;
-                  if (missingDiagrams) {
-                    setShowDownloadWarning(true);
-                  } else {
-                    exportDOCXMutation.mutate();
-                  }
-                }}
-                disabled={exportDOCXMutation.isPending || !hasKeyConcepts}
-              >
-                {exportDOCXMutation.isPending ? (
-                  <>
-                    <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-                    Exporting...
-                  </>
-                ) : (
-                  <>
-                    <Download className="h-5 w-5 mr-2" />
-                    Download Provisional Draft
-                  </>
-                )}
-              </Button>
+              {/* Generate Diagrams — only active after Genus & Species is complete */}
+              {(() => {
+                const gsComplete = gsStatus?.status === "complete";
+                const diagramsDisabled = generateDiagramsMutation.isPending || !gsComplete;
+                return (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="w-full sm:w-auto">
+                        <Button
+                          size="lg"
+                          className="w-full text-base"
+                          data-testid="button-generate-diagrams-header"
+                          onClick={() => generateDiagramsMutation.mutate()}
+                          disabled={diagramsDisabled}
+                        >
+                          {generateDiagramsMutation.isPending ? (
+                            <>
+                              <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                              Generating Diagrams...
+                            </>
+                          ) : (
+                            <>
+                              <ImageIcon className="h-5 w-5 mr-2" />
+                              {diagrams.length > 0 ? 'Re-Generate Diagrams' : 'Generate Diagrams'}
+                            </>
+                          )}
+                        </Button>
+                      </span>
+                    </TooltipTrigger>
+                    {!gsComplete && (
+                      <TooltipContent>
+                        Run Genus & Species Expansion first — drawings are generated from the expanded specification.
+                      </TooltipContent>
+                    )}
+                  </Tooltip>
+                );
+              })()}
+
+              {/* Download — only active after diagrams are generated */}
+              {(() => {
+                const hasDiagramsReady = diagrams.length > 0;
+                const downloadDisabled = exportDOCXMutation.isPending || !hasDiagramsReady;
+                return (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="w-full sm:w-auto">
+                        <Button
+                          size="lg"
+                          className="w-full text-base"
+                          data-testid="button-download-draft"
+                          onClick={() => exportDOCXMutation.mutate()}
+                          disabled={downloadDisabled}
+                        >
+                          {exportDOCXMutation.isPending ? (
+                            <>
+                              <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                              Exporting...
+                            </>
+                          ) : (
+                            <>
+                              <Download className="h-5 w-5 mr-2" />
+                              Download Provisional Draft
+                            </>
+                          )}
+                        </Button>
+                      </span>
+                    </TooltipTrigger>
+                    {!hasDiagramsReady && (
+                      <TooltipContent>
+                        Generate diagrams first — the provisional draft includes your drawings.
+                      </TooltipContent>
+                    )}
+                  </Tooltip>
+                );
+              })()}
             </div>
           </div>
 
@@ -668,6 +798,215 @@ export default function Agent5() {
                       )}
                     </Button>
                   </div>
+                  {/* ── Genus & Species inline workflow panel ─────────── */}
+                  {gsStatus && gsStatus.status !== "idle" && (
+                    <div className="border border-primary/20 rounded-lg p-4 sm:p-6 bg-primary/5 space-y-4" data-testid="genus-species-panel">
+                      {/* Running spinner */}
+                      {["running_stage1","running_stage2","running_stage3","running_stage4"].includes(gsStatus.status) && (
+                        <div className="flex items-center gap-3">
+                          <Loader2 className="h-5 w-5 animate-spin text-primary shrink-0" />
+                          <div>
+                            <p className="font-medium text-sm">
+                              {gsStatus.status === "running_stage1" && "Extracting the core mechanism of your invention…"}
+                              {gsStatus.status === "running_stage2" && "Synthesising AI-assisted, AI-native, and agentic implementations…"}
+                              {gsStatus.status === "running_stage3" && "Broadening your key concepts and extending specification sections…"}
+                              {gsStatus.status === "running_stage4" && "Rewriting abstract to cover expanded scope…"}
+                            </p>
+                            <p className="text-xs text-muted-foreground">This takes a few minutes — the page will update automatically.</p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Error */}
+                      {gsStatus.status === "error" && (
+                        <div className="flex items-start gap-3">
+                          <p className="text-sm text-destructive flex-1"><strong>Expansion failed:</strong> {gsStatus.error || "Unknown error"}. Try again.</p>
+                          <Button size="sm" variant="outline" onClick={() => gsStartMutation.mutate()} disabled={gsStartMutation.isPending}>Retry</Button>
+                        </div>
+                      )}
+
+                      {/* Gate 1 — species approval */}
+                      {gsStatus.status === "awaiting_gate1" && (
+                        <div className="space-y-4">
+                          <div>
+                            <p className="font-semibold text-sm">Review AI implementations</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">Approve, edit, or reject each — only approved ones get woven into your draft.</p>
+                          </div>
+                          {(gsStatus.species || []).map((s: any) => {
+                            const decision = gsGate1Decisions[s.species_type];
+                            const label = s.species_type === "ai_assisted" ? "AI-Assisted" : s.species_type === "ai_native" ? "AI-Native" : "Agentic";
+                            return (
+                              <div key={s.species_type} className={`rounded-md border p-3 space-y-2 ${s.failed ? "opacity-50" : ""}`}>
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-sm font-medium">{label}</span>
+                                  {s.failed ? <span className="text-xs text-muted-foreground">Failed to generate</span> : (
+                                    <div className="flex gap-1">
+                                      <Button size="sm" variant={decision?.decision === "approved" ? "default" : "outline"} className="text-xs h-7 px-2" onClick={() => setGsGate1Decisions(p => ({ ...p, [s.species_type]: { decision: "approved" } }))}>Approve</Button>
+                                      <Button size="sm" variant={decision?.decision === "rejected" ? "destructive" : "outline"} className="text-xs h-7 px-2" onClick={() => setGsGate1Decisions(p => ({ ...p, [s.species_type]: { decision: "rejected" } }))}>Reject</Button>
+                                    </div>
+                                  )}
+                                </div>
+                                {!s.failed && <p className="text-xs text-muted-foreground leading-relaxed">{s.architectural_description}</p>}
+                              </div>
+                            );
+                          })}
+                          <Button
+                            size="sm"
+                            onClick={() => gsApproveSpeciesMutation.mutate()}
+                            disabled={gsApproveSpeciesMutation.isPending || Object.keys(gsGate1Decisions).length === 0}
+                          >
+                            {gsApproveSpeciesMutation.isPending ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin"/>Processing…</> : "Confirm & Continue"}
+                          </Button>
+                        </div>
+                      )}
+
+                      {/* Gate 2 — final artifact review */}
+                      {gsStatus.status === "awaiting_gate2" && (
+                        <div className="space-y-4">
+                          <div>
+                            <p className="font-semibold text-sm">Review expanded content</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">Approve, edit, or reject each artifact. Only approved content enters your draft.</p>
+                          </div>
+                          {(() => {
+                            // Pull text for `textKey` from any shape the AI may return.
+                            // Strategy: normalize to a plain object first, then extract.
+                            // As a last resort, regex the raw JSON string — this catches
+                            // every nesting/double-encoding variant without recursion bugs.
+                            const extractConceptText = (val: any, textKey: string): string => {
+                              if (val === null || val === undefined) return "";
+
+                              // Flatten any JSON-string wrapper to a plain JS value
+                              const flatten = (v: any): any => {
+                                if (typeof v !== "string") return v;
+                                const t = v.trim();
+                                if (t.startsWith("{") || t.startsWith("[")) {
+                                  try { return flatten(JSON.parse(t)); } catch {}
+                                }
+                                return v;
+                              };
+
+                              const obj = flatten(val);
+
+                              // If it resolved to a plain string, that IS the text
+                              if (typeof obj === "string") return obj;
+
+                              // Object path — check target key directly
+                              if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+                                const child = flatten(obj[textKey]);
+                                if (typeof child === "string") return child;
+                                // Child is still an object (double-nested) — try one more level
+                                if (child && typeof child === "object" && !Array.isArray(child)) {
+                                  const grand = flatten(child[textKey]);
+                                  if (typeof grand === "string") return grand;
+                                }
+                              }
+
+                              // Last resort: regex on the raw JSON string.
+                              // Matches  "textKey": "...value..."  even if deeply nested.
+                              try {
+                                const raw = typeof val === "string" ? val : JSON.stringify(val);
+                                const escaped = textKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                                const m = raw.match(new RegExp(`"${escaped}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`));
+                                if (m) return m[1].replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+                              } catch {}
+
+                              return "";
+                            };
+
+                            const aspectLabel: Record<string, string> = {
+                              genus_mechanism: "Core Mechanism",
+                              species_spectrum: "Architectural Spectrum",
+                              hardware_optimization: "Hardware Optimization",
+                            };
+
+                            return [
+                              ...((gsStatus.broadenings || []).map((b: any, i: number) => ({
+                                id: `broadening_${i}`,
+                                label: `Broadened Key Concept ${i + 1}`,
+                                sublabel: typeof b?.original_key_concept === "string" ? b.original_key_concept : undefined,
+                                text: extractConceptText(b, "broadened_concept_text"),
+                              }))),
+                              ...((gsStatus.appendings || []).map((a: any, i: number) => ({
+                                id: `appending_${i}`,
+                                label: `New Key Concept — ${aspectLabel[a?.concept_aspect] ?? (a?.concept_aspect || "").replace(/_/g, " ")}`,
+                                sublabel: undefined as string | undefined,
+                                text: extractConceptText(a, "key_concept_text"),
+                              }))),
+                              ...(gsStatus.backgroundExtension
+                                ? [{ id: "background_extension", label: "Background Extension", sublabel: undefined as string | undefined, text: extractConceptText(gsStatus.backgroundExtension, "additional_paragraphs") }]
+                                : []),
+                              ...(gsStatus.summaryExtension
+                                ? [{ id: "summary_extension", label: "Summary Extension", sublabel: undefined as string | undefined, text: extractConceptText(gsStatus.summaryExtension, "additional_paragraphs") }]
+                                : []),
+                              ...(gsStatus.abstractRewrite
+                                ? [{ id: "abstract", label: `Abstract Rewrite (${gsStatus.abstractRewrite.word_count ?? "?"} words)`, sublabel: undefined as string | undefined, text: extractConceptText(gsStatus.abstractRewrite, "abstract_text") }]
+                                : []),
+                            ];
+                          })().map((artifact) => {
+                            const d = gsGate2Decisions[artifact.id];
+                            return (
+                              <div key={artifact.id} className="rounded-md border p-3 space-y-2">
+                                <div className="flex items-start justify-between gap-2 flex-wrap">
+                                  <div className="space-y-0.5 min-w-0">
+                                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{artifact.label}</span>
+                                    {artifact.sublabel && (
+                                      <p className="text-xs text-muted-foreground/70 italic truncate max-w-xs">{artifact.sublabel}</p>
+                                    )}
+                                  </div>
+                                  <div className="flex gap-1 shrink-0">
+                                    <Button size="sm" variant={(!d || d.decision === "approved") ? "default" : "outline"} className="text-xs h-6 px-2" onClick={() => setGsGate2Decisions(p => ({ ...p, [artifact.id]: { decision: "approved" } }))}>Keep</Button>
+                                    <Button size="sm" variant={d?.decision === "edited" ? "default" : "outline"} className="text-xs h-6 px-2" onClick={() => setGsGate2Decisions(p => ({ ...p, [artifact.id]: { decision: "edited", editedText: d?.editedText ?? artifact.text } }))}>Edit</Button>
+                                    <Button size="sm" variant={d?.decision === "rejected" ? "destructive" : "outline"} className="text-xs h-6 px-2" onClick={() => setGsGate2Decisions(p => ({ ...p, [artifact.id]: { decision: "rejected" } }))}>Remove</Button>
+                                  </div>
+                                </div>
+                                {!artifact.text && (
+                                  <p className="text-xs text-destructive/70 italic">Could not extract text — run Genus &amp; Species again to regenerate.</p>
+                                )}
+                                {d?.decision === "edited" ? (
+                                  <textarea className="w-full text-xs rounded border p-2 min-h-24 bg-background resize-y leading-relaxed" value={d.editedText ?? artifact.text} onChange={e => setGsGate2Decisions(p => ({ ...p, [artifact.id]: { ...p[artifact.id], editedText: e.target.value } }))} />
+                                ) : gsExpandedArtifact === artifact.id ? (
+                                  <div className="space-y-2">
+                                    <p className="text-sm leading-relaxed text-foreground whitespace-pre-wrap">{artifact.text}</p>
+                                    <button className="text-xs text-primary underline" onClick={() => setGsExpandedArtifact(null)}>Collapse</button>
+                                  </div>
+                                ) : (
+                                  <div className="space-y-1">
+                                    <p className="text-sm leading-relaxed text-foreground line-clamp-3">{artifact.text}</p>
+                                    {artifact.text && <button className="text-xs text-primary underline" onClick={() => setGsExpandedArtifact(artifact.id)}>Read full text</button>}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                          <Button size="sm" onClick={() => gsFinalizeMutation.mutate()} disabled={gsFinalizeMutation.isPending}>
+                            {gsFinalizeMutation.isPending ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin"/>Finalizing…</> : "Finalize Expansion"}
+                          </Button>
+                        </div>
+                      )}
+
+                      {/* Complete */}
+                      {gsStatus.status === "complete" && gsStatus.finalSpec && (
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-400">
+                            <CheckCircle2 className="h-4 w-4 shrink-0" />
+                            Expansion complete.
+                          </div>
+                          <button
+                            onClick={() => applyToDraftMutation.mutate()}
+                            disabled={applyToDraftMutation.isPending}
+                            className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                          >
+                            {applyToDraftMutation.isPending ? "Applying…" : "Apply to Provisional Draft"}
+                          </button>
+                        </div>
+                      )}
+                      {gsStatus.status === "complete" && !gsStatus.finalSpec && (
+                        <p className="text-xs text-muted-foreground">No species were approved — original draft unchanged.</p>
+                      )}
+                    </div>
+                  )}
+                  {/* ─────────────────────────────────────────────────── */}
+
                   {specSectionsLoading ? (
                     <div className="flex items-center justify-center py-12">
                       <Loader2 className="h-6 w-6 animate-spin text-primary" />
@@ -779,7 +1118,7 @@ export default function Agent5() {
                               </div>
                               {isEditing ? (
                                 <div data-color-mode="auto">
-                                  <Suspense fallback={<div className="flex items-center justify-center h-[300px]"><Loader2 className="h-6 w-6 animate-spin text-primary" /></div>}>
+                                  <Suspense fallback={<div className="flex items-center justify-center h-75"><Loader2 className="h-6 w-6 animate-spin text-primary" /></div>}>
                                     <MDEditor
                                       value={editContent}
                                       onChange={(val) => setEditContent(val || '')}
@@ -789,7 +1128,7 @@ export default function Agent5() {
                                   </Suspense>
                                 </div>
                               ) : (
-                                <div className="bg-muted p-3 sm:p-6 rounded-lg text-xs sm:text-sm leading-relaxed max-h-[400px] sm:max-h-[600px] overflow-y-auto prose prose-sm dark:prose-invert max-w-none">
+                                <div className="bg-muted p-3 sm:p-6 rounded-lg text-xs sm:text-sm leading-relaxed max-h-100 sm:max-h-150 overflow-y-auto prose prose-sm dark:prose-invert max-w-none">
                                   {sectionContent ? (
                                     <ReactMarkdown>{sectionContent}</ReactMarkdown>
                                   ) : (
@@ -902,7 +1241,7 @@ export default function Agent5() {
                               <Button
                                 variant="default"
                                 size="sm"
-                                className="flex-1 min-w-[100px]"
+                                className="flex-1 min-w-25"
                                 data-testid={`button-save-diagram-${index}`}
                                 onClick={() => downloadDiagram(imageUrl, title, chartNumber)}
                               >
@@ -912,7 +1251,7 @@ export default function Agent5() {
                               <Button
                                 variant="outline"
                                 size="sm"
-                                className="flex-1 min-w-[100px]"
+                                className="flex-1 min-w-25"
                                 data-testid={`button-view-diagram-${index}`}
                                 onClick={() => window.open(imageUrl, '_blank')}
                               >

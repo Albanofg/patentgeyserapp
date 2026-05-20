@@ -5981,6 +5981,355 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ============================================
+  // GENUS & SPECIES EXPANSION ROUTES
+  // ============================================
+
+  // Trigger Stage 1 (genus) + Stage 2 (species) then pause for Gate 1.
+  // Returns immediately with status "running_stage1"; poll /status for updates.
+  // Client should SSE or poll until status becomes "awaiting_gate1".
+  app.post("/api/projects/:id/genus-species/start", isAuthenticated, async (req, res) => {
+    try {
+      const { runGenusExtraction, runSpeciesSynthesis } = await import("./modules/module5/5c-genus-and-species/orchestrator");
+      const project = await storage.getProject(req.params.id);
+      if (!project) return res.status(404).json({ message: "Project not found" });
+
+      const [a1Data, a2Data, a4Data, a5Data] = await Promise.all([
+        storage.getAgentData(req.params.id, 1),
+        storage.getAgentData(req.params.id, 2),
+        storage.getAgentData(req.params.id, 4),
+        storage.getAgentData(req.params.id, 5),
+      ]);
+      const a1 = (a1Data?.data ?? {}) as any;
+      const a2 = (a2Data?.data ?? {}) as any;
+      const a4 = (a4Data?.data ?? {}) as any;
+      const a5 = (a5Data?.data ?? {}) as any;
+
+      const coreIdea: string = a1?.ideaSummary || a1?.currentIdea || "";
+      const expandedConcept: string = a2?.provisionalDraft || a2?.draftSpecification || "";
+      const existingKeyConcepts: string[] = (a4?.selectedKeyConcepts || []).map((c: any) => c?.text || "").filter(Boolean);
+
+      if (!coreIdea || !expandedConcept || existingKeyConcepts.length === 0) {
+        return res.status(400).json({ message: "Project is missing required data. Complete Modules 1–4 first." });
+      }
+
+      // Mark as running
+      const existing = (a5Data?.data ?? {}) as any;
+      const runningState = {
+        status: "running_stage1",
+        startedAt: new Date().toISOString(),
+      };
+      await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...existing, genusSpecies: runningState } });
+      res.json({ success: true, status: "running_stage1" });
+
+      // Run stages 1 + 2 asynchronously so the HTTP response returns immediately.
+      (async () => {
+        const currentA5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
+        try {
+          const genusResult = await runGenusExtraction({ coreIdea, expandedConcept, existingKeyConcepts });
+          if (!genusResult.success) {
+            await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...currentA5, genusSpecies: { status: "error", error: genusResult.error } } });
+            return;
+          }
+          await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...currentA5, genusSpecies: { ...runningState, status: "running_stage2", genus: genusResult.genus } } });
+
+          const species = await runSpeciesSynthesis({ genus: genusResult.genus });
+          const nextA5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
+          await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...nextA5, genusSpecies: { ...nextA5.genusSpecies, status: "awaiting_gate1", species } } });
+        } catch (e: any) {
+          const errA5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
+          await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...errA5, genusSpecies: { ...errA5.genusSpecies, status: "error", error: e?.message || "Stage 1/2 failed" } } });
+        }
+      })();
+    } catch (error: any) {
+      console.error("[genus-species] start error:", error);
+      res.status(500).json({ message: error.message || "Failed to start expansion" });
+    }
+  });
+
+  // Gate 1: inventor submits their species approval decisions.
+  // Body: { approvals: Array<{ species_type, decision: "approved"|"rejected", editedText?: string }> }
+  // If zero approved, workflow ends cleanly. Otherwise runs Stage 3 + 4 async.
+  app.post("/api/projects/:id/genus-species/approve-species", isAuthenticated, async (req, res) => {
+    try {
+      const { runStage3, runAbstractRewrite } = await import("./modules/module5/5c-genus-and-species/orchestrator");
+      const approvals: Array<{ species_type: string; decision: string; editedText?: string }> = req.body.approvals || [];
+
+      const a5Data = await storage.getAgentData(req.params.id, 5);
+      const a5 = (a5Data?.data ?? {}) as any;
+      const gsState = (a5.genusSpecies ?? {}) as any;
+
+      if (gsState.status !== "awaiting_gate1") {
+        return res.status(400).json({ message: `Workflow is not at Gate 1 (current status: ${gsState.status})` });
+      }
+
+      const allSpecies: any[] = gsState.species || [];
+      const approvedSpecies = allSpecies
+        .map((s: any) => {
+          const decision = approvals.find((a) => a.species_type === s.species_type);
+          if (!decision || decision.decision === "rejected") return null;
+          if (decision.decision === "edited" && decision.editedText) {
+            return { ...s, architectural_description: decision.editedText };
+          }
+          return s;
+        })
+        .filter(Boolean);
+
+      if (approvedSpecies.length === 0) {
+        // Clean halt — no species approved, workflow done, original spec unchanged.
+        await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...a5, genusSpecies: { ...gsState, status: "complete", approvedSpecies: [], finalSpec: null, completedAt: new Date().toISOString() } } });
+        return res.json({ success: true, status: "complete", approvedSpecies: 0 });
+      }
+
+      await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...a5, genusSpecies: { ...gsState, status: "running_stage3", approvedSpecies } } });
+      res.json({ success: true, status: "running_stage3", approvedSpecies: approvedSpecies.length });
+
+      // Stages 3 + 4 async
+      (async () => {
+        try {
+          const [a2Data, a4Data] = await Promise.all([storage.getAgentData(req.params.id, 2), storage.getAgentData(req.params.id, 4)]);
+          const a2 = (a2Data?.data ?? {}) as any;
+          const a4 = (a4Data?.data ?? {}) as any;
+          const currentA5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
+          const gs = currentA5.genusSpecies || {};
+
+          const existingKeyConcepts: string[] = (a4?.selectedKeyConcepts || []).map((c: any) => c?.text || "").filter(Boolean);
+          const existingBackground: string = a2?.background || "";
+          const existingSummary: string = a2?.summary || "";
+          const existingDetailedDescription: string = a2?.provisionalDraft || a2?.draftSpecification || "";
+
+          const stage3 = await runStage3({ existingKeyConcepts, genus: gs.genus, approvedSpecies, existingBackground, existingSummary, existingDetailedDescription });
+          const postS3A5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
+          await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...postS3A5, genusSpecies: { ...postS3A5.genusSpecies, status: "running_stage4", ...stage3 } } });
+
+          const assembledSpec = [existingDetailedDescription, ...stage3.broadenings.map((b: any) => b.broadened_concept_text), stage3.backgroundExtension.additional_paragraphs, stage3.summaryExtension.additional_paragraphs].join("\n\n");
+          const a1Data = await storage.getAgentData(req.params.id, 1);
+          const originalAbstract: string = (a1Data?.data as any)?.abstract || "";
+
+          const abstractRewrite = await runAbstractRewrite({ originalAbstract, assembledSpec, approvedSpecies, genus: gs.genus });
+          const postS4A5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
+          await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...postS4A5, genusSpecies: { ...postS4A5.genusSpecies, status: "awaiting_gate2", abstractRewrite } } });
+        } catch (e: any) {
+          const errA5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
+          await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...errA5, genusSpecies: { ...errA5.genusSpecies, status: "error", error: e?.message || "Stage 3/4 failed" } } });
+        }
+      })();
+    } catch (error: any) {
+      console.error("[genus-species] approve-species error:", error);
+      res.status(500).json({ message: error.message || "Failed to process species approval" });
+    }
+  });
+
+  // Gate 2: inventor finalizes their per-artifact decisions and the expanded
+  // spec is written to the project.
+  // Body: { approvals: Record<string, "approved"|"edited"|"rejected">, edits: Record<string, string> }
+  // Extract a plain string from any shape an AI response field may take:
+  // plain string, nested object, double-encoded JSON string, or object with
+  // extra fields (language_changes, covers, etc.). Uses regex as final fallback
+  // so squiggly brackets never reach the draft.
+  function pluckText(val: any, key: string): string {
+    if (val === null || val === undefined) return "";
+    const flatten = (v: any): any => {
+      if (typeof v !== "string") return v;
+      const t = v.trim();
+      if (t.startsWith("{") || t.startsWith("[")) { try { return flatten(JSON.parse(t)); } catch {} }
+      return v;
+    };
+    const obj = flatten(val);
+    if (typeof obj === "string") return obj;
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+      const child = flatten(obj[key]);
+      if (typeof child === "string") return child;
+      if (child && typeof child === "object" && !Array.isArray(child)) {
+        const grand = flatten(child[key]);
+        if (typeof grand === "string") return grand;
+      }
+    }
+    // Regex fallback — works on any JSON regardless of nesting depth
+    try {
+      const raw = typeof val === "string" ? val : JSON.stringify(val);
+      const esc = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const m = raw.match(new RegExp(`"${esc}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"` ));
+      if (m) return m[1].replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    } catch {}
+    return "";
+  }
+
+  app.post("/api/projects/:id/genus-species/finalize", isAuthenticated, async (req, res) => {
+    try {
+      const { finalizeApprovals } = await import("./modules/module5/5c-genus-and-species/orchestrator");
+      const { approvals = {}, edits = {} } = req.body;
+
+      const a5Data = await storage.getAgentData(req.params.id, 5);
+      const a5 = (a5Data?.data ?? {}) as any;
+      const gsState = a5.genusSpecies ?? {};
+
+      if (gsState.status !== "awaiting_gate2") {
+        return res.status(400).json({ message: `Workflow is not at Gate 2 (current status: ${gsState.status})` });
+      }
+
+      const finalSpec = finalizeApprovals(gsState, approvals, edits);
+      const completed = { ...gsState, status: "complete", gate2Approvals: approvals, gate2Edits: edits, finalSpec, completedAt: new Date().toISOString() };
+
+      // Write the approved expanded content into the live provisionalDraft so
+      // specification-sections returns the updated text immediately. We work
+      // directly on the raw draft object rather than calling parseProvisionalDraft
+      // (which is defined later in this closure) to avoid the TDZ.
+      let updatedDraft: any = null;
+      try {
+        let rawDraft = a5?.provisionalDraft;
+        if (!rawDraft) {
+          const a4Data = await storage.getAgentData(req.params.id, 4);
+          rawDraft = (a4Data?.data as any)?.provisionalDraft;
+        }
+        if (rawDraft && typeof rawDraft === "object") {
+          const draft = { ...rawDraft };
+
+          // Background — append extension after existing content
+          if (finalSpec?.backgroundExtension?.additional_paragraphs) {
+            draft.background = [draft.background, finalSpec.backgroundExtension.additional_paragraphs]
+              .filter(Boolean).join("\n\n");
+          }
+
+          // Summary — append extension
+          if (finalSpec?.summaryExtension?.additional_paragraphs) {
+            draft.summary = [draft.summary, finalSpec.summaryExtension.additional_paragraphs]
+              .filter(Boolean).join("\n\n");
+          }
+
+          // Detailed description — append subsections
+          if (finalSpec?.detailExtension?.subsections?.length) {
+            const newSubsections = finalSpec.detailExtension.subsections
+              .map((s: any) => `${s.title}\n\n${s.content}`)
+              .join("\n\n");
+            draft.detailed_description = [draft.detailed_description, newSubsections]
+              .filter(Boolean).join("\n\n");
+          }
+
+          // Abstract — replace entirely with the approved rewrite
+          if (finalSpec?.abstractText) {
+            draft.abstract = finalSpec.abstractText;
+          }
+
+          // Key concepts — replace with broadened versions + new appended concepts.
+          // Build a flat list: broadened originals first, then new appendings.
+          // pluckText guarantees plain strings — no objects or JSON blobs reach the draft.
+          const broadenedTexts = (finalSpec?.keyConceptsBroadened || [])
+            .map((b: any) => pluckText(b, "broadened_concept_text")).filter(Boolean);
+          const appendedTexts = (finalSpec?.keyConceptsAppended || [])
+            .map((a: any) => pluckText(a, "key_concept_text")).filter(Boolean);
+          const allConcepts = [...broadenedTexts, ...appendedTexts];
+          if (allConcepts.length > 0) {
+            draft.keyConcepts = allConcepts;
+            draft.claims = allConcepts;
+            draft.keyConcepts_count = allConcepts.length;
+          }
+
+          updatedDraft = draft;
+        }
+      } catch (draftErr: any) {
+        console.warn("[genus-species] draft merge failed:", draftErr?.message);
+      }
+
+      const mergePayload: any = { genusSpecies: completed };
+      if (updatedDraft) mergePayload.provisionalDraft = updatedDraft;
+      await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...a5, ...mergePayload } });
+      res.json({ success: true, status: "complete", finalSpec });
+    } catch (error: any) {
+      console.error("[genus-species] finalize error:", error);
+      res.status(500).json({ message: error.message || "Failed to finalize expansion" });
+    }
+  });
+
+  // Workflow status — polled by the frontend while async stages run.
+  app.get("/api/projects/:id/genus-species/status", isAuthenticated, async (req, res) => {
+    try {
+      const a5Data = await storage.getAgentData(req.params.id, 5);
+      const gs = ((a5Data?.data ?? {}) as any)?.genusSpecies ?? { status: "idle" };
+      res.json(gs);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message || "Failed to get status" });
+    }
+  });
+
+  // Apply the already-finalized G&S spec to provisionalDraft without re-running
+  // any AI. Safe to call any time status === "complete".
+  app.post("/api/projects/:id/genus-species/apply-to-draft", isAuthenticated, async (req, res) => {
+    try {
+      const a5Data = await storage.getAgentData(req.params.id, 5);
+      const a5 = (a5Data?.data ?? {}) as any;
+      const gsState = a5.genusSpecies ?? {};
+
+      if (gsState.status !== "complete") {
+        return res.status(400).json({ message: `Workflow not complete (status: ${gsState.status})` });
+      }
+
+      const finalSpec = gsState.finalSpec;
+      if (!finalSpec) {
+        return res.status(400).json({ message: "No finalSpec found — workflow may not have finished properly" });
+      }
+
+      let rawDraft = a5?.provisionalDraft;
+      if (!rawDraft) {
+        const a4Data = await storage.getAgentData(req.params.id, 4);
+        rawDraft = (a4Data?.data as any)?.provisionalDraft;
+      }
+
+      if (!rawDraft || typeof rawDraft !== "object") {
+        return res.status(400).json({ message: "No provisional draft found for this project" });
+      }
+
+      const draft = { ...rawDraft };
+
+      if (finalSpec?.backgroundExtension?.additional_paragraphs) {
+        draft.background = [draft.background, finalSpec.backgroundExtension.additional_paragraphs]
+          .filter(Boolean).join("\n\n");
+      }
+      if (finalSpec?.summaryExtension?.additional_paragraphs) {
+        draft.summary = [draft.summary, finalSpec.summaryExtension.additional_paragraphs]
+          .filter(Boolean).join("\n\n");
+      }
+      if (finalSpec?.detailExtension?.subsections?.length) {
+        const newSubsections = finalSpec.detailExtension.subsections
+          .map((s: any) => `${s.title}\n\n${s.content}`)
+          .join("\n\n");
+        draft.detailed_description = [draft.detailed_description, newSubsections]
+          .filter(Boolean).join("\n\n");
+      }
+      if (finalSpec?.abstractText) {
+        draft.abstract = finalSpec.abstractText;
+      }
+      const broadenedTexts = (finalSpec?.keyConceptsBroadened || [])
+        .map((b: any) => pluckText(b, "broadened_concept_text")).filter(Boolean);
+      const appendedTexts = (finalSpec?.keyConceptsAppended || [])
+        .map((a: any) => pluckText(a, "key_concept_text")).filter(Boolean);
+      const allConcepts = [...broadenedTexts, ...appendedTexts];
+      if (allConcepts.length > 0) {
+        draft.keyConcepts = allConcepts;
+        draft.claims = allConcepts;
+        draft.keyConcepts_count = allConcepts.length;
+      }
+
+      await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...a5, provisionalDraft: draft } });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("[genus-species] apply-to-draft error:", error);
+      res.status(500).json({ message: error.message || "Failed to apply to draft" });
+    }
+  });
+
+  // Reset workflow (starts over from Stage 1).
+  app.post("/api/projects/:id/genus-species/reset", isAuthenticated, async (req, res) => {
+    try {
+      const a5Data = await storage.getAgentData(req.params.id, 5);
+      const a5 = (a5Data?.data ?? {}) as any;
+      await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...a5, genusSpecies: { status: "idle" } } });
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ message: error.message || "Failed to reset" });
+    }
+  });
+
+  // ============================================
   // HUMAN-INPUT LEDGER ROUTES
   // ============================================
   // Pure passthrough — every textarea answer the user types across modules
