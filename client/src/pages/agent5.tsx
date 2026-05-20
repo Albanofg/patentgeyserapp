@@ -90,6 +90,72 @@ export default function Agent5() {
   // Use polled data while running, fall back to agent5 data otherwise.
   const gsStatus = (gsIsRunning && gsStatusPolled) ? gsStatusPolled : gsStatusFromAgent5;
 
+  // Cycling status messages — rotate every 4s so the UI feels alive while a stage runs.
+  // The backend reports stage-level state only; this gives users per-agent visibility.
+  const gsStageMessages: Record<string, string[]> = {
+    running_stage1: [
+      "Reading your invention's core mechanism…",
+      "Identifying the underlying paradigm-neutral pattern…",
+      "Extracting input, transformation, and output flow…",
+      "Validating the genus across multiple architectures…",
+    ],
+    running_stage2: [
+      "Designing an AI-assisted implementation…",
+      "Designing an AI-native implementation…",
+      "Designing an agentic implementation…",
+      "Synthesising architectural data flows…",
+      "Identifying key components for each species…",
+    ],
+    running_stage3: [
+      "Broadening your existing key concepts…",
+      "Adding a genus-mechanism concept…",
+      "Adding a species-spectrum concept…",
+      "Adding a hardware-optimization concept…",
+      "Extending the Background section with prior-art context…",
+      "Extending the Summary section to cover broadened scope…",
+      "Extending the Detailed Description with new subsections…",
+      "Cross-checking that no original meaning was lost…",
+    ],
+    running_stage4: [
+      "Drafting the new abstract…",
+      "Checking the word budget…",
+      "Ensuring all approved species are covered…",
+    ],
+  };
+  const [gsMessageIndex, setGsMessageIndex] = useState(0);
+  const [gsStageStartedAt, setGsStageStartedAt] = useState<number | null>(null);
+  const [gsElapsedSec, setGsElapsedSec] = useState(0);
+
+  // Reset message index + start timer whenever the stage changes
+  useEffect(() => {
+    if (gsStatus?.status && gsStageMessages[gsStatus.status]) {
+      setGsMessageIndex(0);
+      setGsStageStartedAt(Date.now());
+    } else {
+      setGsStageStartedAt(null);
+      setGsElapsedSec(0);
+    }
+  }, [gsStatus?.status]);
+
+  // Rotate the message every 4s and tick the elapsed counter every second
+  useEffect(() => {
+    if (!gsStageStartedAt) return;
+    const msgTimer = setInterval(() => {
+      const msgs = gsStageMessages[gsStatus?.status] || [];
+      if (msgs.length > 0) setGsMessageIndex((i) => (i + 1) % msgs.length);
+    }, 4000);
+    const tickTimer = setInterval(() => {
+      setGsElapsedSec(Math.floor((Date.now() - gsStageStartedAt) / 1000));
+    }, 1000);
+    return () => { clearInterval(msgTimer); clearInterval(tickTimer); };
+  }, [gsStageStartedAt, gsStatus?.status]);
+
+  const formatElapsed = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+  };
+
   const gsStartMutation = useMutation({
     mutationFn: async () => apiRequest("POST", `/api/projects/${projectId}/genus-species/start`, {}),
     onSuccess: () => {
@@ -802,20 +868,29 @@ export default function Agent5() {
                   {gsStatus && gsStatus.status !== "idle" && (
                     <div className="border border-primary/20 rounded-lg p-4 sm:p-6 bg-primary/5 space-y-4" data-testid="genus-species-panel">
                       {/* Running spinner */}
-                      {["running_stage1","running_stage2","running_stage3","running_stage4"].includes(gsStatus.status) && (
-                        <div className="flex items-center gap-3">
-                          <Loader2 className="h-5 w-5 animate-spin text-primary shrink-0" />
-                          <div>
-                            <p className="font-medium text-sm">
-                              {gsStatus.status === "running_stage1" && "Extracting the core mechanism of your invention…"}
-                              {gsStatus.status === "running_stage2" && "Synthesising AI-assisted, AI-native, and agentic implementations…"}
-                              {gsStatus.status === "running_stage3" && "Broadening your key concepts and extending specification sections…"}
-                              {gsStatus.status === "running_stage4" && "Rewriting abstract to cover expanded scope…"}
-                            </p>
-                            <p className="text-xs text-muted-foreground">This takes a few minutes — the page will update automatically.</p>
+                      {["running_stage1","running_stage2","running_stage3","running_stage4"].includes(gsStatus.status) && (() => {
+                        const stageHeaders: Record<string, string> = {
+                          running_stage1: "Stage 1 of 4 — Extracting the core mechanism",
+                          running_stage2: "Stage 2 of 4 — Synthesising architectural variants",
+                          running_stage3: "Stage 3 of 4 — Broadening concepts and extending sections",
+                          running_stage4: "Stage 4 of 4 — Rewriting the abstract",
+                        };
+                        const msgs = gsStageMessages[gsStatus.status] || [];
+                        const currentMsg = msgs[gsMessageIndex % msgs.length] || "Working…";
+                        return (
+                          <div className="flex items-start gap-3">
+                            <Loader2 className="h-5 w-5 animate-spin text-primary shrink-0 mt-0.5" />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between gap-2 flex-wrap">
+                                <p className="font-medium text-sm">{stageHeaders[gsStatus.status]}</p>
+                                <span className="text-xs text-muted-foreground tabular-nums">elapsed {formatElapsed(gsElapsedSec)}</span>
+                              </div>
+                              <p className="text-sm text-foreground mt-1 transition-opacity duration-300" key={gsMessageIndex}>{currentMsg}</p>
+                              <p className="text-xs text-muted-foreground mt-1">Several agents work in parallel — this can take a few minutes. The page updates automatically when each stage finishes.</p>
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        );
+                      })()}
 
                       {/* Error */}
                       {gsStatus.status === "error" && (

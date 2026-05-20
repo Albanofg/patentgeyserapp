@@ -6012,34 +6012,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ message: "Project is missing required data. Complete Modules 1–4 first." });
       }
 
-      // Mark as running
+      // Mark as running and seed the workflow record. The frontend polls /status to
+      // drive its progress UI, so this initial write needs to be visible before we
+      // start the AI work.
       const existing = (a5Data?.data ?? {}) as any;
       const runningState = {
         status: "running_stage1",
         startedAt: new Date().toISOString(),
       };
       await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...existing, genusSpecies: runningState } });
-      res.json({ success: true, status: "running_stage1" });
 
-      // Run stages 1 + 2 asynchronously so the HTTP response returns immediately.
-      (async () => {
-        const currentA5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
-        try {
-          const genusResult = await runGenusExtraction({ coreIdea, expandedConcept, existingKeyConcepts });
-          if (!genusResult.success) {
-            await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...currentA5, genusSpecies: { status: "error", error: genusResult.error } } });
-            return;
-          }
-          await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...currentA5, genusSpecies: { ...runningState, status: "running_stage2", genus: genusResult.genus } } });
-
-          const species = await runSpeciesSynthesis({ genus: genusResult.genus });
-          const nextA5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
-          await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...nextA5, genusSpecies: { ...nextA5.genusSpecies, status: "awaiting_gate1", species } } });
-        } catch (e: any) {
+      // Run stages 1 + 2 SYNCHRONOUSLY inside the request handler. The previous
+      // fire-and-forget IIFE pattern was unsafe on Vercel serverless: as soon as
+      // res.json() sent, the runtime would terminate the function and any
+      // background work — including the DB write that flips status to
+      // awaiting_gate1 — was racing the shutdown. By awaiting the full pipeline
+      // before responding, the function stays alive (up to vercel.json's
+      // maxDuration of 800s) for the entire run, and we never ship a half-saved
+      // workflow. Incremental DB writes between stages are kept as belt-and-
+      // suspenders in case maxDuration is hit on a future longer run.
+      try {
+        const genusResult = await runGenusExtraction({ coreIdea, expandedConcept, existingKeyConcepts });
+        if (!genusResult.success) {
           const errA5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
-          await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...errA5, genusSpecies: { ...errA5.genusSpecies, status: "error", error: e?.message || "Stage 1/2 failed" } } });
+          await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...errA5, genusSpecies: { status: "error", error: genusResult.error } } });
+          return res.status(500).json({ success: false, status: "error", message: genusResult.error });
         }
-      })();
+        const postS1A5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
+        await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...postS1A5, genusSpecies: { ...runningState, status: "running_stage2", genus: genusResult.genus } } });
+
+        const species = await runSpeciesSynthesis({ genus: genusResult.genus });
+        const postS2A5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
+        await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...postS2A5, genusSpecies: { ...postS2A5.genusSpecies, status: "awaiting_gate1", species } } });
+
+        res.json({ success: true, status: "awaiting_gate1" });
+      } catch (e: any) {
+        const errA5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
+        await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...errA5, genusSpecies: { ...errA5.genusSpecies, status: "error", error: e?.message || "Stage 1/2 failed" } } });
+        return res.status(500).json({ success: false, status: "error", message: e?.message || "Stage 1/2 failed" });
+      }
     } catch (error: any) {
       console.error("[genus-species] start error:", error);
       res.status(500).json({ message: error.message || "Failed to start expansion" });
@@ -6081,38 +6092,55 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...a5, genusSpecies: { ...gsState, status: "running_stage3", approvedSpecies } } });
-      res.json({ success: true, status: "running_stage3", approvedSpecies: approvedSpecies.length });
 
-      // Stages 3 + 4 async
-      (async () => {
-        try {
-          const [a2Data, a4Data] = await Promise.all([storage.getAgentData(req.params.id, 2), storage.getAgentData(req.params.id, 4)]);
-          const a2 = (a2Data?.data ?? {}) as any;
-          const a4 = (a4Data?.data ?? {}) as any;
-          const currentA5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
-          const gs = currentA5.genusSpecies || {};
+      // Run stages 3 + 4 SYNCHRONOUSLY inside the request handler. See the
+      // matching comment in /start for the rationale: fire-and-forget IIFEs
+      // were racing Vercel's post-response function termination and losing
+      // the final upsert that flips status to awaiting_gate2. Awaiting the
+      // full pipeline before responding guarantees the function stays alive
+      // for the entire run (up to vercel.json's maxDuration of 800s).
+      try {
+        const [a2Data, a4Data] = await Promise.all([storage.getAgentData(req.params.id, 2), storage.getAgentData(req.params.id, 4)]);
+        const a2 = (a2Data?.data ?? {}) as any;
+        const a4 = (a4Data?.data ?? {}) as any;
+        const currentA5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
+        const gs = currentA5.genusSpecies || {};
 
-          const existingKeyConcepts: string[] = (a4?.selectedKeyConcepts || []).map((c: any) => c?.text || "").filter(Boolean);
-          const existingBackground: string = a2?.background || "";
-          const existingSummary: string = a2?.summary || "";
-          const existingDetailedDescription: string = a2?.provisionalDraft || a2?.draftSpecification || "";
+        const existingKeyConcepts: string[] = (a4?.selectedKeyConcepts || []).map((c: any) => c?.text || "").filter(Boolean);
+        const existingBackground: string = a2?.background || "";
+        const existingSummary: string = a2?.summary || "";
+        const existingDetailedDescription: string = a2?.provisionalDraft || a2?.draftSpecification || "";
 
-          const stage3 = await runStage3({ existingKeyConcepts, genus: gs.genus, approvedSpecies, existingBackground, existingSummary, existingDetailedDescription });
-          const postS3A5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
-          await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...postS3A5, genusSpecies: { ...postS3A5.genusSpecies, status: "running_stage4", ...stage3 } } });
+        const stage3 = await runStage3({ existingKeyConcepts, genus: gs.genus, approvedSpecies, existingBackground, existingSummary, existingDetailedDescription });
+        const postS3A5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
+        await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...postS3A5, genusSpecies: { ...postS3A5.genusSpecies, status: "running_stage4", ...stage3 } } });
 
-          const assembledSpec = [existingDetailedDescription, ...stage3.broadenings.map((b: any) => b.broadened_concept_text), stage3.backgroundExtension.additional_paragraphs, stage3.summaryExtension.additional_paragraphs].join("\n\n");
-          const a1Data = await storage.getAgentData(req.params.id, 1);
-          const originalAbstract: string = (a1Data?.data as any)?.abstract || "";
+        // Stage 4 input: include the broadened content so the abstract reflects expanded scope.
+        const stage3BgText = (stage3.backgroundExtension && typeof stage3.backgroundExtension === "object" && "additional_paragraphs" in stage3.backgroundExtension)
+          ? (stage3.backgroundExtension as any).additional_paragraphs
+          : (typeof stage3.backgroundExtension === "string" ? stage3.backgroundExtension : "");
+        const stage3SummaryText = (stage3.summaryExtension && typeof stage3.summaryExtension === "object" && "additional_paragraphs" in stage3.summaryExtension)
+          ? (stage3.summaryExtension as any).additional_paragraphs
+          : (typeof stage3.summaryExtension === "string" ? stage3.summaryExtension : "");
+        const assembledSpec = [
+          existingDetailedDescription,
+          ...stage3.broadenings.map((b: any) => b.broadened_concept_text).filter(Boolean),
+          stage3BgText,
+          stage3SummaryText,
+        ].filter(Boolean).join("\n\n");
+        const a1Data = await storage.getAgentData(req.params.id, 1);
+        const originalAbstract: string = (a1Data?.data as any)?.abstract || "";
 
-          const abstractRewrite = await runAbstractRewrite({ originalAbstract, assembledSpec, approvedSpecies, genus: gs.genus });
-          const postS4A5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
-          await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...postS4A5, genusSpecies: { ...postS4A5.genusSpecies, status: "awaiting_gate2", abstractRewrite } } });
-        } catch (e: any) {
-          const errA5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
-          await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...errA5, genusSpecies: { ...errA5.genusSpecies, status: "error", error: e?.message || "Stage 3/4 failed" } } });
-        }
-      })();
+        const abstractRewrite = await runAbstractRewrite({ originalAbstract, assembledSpec, approvedSpecies, genus: gs.genus });
+        const postS4A5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
+        await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...postS4A5, genusSpecies: { ...postS4A5.genusSpecies, status: "awaiting_gate2", abstractRewrite } } });
+
+        res.json({ success: true, status: "awaiting_gate2", approvedSpecies: approvedSpecies.length });
+      } catch (e: any) {
+        const errA5 = ((await storage.getAgentData(req.params.id, 5))?.data ?? {}) as any;
+        await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...errA5, genusSpecies: { ...errA5.genusSpecies, status: "error", error: e?.message || "Stage 3/4 failed" } } });
+        return res.status(500).json({ success: false, status: "error", message: e?.message || "Stage 3/4 failed" });
+      }
     } catch (error: any) {
       console.error("[genus-species] approve-species error:", error);
       res.status(500).json({ message: error.message || "Failed to process species approval" });
