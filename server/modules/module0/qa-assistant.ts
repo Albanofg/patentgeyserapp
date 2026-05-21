@@ -626,6 +626,26 @@ function friendlyStageLabel(stage: number | null | undefined, substage: string |
   return null;
 }
 
+// Map a human_input tag to a log entryType the bucketing UI understands.
+// The mapping uses the Pannu factor semantics: conception/quality/known-
+// concepts tags become inventorship-defending entries (pohc_answer or
+// conception/contribution). Anything else falls into a generic
+// "human_input" bucket that still shows up in the total count.
+function entryTypeForHumanInputTags(tags: string[]): string {
+  if (!Array.isArray(tags) || tags.length === 0) return "human_input";
+  const has = (t: string) => tags.includes(t);
+  if (has("conception_timeline") || has("conception_mechanism") || has("problem_narrative")) {
+    return "conception";
+  }
+  if (has("technical_advance") || has("vs_obvious_combo") || has("implementation_detail")) {
+    return "contribution";
+  }
+  if (has("prior_art_awareness") || has("differentiation") || has("whitespace_rationale")) {
+    return "first_conceptual_leap";
+  }
+  return "human_input";
+}
+
 export async function getQALog(projectId: string, includeDismissed = false) {
   // Load all rows (including dismissed) so display ids are stable across calls.
   const all = await db
@@ -682,9 +702,54 @@ export async function getQALog(projectId: string, includeDismissed = false) {
     };
   });
 
-  return includeDismissed
+  // Merge in the human-input ledger. The AI Helper only sees what it
+  // recordEntry'd into coachLogEntries — but every textarea answer the user
+  // types across the app lands in human_inputs (the "Invention Record"
+  // source). Without merging, "What I know" comes up empty even though the
+  // Invention Record is full. We synthesize a coachLog-shaped row per
+  // human_input so the modal's counts reflect everything the platform has
+  // captured.
+  let mergedHuman: any[] = [];
+  try {
+    const { listHumanInputs } = await import("../human-inputs/ledger");
+    const { friendlySourceLabel } = await import("../human-inputs/tags");
+    const inputs = await listHumanInputs({ projectId });
+    mergedHuman = inputs.map((row: any, i: number) => {
+      const tags: string[] = Array.isArray(row.tags) ? row.tags : [];
+      const sourceLabel = friendlySourceLabel(String(row.source || ""));
+      return {
+        id: `human_${row.id}`,
+        projectId,
+        entryType: entryTypeForHumanInputTags(tags),
+        verbatimText: row.answerText,
+        tags: [...tags, ...(row.conceptId ? [String(row.conceptId)] : [])],
+        sourceMessageId: null,
+        capturedAt: row.updatedAt || row.createdAt || new Date(),
+        dismissedAt: null,
+        displayId: `human_${pad4(i + 1)}`,
+        capturedAtStage: null,
+        capturedAtSubstage: null,
+        capturedAtLabel: sourceLabel,
+        capturedAtTrail: sourceLabel || null,
+        _source: "human_inputs" as const,
+      };
+    });
+  } catch (mergeErr: any) {
+    console.warn("[qa-assistant] human_inputs merge failed:", mergeErr?.message);
+  }
+
+  const base = includeDismissed
     ? withDisplay
     : withDisplay.filter((row) => row.dismissedAt === null);
+
+  // Sort the combined list chronologically so the modal shows a coherent
+  // timeline regardless of which store each entry came from.
+  const combined = [...base, ...mergedHuman].sort((a: any, b: any) => {
+    const ta = new Date(a.capturedAt || 0).getTime();
+    const tb = new Date(b.capturedAt || 0).getTime();
+    return ta - tb;
+  });
+  return combined;
 }
 
 export async function getQAOpenQuestions(projectId: string, includeAnswered = false) {
@@ -1128,6 +1193,42 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
       })
       .returning();
     assistantMessageId = assistantMsg.id;
+
+    // SAFETY-NET MIRROR — every user message that arrives while a leap is in
+    // progress is also written to the human_inputs ledger. The prompt's
+    // PHASE 4 TURN B ACCEPTANCE is strict: a response that uses only the
+    // scaffold's key terms (e.g. "multi-dimensional tolerance matrix" defined
+    // in Turn A) fails the "own voice" check, so the AI continues probing
+    // and never fires recordEntry on that answer — the technically rich
+    // initial answer can be lost. Mirroring to human_inputs guarantees the
+    // ledger captures it regardless of the AI's acceptance verdict, and the
+    // "What I know" modal + Pannu pre-fill both see it.
+    if (routing.currentLeapPhase === "turn_b_pending" && routing.currentLeapTarget) {
+      try {
+        const { recordHumanInput } = await import("../human-inputs/ledger");
+        // Tag set chosen so the Pannu pre-fill engine picks the message up
+        // under the right factor for whichever phase the leap belongs to.
+        const stage = pc.currentStage ?? null;
+        const phaseTags: string[] =
+          stage === 4 ? ["whitespace_rationale", "differentiation"] :
+          stage === 6 ? ["technical_advance", "implementation_detail"] :
+          stage === 7 ? ["conception_mechanism", "conception_timeline"] :
+          stage === 2 ? ["conception_mechanism"] :
+          ["free_text"];
+        await recordHumanInput({
+          projectId: projectId!,
+          source: "module0/qa-assistant",
+          // Unique per message so we don't overwrite earlier attempts.
+          sourceRefId: `chat_${userMsg.id}`,
+          promptText: `Leap response for ${routing.currentLeapTarget}`,
+          answerText: payload.message,
+          tags: phaseTags,
+          conceptId: String(routing.currentLeapTarget),
+        });
+      } catch (mirrorErr: any) {
+        console.warn("[qa-assistant] leap-message mirror to human_inputs failed:", mirrorErr?.message);
+      }
+    }
   }
 
   const toolCtx: ToolContext = {

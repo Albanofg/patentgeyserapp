@@ -6351,7 +6351,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/projects/:id/genus-species/status", isAuthenticated, async (req, res) => {
     try {
       const a5Data = await storage.getAgentData(req.params.id, 5);
-      const gs = ((a5Data?.data ?? {}) as any)?.genusSpecies ?? { status: "idle" };
+      const a5 = (a5Data?.data ?? {}) as any;
+      const gs = a5?.genusSpecies ?? { status: "idle" };
+
+      // Staleness check — if the workflow has been sitting in a running_*
+      // state for more than 15 minutes, the function that was driving it is
+      // certainly dead (Vercel maxDuration is 800s = ~13 min). Flip the row
+      // to "error" so the frontend renders an actionable retry button
+      // instead of an eternal spinner. This is the recovery path for the
+      // edge case where the function crashed without writing its own error.
+      const STALE_RUNNING_MS = 15 * 60 * 1000;
+      const runningStages = ["running_stage1", "running_stage2", "running_stage3", "running_stage4"];
+      if (runningStages.includes(gs.status) && gs.startedAt) {
+        const startedMs = Date.parse(gs.startedAt);
+        if (Number.isFinite(startedMs) && Date.now() - startedMs > STALE_RUNNING_MS) {
+          const failed = {
+            ...gs,
+            status: "error" as const,
+            error: "The previous run timed out or was interrupted. Click Run Genus & Species Expansion to try again.",
+            staleAt: new Date().toISOString(),
+          };
+          // Persist so subsequent polls don't have to re-detect.
+          await storage.upsertAgentData({
+            projectId: req.params.id,
+            agentNumber: 5,
+            data: { ...a5, genusSpecies: failed },
+          });
+          return res.json(failed);
+        }
+      }
+
       res.json(gs);
     } catch (error: any) {
       res.status(500).json({ message: error.message || "Failed to get status" });

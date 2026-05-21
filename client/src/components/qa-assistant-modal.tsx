@@ -3,9 +3,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Send, User, Loader2, X, Copy, Check, Brain, ChevronDown, ChevronUp } from "lucide-react";
+import { Send, User, Loader2, X, Copy, Check, Brain } from "lucide-react";
 import aiHelperAvatar from "@/assets/ai-helper-avatar.png";
 import { getCurrentPageSnapshot } from "@/lib/page-snapshot";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 
 interface CoachMessage {
   id: string;
@@ -222,10 +223,39 @@ export function QAAssistantPanel({
     }
   };
 
-  const logBreakdown: Record<string, number> = log.reduce((acc: any, e: any) => {
-    acc[e.entryType] = (acc[e.entryType] ?? 0) + 1;
-    return acc;
-  }, {});
+  // Bucket entries by their semantic role. Counts were previously stuck at 0
+  // because the reducer keyed by raw entryType ("pohc_answer", "first_conceptual_leap",
+  // etc.) while the UI read `logBreakdown.pohc / .leap / .both` — different
+  // strings, no match. The real entryTypes are defined in the AI Helper prompt's
+  // recordEntry tool spec and are stable categorical labels we group here.
+  //
+  // POHC bucket: entries that defend Proof of Human Conception — direct PoHC
+  //   answers and the conception/contribution facts captured throughout the flow.
+  // LEAP bucket: entries that capture the inventor's conceptual leap in their
+  //   own words from White Space (Phase 4) and Genus & Species (Phase 6) edits.
+  // BOTH bucket: entries that play a dual role — typically Phase 6/7 leaps that
+  //   are also tagged to a Key Concept Set, satisfying both inventorship
+  //   evidence and conceptual-leap capture from a single entry.
+  const POHC_TYPES = new Set(["pohc_answer", "conception", "contribution"]);
+  const LEAP_TYPES = new Set(["first_conceptual_leap"]);
+  const logBreakdown = log.reduce(
+    (acc: { pohc: number; leap: number; both: number; total: number }, e: any) => {
+      const t = String(e?.entryType || "");
+      const tags: string[] = Array.isArray(e?.tags) ? e.tags.map((x: any) => String(x)) : [];
+      const inPohc = POHC_TYPES.has(t);
+      const inLeap = LEAP_TYPES.has(t);
+      // A leap that is also tagged to a Key Concept Set (or to a PoHC
+      // dimension like "_conception" / "_contribution_quality") serves both
+      // roles, per the prompt's cross-phase reuse pattern.
+      const isBoth = inLeap && tags.some((tg) => /^Key Concept Set\b/i.test(tg) || /_conception$|_contribution_quality$|_exceeding_known$/.test(tg));
+      if (isBoth) acc.both++;
+      else if (inPohc) acc.pohc++;
+      else if (inLeap) acc.leap++;
+      acc.total++;
+      return acc;
+    },
+    { pohc: 0, leap: 0, both: 0, total: 0 },
+  );
 
   return (
     <div className="flex flex-col h-full w-full bg-background" data-testid="ai-helper-panel">
@@ -240,13 +270,11 @@ export function QAAssistantPanel({
             variant="ghost"
             size="sm"
             className="h-8 gap-1.5 px-2 text-xs font-normal"
-            onClick={() => setMemoryOpen((v) => !v)}
+            onClick={() => setMemoryOpen(true)}
             data-testid="button-toggle-memory"
-            aria-expanded={memoryOpen}
           >
             <Brain className="h-3.5 w-3.5" />
             What I know
-            {memoryOpen ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
           </Button>
           <Button
             variant="ghost"
@@ -258,11 +286,22 @@ export function QAAssistantPanel({
             <X className="h-4 w-4" />
           </Button>
         </div>
-        {memoryOpen && (
-          <div
-            className="px-4 py-4 text-sm border-t border-border/50 bg-muted/30 space-y-4"
-            data-testid="memory-panel"
-          >
+      </div>
+
+      {/* "What I know" — modal so the trigger button can sit next to the
+          panel's X-close without accidental closures while the user is
+          exploring memory state. */}
+      <Dialog open={memoryOpen} onOpenChange={setMemoryOpen}>
+        <DialogContent className="max-w-md" data-testid="memory-panel">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Brain className="h-4 w-4" /> What I know
+            </DialogTitle>
+            <DialogDescription>
+              Everything the AI Helper has captured about your project so far.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="text-sm space-y-4">
             <section>
               <div className="flex items-baseline justify-between mb-1">
                 <h3 className="font-semibold text-foreground">Invention log</h3>
@@ -339,8 +378,8 @@ export function QAAssistantPanel({
               </Button>
             </section>
           </div>
-        )}
-      </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Messages */}
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4" ref={scrollRef}>
