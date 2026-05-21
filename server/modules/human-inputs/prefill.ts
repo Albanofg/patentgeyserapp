@@ -87,9 +87,13 @@ export async function buildPannuPrefill(args: {
   conceptId?: string | null;
   claimText?: string | null;
   factorQuestions?: Partial<Record<PannuFactor, string>>;
-  // When true, run the AI summarizer per factor; when false, return the
-  // deterministic concatenation only (legacy behavior).
+  // When true, run the AI summarizer; when false, return the deterministic
+  // concatenation only (legacy behavior).
   summarize?: boolean;
+  // When set, only this factor is summarized. The other two return the
+  // deterministic concatenation. Lets the UI summarize-on-click without
+  // burning Flash calls on factors the user isn't editing.
+  summarizeFactor?: PannuFactor | null;
 }): Promise<PrefillResult> {
   const fromLedger = await readFromLedger(args);
   const fromAgentData = await readFromAgentData(args);
@@ -129,54 +133,50 @@ export async function buildPannuPrefill(args: {
     known_concepts: { sources: factors.known_concepts.sources.length, coverage: factors.known_concepts.coverage },
   });
 
-  // Optional AI polishing pass. Runs in parallel across the three factors.
+  // Optional AI polishing pass. Runs SEQUENTIALLY across the three factors
+  // (one Flash call at a time) to keep model load predictable and to avoid
+  // hammering the provider with three concurrent large-payload requests.
   // Each factor falls back to its deterministic concatenation if the
   // summarizer fails or if there are no sources.
   if (args.summarize) {
     const claimText = (args.claimText ?? "").trim();
-    const factorEntries: PohcFactor[] = ["conception", "quality", "known_concepts"];
-    await Promise.all(
-      factorEntries.map(async (factor) => {
-        const f = factors[factor];
-        if (!f.sources || f.sources.length === 0) return;
-        const rawSourceText = f.sources.map((s) => s.text).join("\n\n");
-        const sourceBreakdown = f.sources.map((s) => ({
-          text: s.text,
-          tag: factor,
-          source: s.source,
-          charCount: s.text.length,
-        }));
-        const question = args.factorQuestions?.[factor] || fallbackFactorQuestion(factor);
-        const result = await runFactorSummarizer({
-          factor,
-          factor_question: question,
-          factor_definition: factorDefinition(factor),
-          claim_text: claimText,
-          raw_source_text: rawSourceText,
-          source_breakdown: sourceBreakdown,
-        });
-        if (result.success) {
-          const r = result.result;
-          // Never regress the button: if the summarizer says insufficient,
-          // keep the deterministic concatenation as the usable draft. The
-          // `insufficient` + `missing` fields still flow to the UI so we can
-          // show an honesty hint above the textarea without killing the
-          // "use what I already wrote" affordance.
-          factors[factor] = {
-            ...f,
-            raw_draft: f.draft,
-            draft: r.insufficient ? f.draft : r.draft,
-            summarized: !r.insufficient,
-            insufficient: r.insufficient,
-            missing: r.missing,
-            quote_seeds: r.quote_seeds,
-          };
-        } else {
-          // Leave deterministic draft in place; mark as not summarized.
-          factors[factor] = { ...f, summarized: false };
-        }
-      }),
-    );
+    const factorEntries: PohcFactor[] = args.summarizeFactor
+      ? [args.summarizeFactor]
+      : ["conception", "quality", "known_concepts"];
+    for (const factor of factorEntries) {
+      const f = factors[factor];
+      if (!f.sources || f.sources.length === 0) continue;
+      const rawSourceText = f.sources.map((s) => s.text).join("\n\n");
+      const sourceBreakdown = f.sources.map((s) => ({
+        text: s.text,
+        tag: factor,
+        source: s.source,
+        charCount: s.text.length,
+      }));
+      const question = args.factorQuestions?.[factor] || fallbackFactorQuestion(factor);
+      const result = await runFactorSummarizer({
+        factor,
+        factor_question: question,
+        factor_definition: factorDefinition(factor),
+        claim_text: claimText,
+        raw_source_text: rawSourceText,
+        source_breakdown: sourceBreakdown,
+      });
+      if (result.success) {
+        const r = result.result;
+        factors[factor] = {
+          ...f,
+          raw_draft: f.draft,
+          draft: r.insufficient ? f.draft : r.draft,
+          summarized: !r.insufficient,
+          insufficient: r.insufficient,
+          missing: r.missing,
+          quote_seeds: r.quote_seeds,
+        };
+      } else {
+        factors[factor] = { ...f, summarized: false };
+      }
+    }
   }
 
   return {

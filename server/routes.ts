@@ -6634,6 +6634,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const conceptId = typeof req.query.conceptId === "string" ? req.query.conceptId : null;
       const summarize = req.query.summarize !== "false"; // default true
+      const factorParam = typeof req.query.factor === "string" ? req.query.factor : null;
+      const summarizeFactor =
+        factorParam === "conception" || factorParam === "quality" || factorParam === "known_concepts"
+          ? factorParam
+          : null;
 
       // Pull the concept's text + per-factor questions from the existing
       // pannu_record so the summarizer has topic-lock and per-factor question
@@ -6668,6 +6673,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         claimText,
         factorQuestions,
         summarize,
+        summarizeFactor,
       });
       res.json(prefill);
     } catch (error: any) {

@@ -1012,7 +1012,7 @@ export default function Agent4Pannu() {
                                 setLoadingAiSuggestion(prefillBusyKey);
                                 try {
                                   const res = await fetch(
-                                    `/api/projects/${projectId}/pannu/prefill?conceptId=${encodeURIComponent(claim.conceptId)}&summarize=true`,
+                                    `/api/projects/${projectId}/pannu/prefill?conceptId=${encodeURIComponent(claim.conceptId)}&summarize=true&factor=${encodeURIComponent(q.factor)}`,
                                     { credentials: "include" },
                                   );
                                   let polished = prefillDraft;
