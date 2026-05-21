@@ -409,6 +409,35 @@ export default function Agent5() {
     },
   });
 
+  // PoHC export — the private inventorship-record DOCX. Carries a red
+  // "do not upload this file with your patent" warning inside.
+  const exportPohcMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch(`/api/projects/${projectId}/export-pohc-docx`, {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Failed to export PoHC");
+      return await response.blob();
+    },
+    onSuccess: (blob: Blob) => {
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `pohc-${project?.title || projectId}.docx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      toast({
+        title: "PoHC record downloaded",
+        description: "Keep this file private — do not upload it with your patent.",
+      });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Couldn't export PoHC", description: e.message });
+    },
+  });
+
   const exportDOCXMutation = useMutation({
     mutationFn: async () => {
       const response = await fetch(`/api/projects/${projectId}/export-docx`, {
@@ -1045,6 +1074,47 @@ export default function Agent5() {
                     {!hasDiagramsReady && (
                       <TooltipContent>
                         Generate diagrams first — the provisional draft includes your drawings.
+                      </TooltipContent>
+                    )}
+                  </Tooltip>
+                );
+              })()}
+
+              {/* Proof of Human Conception — same prominence as Download
+                  Provisional Draft. Both gate on the same condition (diagrams
+                  ready) so they enable together. */}
+              {(() => {
+                const hasDiagramsReady = diagrams.length > 0;
+                const pohcDisabled = exportPohcMutation.isPending || !hasDiagramsReady;
+                return (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="w-full sm:w-auto">
+                        <Button
+                          size="lg"
+                          variant="outline"
+                          className="w-full text-base"
+                          data-testid="button-download-pohc"
+                          onClick={() => exportPohcMutation.mutate()}
+                          disabled={pohcDisabled}
+                        >
+                          {exportPohcMutation.isPending ? (
+                            <>
+                              <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                              Exporting...
+                            </>
+                          ) : (
+                            <>
+                              <Download className="h-5 w-5 mr-2" />
+                              Download Proof of Human Conception
+                            </>
+                          )}
+                        </Button>
+                      </span>
+                    </TooltipTrigger>
+                    {!hasDiagramsReady && (
+                      <TooltipContent>
+                        Generate diagrams first — Proof of Human Conception unlocks alongside the provisional draft download.
                       </TooltipContent>
                     )}
                   </Tooltip>
