@@ -176,6 +176,72 @@ async function callEraser(
   };
 }
 
+// Per-diagram regeneration: re-runs Eraser for a single previously-generated
+// diagram using its stored spec. Used by the per-card "Regenerate" button so
+// the user can recover a single failed render without rerunning the planner
+// and re-doing the other N-1 diagrams.
+export async function regenerateSingleDiagram(args: {
+  existing: any; // a single entry from the stored diagrams array
+}) {
+  const d = args.existing || {};
+  const chartNumber = d.chartNumber ?? null;
+  const diagramTitle = d.title || `Diagram ${chartNumber ?? ""}`.trim();
+  const figureId = d.figureId || null;
+  const diagramType = d.diagramType || "flowchart-diagram";
+
+  // Build the Eraser prompt from whatever spec the stored diagram carries.
+  // Prefer the already-generated diagramCode (most common, transient Eraser
+  // failure case). Fall back to re-running buildEraserPrompt against the
+  // stored components if the code itself was never generated.
+  let userPrompt: string;
+  if (typeof d.diagramCode === "string" && d.diagramCode.trim().length > 0) {
+    userPrompt = d.diagramCode;
+  } else {
+    const built = buildEraserPrompt(d);
+    userPrompt = built.userPrompt;
+  }
+
+  try {
+    const eraserResp = await callEraser(userPrompt, diagramType);
+    const markdown = eraserResp.imageUrl
+      ? `![Flowchart](${eraserResp.imageUrl})\n\n**[Edit in Eraser](${eraserResp.editLink || ""})**`
+      : "";
+    return {
+      success: !!eraserResp.imageUrl,
+      diagram: {
+        ...d,
+        chartNumber,
+        title: diagramTitle,
+        figureId,
+        diagramType,
+        imageUrl: eraserResp.imageUrl,
+        editLink: eraserResp.editLink,
+        diagramCode: eraserResp.diagramCode || d.diagramCode || null,
+        markdown,
+        success: !!eraserResp.imageUrl,
+        error: eraserResp.imageUrl ? undefined : "Eraser returned no image",
+      },
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      diagram: {
+        ...d,
+        chartNumber,
+        title: diagramTitle,
+        figureId,
+        diagramType,
+        imageUrl: null,
+        editLink: null,
+        diagramCode: d.diagramCode || null,
+        markdown: "",
+        success: false,
+        error: err?.message || String(err),
+      },
+    };
+  }
+}
+
 export async function runDiagrams(payload: DiagramsPayload) {
   console.log(">>> [M5-5b DIAGRAMS] <<< Generating patent diagrams");
 

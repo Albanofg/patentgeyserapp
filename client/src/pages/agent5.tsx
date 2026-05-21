@@ -15,6 +15,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { AgentHeader } from "@/components/agent-header";
@@ -309,6 +310,31 @@ export default function Agent5() {
     }
   }, [agent5Data]);
 
+  // Per-diagram regeneration — surfaced on every diagram card so users can
+  // recover a single failed render without rerunning the planner and
+  // re-rendering the other diagrams. Mirrors the per-artifact Regenerate
+  // flow on the G&S Gate 2 panel.
+  const [gsDiagramRegenInFlight, setGsDiagramRegenInFlight] = useState<Record<number, boolean>>({});
+  const regenerateDiagramMutation = useMutation({
+    mutationFn: async (chartNumber: number) => {
+      const res = await apiRequest("POST", `/api/projects/${projectId}/regenerate-diagram`, { chartNumber });
+      return { chartNumber, res };
+    },
+    onMutate: (chartNumber: number) => {
+      setGsDiagramRegenInFlight((p) => ({ ...p, [chartNumber]: true }));
+    },
+    onSuccess: (_d, chartNumber) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 5] });
+      toast({ title: "Diagram regenerated", description: `Diagram ${chartNumber} refreshed.` });
+    },
+    onError: (e: Error, chartNumber) => {
+      toast({ title: `Diagram ${chartNumber} regeneration failed`, description: e.message });
+    },
+    onSettled: (_d, _e, chartNumber) => {
+      setGsDiagramRegenInFlight((p) => { const n = { ...p }; delete n[chartNumber]; return n; });
+    },
+  });
+
   const generateDiagramsMutation = useMutation({
     mutationFn: async () => {
       await apiRequest("POST", `/api/projects/${projectId}/generate-showcase`, {});
@@ -445,9 +471,107 @@ export default function Agent5() {
     const a5 = agent5Data as any;
     const sections = (specSections || []) as Array<{ key: string; label: string; content: string }>;
     const diagrams = (a5?.diagrams || a5?.data?.diagrams || []) as any[];
+    const gs = gsStatus as any;
+    const gsStatusStr: string = gs?.status || "idle";
 
     const items: NonNullable<PageSnapshot["items"]> = [];
     const drafts: Record<string, string> = {};
+
+    // ── Genus & Species items ─────────────────────────────────────────
+    // Surface enough state that the AI Helper can answer questions like
+    // "what's G&S doing right now?", "should I keep this broadened concept?",
+    // "why is this artifact empty?", "what's the difference between species?"
+    items.push({
+      id: "genus_species_workflow",
+      type: "workflow",
+      status: gsStatusStr as any,
+      editable: false,
+      content: {
+        label: "Genus & Species Expansion",
+        statusDescription: ({
+          idle: "Not started — user can run G&S to broaden their key concepts.",
+          running_stage1: "Stage 1 of 4: Extracting the core paradigm-neutral genus from the invention.",
+          running_stage2: "Stage 2 of 4: Synthesising AI-assisted, AI-native, and agentic species implementations.",
+          awaiting_gate1: "Awaiting user approval of species at Gate 1.",
+          running_stage3: "Stage 3 of 4: Broadening each existing key concept and extending the Background/Summary/Detailed Description sections.",
+          running_stage4: "Stage 4 of 4: Rewriting the abstract to cover the broadened scope.",
+          awaiting_gate2: "Awaiting user approval of broadened artifacts at Gate 2 (Keep / Edit / Remove / Regenerate per item).",
+          complete: "Complete — final expanded spec has been written into the provisional draft.",
+          error: "Failed — see error message and re-run.",
+        } as Record<string, string>)[gsStatusStr] || gsStatusStr,
+        genusName: gs?.genus?.genus_name ?? null,
+        speciesCount: Array.isArray(gs?.species) ? gs.species.length : 0,
+        approvedSpeciesCount: Array.isArray(gs?.approvedSpecies) ? gs.approvedSpecies.length : 0,
+        broadeningsCount: Array.isArray(gs?.broadenings) ? gs.broadenings.length : 0,
+        broadeningsEmpty: Array.isArray(gs?.broadenings)
+          ? gs.broadenings.filter((b: any) => !b?.broadened_concept_text).length
+          : 0,
+        appendingsCount: Array.isArray(gs?.appendings) ? gs.appendings.length : 0,
+        appendingsEmpty: Array.isArray(gs?.appendings)
+          ? gs.appendings.filter((a: any) => !a?.key_concept_text).length
+          : 0,
+        hasBackgroundExtension: !!(gs?.backgroundExtension?.additional_paragraphs || (typeof gs?.backgroundExtension === "string" && gs.backgroundExtension)),
+        hasSummaryExtension: !!(gs?.summaryExtension?.additional_paragraphs || (typeof gs?.summaryExtension === "string" && gs.summaryExtension)),
+        hasAbstractRewrite: !!gs?.abstractRewrite?.abstract_text,
+        abstractWordCount: gs?.abstractRewrite?.word_count ?? null,
+        error: gs?.error ?? null,
+      },
+    });
+
+    // At Gate 1, list the species cards being reviewed
+    if (gsStatusStr === "awaiting_gate1" && Array.isArray(gs?.species)) {
+      gs.species.forEach((s: any, i: number) => {
+        items.push({
+          id: `gs_species_${s?.species_type || i}`,
+          type: "gs_species",
+          editable: false,
+          content: {
+            species_type: s?.species_type,
+            failed: !!s?.failed,
+            architectural_description_length: typeof s?.architectural_description === "string" ? s.architectural_description.length : 0,
+          },
+        });
+      });
+    }
+
+    // At Gate 2, list every artifact being reviewed (with which are empty)
+    if (gsStatusStr === "awaiting_gate2") {
+      (gs?.broadenings || []).forEach((b: any, i: number) => {
+        items.push({
+          id: `gs_broadening_${i}`,
+          type: "gs_artifact",
+          editable: false,
+          content: {
+            kind: "broadening",
+            original_key_concept: b?.original_key_concept ?? null,
+            empty: !b?.broadened_concept_text,
+            length: typeof b?.broadened_concept_text === "string" ? b.broadened_concept_text.length : 0,
+          },
+        });
+      });
+      (gs?.appendings || []).forEach((a: any, i: number) => {
+        items.push({
+          id: `gs_appending_${i}`,
+          type: "gs_artifact",
+          editable: false,
+          content: {
+            kind: "appending",
+            concept_aspect: a?.concept_aspect,
+            empty: !a?.key_concept_text,
+            length: typeof a?.key_concept_text === "string" ? a.key_concept_text.length : 0,
+          },
+        });
+      });
+      if (gs?.backgroundExtension) {
+        items.push({ id: "gs_background_extension", type: "gs_artifact", editable: false, content: { kind: "background_extension", empty: !(gs.backgroundExtension.additional_paragraphs || (typeof gs.backgroundExtension === "string" && gs.backgroundExtension)) } });
+      }
+      if (gs?.summaryExtension) {
+        items.push({ id: "gs_summary_extension", type: "gs_artifact", editable: false, content: { kind: "summary_extension", empty: !(gs.summaryExtension.additional_paragraphs || (typeof gs.summaryExtension === "string" && gs.summaryExtension)) } });
+      }
+      if (gs?.abstractRewrite) {
+        items.push({ id: "gs_abstract", type: "gs_artifact", editable: false, content: { kind: "abstract_rewrite", word_count: gs.abstractRewrite.word_count ?? null, empty: !gs.abstractRewrite.abstract_text } });
+      }
+    }
 
     sections.forEach((sec) => {
       const isEditing = editingSection === sec.key;
@@ -475,6 +599,59 @@ export default function Agent5() {
     });
 
     const actions: NonNullable<PageSnapshot["actions"]> = [];
+
+    // ── Genus & Species actions ───────────────────────────────────────
+    if (gsStatusStr === "idle" || gsStatusStr === "error") {
+      actions.push({
+        id: "run-genus-species",
+        label: "Run Genus & Species Expansion",
+        kind: "primary",
+        enabled: !gsStartMutation.isPending,
+        reason: gsStatusStr === "error" ? `Previous run failed: ${gs?.error || "unknown"}` : undefined,
+      });
+    }
+    if (gsStatusStr === "awaiting_gate1") {
+      actions.push({
+        id: "approve-species",
+        label: "Approve species and continue to Stage 3",
+        kind: "primary",
+        enabled: !gsApproveSpeciesMutation.isPending,
+        reason: "User must Keep / Edit / Remove each species card before clicking",
+      });
+    }
+    if (gsStatusStr === "awaiting_gate2") {
+      actions.push({
+        id: "finalize-expansion",
+        label: "Finalize Expansion (writes approved content into provisional draft)",
+        kind: "primary",
+        enabled: !gsFinalizeMutation.isPending,
+      });
+      actions.push({
+        id: "regenerate-artifact",
+        label: "Regenerate a single artifact (per-card button)",
+        kind: "secondary",
+        enabled: true,
+        reason: "Use when an artifact came back empty or the user wants a different take",
+      });
+    }
+    if (gsStatusStr === "complete") {
+      actions.push({
+        id: "apply-to-draft",
+        label: "Apply expansion to Provisional Draft",
+        kind: "secondary",
+        enabled: !applyToDraftMutation.isPending,
+      });
+    }
+    if (gsStatusStr !== "idle") {
+      actions.push({
+        id: "reset-genus-species",
+        label: "Reset Genus & Species workflow",
+        kind: "destructive",
+        enabled: true,
+        reason: "Clears all G&S state and returns to idle so the user can start over",
+      });
+    }
+
     if (editingSection) {
       actions.push({
         id: `save-spec-section`,
@@ -542,7 +719,7 @@ export default function Agent5() {
       pageName: "The Showcase (Stage 5)",
       route: `/project/${projectId}/agent/5`,
       description:
-        "User reviews and finalizes the provisional draft. Each spec section can be edited one at a time via its Pencil icon. Diagrams are read-only image cards. Available actions: generate/regenerate diagrams, download (PDF/DOCX), regenerate the full draft, go to practitioner page, or complete the project.",
+        "User reviews and finalizes the provisional draft. The page hosts the Genus & Species Expansion workflow (Stage 1 genus extraction → Stage 2 species synthesis → Gate 1 approve species → Stage 3 broaden key concepts + extend sections → Stage 4 rewrite abstract → Gate 2 approve artifacts → Apply to draft), per-section editing of the provisional draft, technical diagram generation, and downloads. The G&S workflow item carries the current status and counts; at Gate 1 the species cards are listed; at Gate 2 every broadening/appending/extension/abstract is listed with whether it came back empty.",
       items,
       drafts,
       actions,
@@ -553,6 +730,11 @@ export default function Agent5() {
     specSections,
     editingSection,
     editContent,
+    gsStatus,
+    gsStartMutation.isPending,
+    gsApproveSpeciesMutation.isPending,
+    gsFinalizeMutation.isPending,
+    applyToDraftMutation.isPending,
     saveSpecSectionMutation.isPending,
     generateDiagramsMutation.isPending,
     exportPDFMutation.isPending,
@@ -884,25 +1066,42 @@ export default function Agent5() {
             <CardContent className="px-4 sm:px-6">
               <div className="space-y-4">
                   <div className="flex justify-end">
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => regenerateDraftMutation.mutate()}
-                      disabled={regenerateDraftMutation.isPending}
-                      data-testid="button-regenerate-draft"
-                    >
-                      {regenerateDraftMutation.isPending ? (
-                        <>
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          Regenerating...
-                        </>
-                      ) : (
-                        <>
-                          <RefreshCw className="h-4 w-4 mr-2" />
-                          Re-Generate Draft
-                        </>
-                      )}
-                    </Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={regenerateDraftMutation.isPending}
+                          data-testid="button-regenerate-draft"
+                        >
+                          {regenerateDraftMutation.isPending ? (
+                            <>
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                              Regenerating...
+                            </>
+                          ) : (
+                            <>
+                              <RefreshCw className="h-4 w-4 mr-2" />
+                              Re-Generate Draft
+                            </>
+                          )}
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Re-generate the whole draft?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This will rewrite every section of your provisional draft — Title, Background, Summary, Detailed Description, Ramifications &amp; Scope, Abstract, and Key Concepts — from scratch. <strong>Any edits you've made by hand to those sections will be permanently lost.</strong> Genus &amp; Species results, diagrams, and the original record of your invention are not affected.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction onClick={() => regenerateDraftMutation.mutate()}>
+                            Yes, regenerate
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
                   </div>
                   {/* ── Genus & Species inline workflow panel ─────────── */}
                   {gsStatus && gsStatus.status !== "idle" && (
@@ -1103,21 +1302,25 @@ export default function Agent5() {
                       )}
 
                       {/* Complete */}
-                      {gsStatus.status === "complete" && gsStatus.finalSpec && (
-                        <div className="flex items-center gap-3 flex-wrap">
-                          <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-400">
-                            <CheckCircle2 className="h-4 w-4 shrink-0" />
-                            Expansion complete.
+                      {gsStatus.status === "complete" && gsStatus.finalSpec && (() => {
+                        const alreadyApplied = !!(gsStatus as any).appliedToDraft;
+                        return (
+                          <div className="flex items-center gap-3 flex-wrap">
+                            <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-400">
+                              <CheckCircle2 className="h-4 w-4 shrink-0" />
+                              {alreadyApplied ? "Expansion applied to your provisional draft." : "Expansion complete."}
+                            </div>
+                            <button
+                              onClick={() => applyToDraftMutation.mutate()}
+                              disabled={applyToDraftMutation.isPending || alreadyApplied}
+                              title={alreadyApplied ? "Already applied — applying again would duplicate the extensions" : undefined}
+                              className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              {applyToDraftMutation.isPending ? "Applying…" : alreadyApplied ? "Applied" : "Apply to Provisional Draft"}
+                            </button>
                           </div>
-                          <button
-                            onClick={() => applyToDraftMutation.mutate()}
-                            disabled={applyToDraftMutation.isPending}
-                            className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                          >
-                            {applyToDraftMutation.isPending ? "Applying…" : "Apply to Provisional Draft"}
-                          </button>
-                        </div>
-                      )}
+                        );
+                      })()}
                       {gsStatus.status === "complete" && !gsStatus.finalSpec && (
                         <p className="text-xs text-muted-foreground">No species were approved — original draft unchanged.</p>
                       )}
@@ -1264,31 +1467,45 @@ export default function Agent5() {
             </CardContent>
           </Card>
 
-          {diagrams.length === 0 && (
+          {diagrams.length === 0 && (() => {
+            const gsComplete = gsStatus?.status === "complete";
+            const disabled = generateDiagramsMutation.isPending || !gsComplete;
+            return (
             <Card className="border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800">
               <CardContent className="flex flex-col items-center justify-center py-12">
                 <ImageIcon className="h-12 w-12 text-amber-600 dark:text-amber-400 mb-4" />
                 <p className="text-amber-900 dark:text-amber-100 text-center mb-6">
                   Diagrams haven't been generated yet. Click below to generate technical diagrams.
                 </p>
-                <Button
-                  variant="default"
-                  onClick={() => generateDiagramsMutation.mutate()}
-                  disabled={generateDiagramsMutation.isPending}
-                  data-testid="button-generate-diagrams"
-                >
-                  {generateDiagramsMutation.isPending ? (
-                    <>
-                      <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-                      Generating Diagrams...
-                    </>
-                  ) : (
-                    "Generate Diagrams"
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span>
+                      <Button
+                        variant="default"
+                        onClick={() => generateDiagramsMutation.mutate()}
+                        disabled={disabled}
+                        data-testid="button-generate-diagrams"
+                      >
+                        {generateDiagramsMutation.isPending ? (
+                          <>
+                            <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                            Generating Diagrams...
+                          </>
+                        ) : (
+                          "Generate Diagrams"
+                        )}
+                      </Button>
+                    </span>
+                  </TooltipTrigger>
+                  {!gsComplete && (
+                    <TooltipContent>
+                      Run Genus &amp; Species Expansion first — drawings are generated from the expanded specification.
+                    </TooltipContent>
                   )}
-                </Button>
+                </Tooltip>
               </CardContent>
             </Card>
-          )}
+          );})()}
 
           {diagrams.length > 0 && (
             <div className="space-y-4 sm:space-y-6">
@@ -1376,15 +1593,42 @@ export default function Agent5() {
                                 <ExternalLink className="h-4 w-4 mr-1 sm:mr-2" />
                                 <span className="text-xs sm:text-sm">View Full</span>
                               </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="flex-1 min-w-25"
+                                data-testid={`button-regenerate-diagram-${index}`}
+                                onClick={() => regenerateDiagramMutation.mutate(chartNumber)}
+                                disabled={!!gsDiagramRegenInFlight[chartNumber]}
+                                title="Re-render this single diagram"
+                              >
+                                {gsDiagramRegenInFlight[chartNumber] ? <Loader2 className="h-4 w-4 mr-1 sm:mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1 sm:mr-2" />}
+                                <span className="text-xs sm:text-sm">{gsDiagramRegenInFlight[chartNumber] ? "Regenerating…" : "Regenerate"}</span>
+                              </Button>
                             </div>
                           </>
                         ) : (
-                          <div className="bg-muted rounded-lg aspect-video flex items-center justify-center border">
-                            <div className="text-center text-muted-foreground">
-                              <ImageIcon className="h-12 w-12 mx-auto mb-2" />
-                              <p className="text-sm">Diagram not available</p>
+                          <>
+                            <div className="bg-muted rounded-lg aspect-video flex items-center justify-center border">
+                              <div className="text-center text-muted-foreground">
+                                <ImageIcon className="h-12 w-12 mx-auto mb-2" />
+                                <p className="text-sm">Diagram not available</p>
+                                {diagram.error && (
+                                  <p className="text-xs text-destructive mt-1 max-w-xs mx-auto">{diagram.error}</p>
+                                )}
+                              </div>
                             </div>
-                          </div>
+                            <Button
+                              variant="default"
+                              size="sm"
+                              className="w-full"
+                              data-testid={`button-regenerate-diagram-${index}`}
+                              onClick={() => regenerateDiagramMutation.mutate(chartNumber)}
+                              disabled={!!gsDiagramRegenInFlight[chartNumber]}
+                            >
+                              {gsDiagramRegenInFlight[chartNumber] ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Regenerating…</> : <><RefreshCw className="h-4 w-4 mr-2" />Regenerate this diagram</>}
+                            </Button>
+                          </>
                         )}
                       </CardContent>
                     </Card>

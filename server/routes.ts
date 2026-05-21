@@ -5462,6 +5462,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Generate diagrams only (provisional should already exist in agent 5 data)
+  // Per-diagram regeneration. Mirrors the per-artifact regenerate flow on the
+  // G&S Gate 2 panel. Body: { chartNumber: number } — the chartNumber of the
+  // single diagram to re-render. Re-calls Eraser with that diagram's existing
+  // spec and patches the stored array at the matching slot.
+  app.post("/api/projects/:id/regenerate-diagram", isAuthenticated, async (req, res) => {
+    try {
+      const { regenerateSingleDiagram } = await import("./modules/module5/5b-diagrams/diagrams");
+      const chartNumber = Number(req.body?.chartNumber);
+      if (!Number.isFinite(chartNumber)) {
+        return res.status(400).json({ message: "chartNumber is required" });
+      }
+
+      const agent5Data = await storage.getAgentData(req.params.id, 5);
+      const a5 = (agent5Data?.data ?? {}) as any;
+      const existingDiagrams: any[] = Array.isArray(a5?.diagrams) ? a5.diagrams : [];
+
+      const idx = existingDiagrams.findIndex((d: any) => Number(d?.chartNumber) === chartNumber);
+      if (idx === -1) {
+        return res.status(400).json({ message: `No diagram found with chartNumber ${chartNumber}` });
+      }
+
+      const result = await regenerateSingleDiagram({ existing: existingDiagrams[idx] });
+      const next = [...existingDiagrams];
+      next[idx] = result.diagram;
+
+      await storage.upsertAgentData({
+        projectId: req.params.id,
+        agentNumber: 5,
+        data: { ...a5, diagrams: next, diagramsGeneratedAt: new Date().toISOString() },
+      });
+
+      res.json({ success: result.success, diagram: result.diagram });
+    } catch (error: any) {
+      console.error("[regenerate-diagram] error:", error);
+      res.status(500).json({ message: error?.message || "Failed to regenerate diagram" });
+    }
+  });
+
   app.post("/api/projects/:id/generate-showcase", isAuthenticated, async (req, res) => {
     try {
       const project = await storage.getProject(req.params.id);
@@ -6227,7 +6265,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const finalSpec = finalizeApprovals(gsState, approvals, edits);
-      const completed = { ...gsState, status: "complete", gate2Approvals: approvals, gate2Edits: edits, finalSpec, completedAt: new Date().toISOString() };
+      // Finalize already writes the expansion into provisionalDraft below, so
+      // mark it as applied to prevent the Apply-to-Draft button from being
+      // active afterward (it would duplicate-append the extensions).
+      const completed = { ...gsState, status: "complete", gate2Approvals: approvals, gate2Edits: edits, finalSpec, completedAt: new Date().toISOString(), appliedToDraft: true, appliedToDraftAt: new Date().toISOString() };
 
       // Write the approved expanded content into the live provisionalDraft so
       // specification-sections returns the updated text immediately. We work
@@ -6387,8 +6428,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         draft.keyConcepts_count = allConcepts.length;
       }
 
-      await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...a5, provisionalDraft: draft } });
-      res.json({ success: true });
+      // Record that the expansion has been applied to the draft so the
+      // frontend can permanently disable the "Apply to Provisional Draft"
+      // button — applying twice would just duplicate-append the extensions.
+      const updatedGs = {
+        ...gsState,
+        appliedToDraft: true,
+        appliedToDraftAt: new Date().toISOString(),
+      };
+      await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...a5, provisionalDraft: draft, genusSpecies: updatedGs } });
+      res.json({ success: true, appliedToDraft: true });
     } catch (error: any) {
       console.error("[genus-species] apply-to-draft error:", error);
       res.status(500).json({ message: error.message || "Failed to apply to draft" });
@@ -7679,11 +7728,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         doc.addPage();
         doc.fontSize(14).font('Helvetica-Bold').text('KEY CONCEPTS');
         doc.moveDown(0.5);
+        let kcIndex = 1;
         editedKeyConceptsPdf.forEach((entry: string) => {
           const cleaned = sanitizeForPDF(String(entry || '')).trim();
           if (!cleaned) return;
-          doc.font('Helvetica').fontSize(11).text(cleaned, { lineGap: 4, align: 'left' });
+          doc.font('Helvetica').fontSize(11).text(`${kcIndex}. ${cleaned}`, { lineGap: 4, align: 'left' });
           doc.moveDown(0.5);
+          kcIndex++;
         });
         doc.moveDown(0.5);
       } else {
@@ -8220,15 +8271,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
             spacing: { before: 400, after: 240, line: lineSpacing },
           })
         );
-        editedKeyConcepts.forEach((entry: string) => {
-          const cleaned = processTextForDocx(String(entry || '')).trim();
+        let kcIndexDocx = 1;
+        editedKeyConcepts.forEach((entry: any) => {
+          // Handle both string entries (G&S-expanded array) and object entries
+          // ({ text: "..." }) just in case the data shape varies by project.
+          const raw = typeof entry === "string"
+            ? entry
+            : (entry && typeof entry === "object" && typeof entry.text === "string" ? entry.text : "");
+          const cleaned = processTextForDocx(String(raw || '')).trim();
           if (!cleaned) return;
+          // Strip any pre-existing "N." / "N)" prefix so we don't double-number
+          // entries that were already numbered upstream.
+          const stripped = cleaned.replace(/^\s*\d+\s*[.):\-]\s*/, "");
           paragraphs.push(
             new Paragraph({
-              children: [new TextRun({ text: cleaned, size: bodyFontSize })],
+              children: [
+                // BOTH are mandatory: the USPTO paragraph number [00NN] (so
+                // numbering continues from the rest of the document) and the
+                // "Key Concept N: " label (so the inventor can see exactly
+                // which concept they're reading).
+                new TextRun({ text: formatParaNumber(), size: bodyFontSize }),
+                new TextRun({ text: `Key Concept ${kcIndexDocx}: ${stripped}`, size: bodyFontSize }),
+              ],
               spacing: { after: 240, line: lineSpacing },
             })
           );
+          kcIndexDocx++;
         });
       } else {
         const selectedKeyConceptsDocx = (agent4cData.data as any)?.selectedKeyConcepts || (agent4cData.data as any)?.selectedClaims || [];
@@ -8251,26 +8319,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
             groupedByVariationDocx[variationId].push(concept);
           });
 
-          let groupNumberDocx = 1;
+          // Flat continuous numbering across all groups so the Key Concepts
+          // read as "1.", "2.", "3." like every other numbered paragraph in
+          // the document, rather than "Key Concept 1:" within each group.
+          let flatIndex = 1;
           Object.keys(groupedByVariationDocx).forEach((variationId) => {
             const groupConcepts = groupedByVariationDocx[variationId];
-            paragraphs.push(
-              new Paragraph({
-                children: [new TextRun({ text: `Group ${groupNumberDocx}`, size: bodyFontSize, bold: true })],
-                spacing: { before: 240, after: 120, line: lineSpacing },
-              })
-            );
-            groupConcepts.forEach((concept: any, conceptIndex: number) => {
-              const cleanedText = processTextForDocx(String(concept.text || '')).trim();
-              const label = `Key Concept ${conceptIndex + 1}: `;
+            groupConcepts.forEach((concept: any) => {
+              const raw = typeof concept === "string"
+                ? concept
+                : (concept && typeof concept === "object" && typeof concept.text === "string" ? concept.text : "");
+              const cleanedText = processTextForDocx(String(raw || '')).trim();
+              if (!cleanedText) return;
+              const stripped = cleanedText.replace(/^\s*\d+\s*[.):\-]\s*/, "");
               paragraphs.push(
                 new Paragraph({
-                  children: [new TextRun({ text: label + cleanedText, size: bodyFontSize })],
+                  children: [new TextRun({ text: `${flatIndex}. ${stripped}`, size: bodyFontSize })],
                   spacing: { after: 240, line: lineSpacing },
                 })
               );
+              flatIndex++;
             });
-            groupNumberDocx++;
           });
         }
       }
