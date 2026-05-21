@@ -52,10 +52,12 @@ export interface PrefillFactor {
   sources: PrefillSource[];
   // Summarizer fields (present when AI polishing ran for this factor)
   summarized?: boolean;
-  insufficient?: boolean;
-  missing?: string[];
   quote_seeds?: string[];
   raw_draft?: string; // the deterministic concatenation pre-summarization
+  // Populated when the AI polishing step failed (network / parse / validation).
+  // The UI uses raw_draft as the inserted fallback and surfaces this string
+  // as a toast so the user knows polishing didn't run.
+  summarizerError?: string | null;
 }
 
 export interface PrefillResult {
@@ -154,6 +156,16 @@ export async function buildPannuPrefill(args: {
         charCount: s.text.length,
       }));
       const question = args.factorQuestions?.[factor] || fallbackFactorQuestion(factor);
+      const usingFallbackQuestion = !args.factorQuestions?.[factor];
+      console.log("[pannu summarizer] firing", {
+        factor,
+        usingFallbackQuestion,
+        factor_question: question,
+        claim_text_chars: claimText.length,
+        sources: f.sources.length,
+        raw_source_chars: rawSourceText.length,
+        source_origins: f.sources.map((s) => s.source),
+      });
       const result = await runFactorSummarizer({
         factor,
         factor_question: question,
@@ -162,19 +174,31 @@ export async function buildPannuPrefill(args: {
         raw_source_text: rawSourceText,
         source_breakdown: sourceBreakdown,
       });
+      console.log("[pannu summarizer] result", {
+        factor,
+        success: result.success,
+        draft_chars: result.success ? result.result.draft.length : 0,
+        error: result.success ? null : result.error,
+      });
       if (result.success) {
-        const r = result.result;
         factors[factor] = {
           ...f,
           raw_draft: f.draft,
-          draft: r.insufficient ? f.draft : r.draft,
-          summarized: !r.insufficient,
-          insufficient: r.insufficient,
-          missing: r.missing,
-          quote_seeds: r.quote_seeds,
+          draft: result.result.draft,
+          summarized: true,
+          quote_seeds: result.result.quote_seeds,
+          summarizerError: null,
         };
       } else {
-        factors[factor] = { ...f, summarized: false };
+        // Network / parse / validation failure — fall back to the clean
+        // deterministic concatenation so the field is never empty, and
+        // surface the cause via summarizerError for client-side toasting.
+        factors[factor] = {
+          ...f,
+          raw_draft: f.draft,
+          summarized: false,
+          summarizerError: `Summarizer call failed: ${result.error}. Raw notes inserted.`,
+        };
       }
     }
   }
@@ -425,12 +449,23 @@ function groupByFactor(rows: RawSource[]): Record<PannuFactor, PrefillFactor> {
 }
 
 function factorFromRows(factor: PannuFactor, rows: RawSource[]): PrefillFactor {
-  // Dedupe by (source, sourceRefId, first 60 chars of text) so identical
-  // content from multiple read paths collapses to one row.
+  // Dedupe on NORMALIZED TEXT CONTENT — the same paragraph reaching the pool
+  // from two read paths (e.g. ledger + agent_data) had distinct source
+  // labels and so used to slip past the old (source, sourceRefId, prefix)
+  // fingerprint and appear twice in the rephraser's input. Normalize on
+  // whitespace + casing + a 200-char window so near-identical copies
+  // collapse too.
+  const norm = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 200);
   const seen = new Set<string>();
   const ordered: RawSource[] = [];
   for (const row of rows) {
-    const fingerprint = `${row.source}::${row.sourceRefId ?? ""}::${row.text.slice(0, 60)}`;
+    const fingerprint = norm(row.text);
+    if (!fingerprint) continue;
     if (seen.has(fingerprint)) continue;
     seen.add(fingerprint);
     ordered.push(row);

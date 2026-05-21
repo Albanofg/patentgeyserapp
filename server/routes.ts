@@ -6875,6 +6875,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({
         success: true,
         suggestion,
+        insufficient: agentResponse.success ? agentResponse.insufficient : false,
+        missing: agentResponse.success ? agentResponse.missing : [],
       });
     } catch (error: any) {
       console.error("Pannu AI suggestion error:", error);

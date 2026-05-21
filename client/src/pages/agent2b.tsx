@@ -14,6 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 import { Label } from "@/components/ui/label";
 import type { Project } from "@shared/schema";
+import { recordHumanInput } from "@/lib/human-inputs";
 
 interface ExtractedIdea {
   id: string;
@@ -232,9 +233,19 @@ export default function Agent2b() {
         title: "Idea added!",
         description: "Your idea has been added to the list.",
       });
+      // Ledger: capture the user-typed custom idea so it's traceable as
+      // proof-of-conception material.
+      void recordHumanInput({
+        projectId,
+        source: "module2/custom-idea",
+        sourceRefId: data?.idea?.id ?? null,
+        promptText: "User-added custom idea (post-extraction)",
+        answerText: customIdeaText.trim(),
+        tags: ["conception_mechanism", "implementation_detail"],
+      });
       setCustomIdeaText("");
       setIsDialogOpen(false);
-      
+
       // Auto-select the newly added idea
       if (data?.idea?.id) {
         setSelectedIdeas(prev => new Set(prev).add(data.idea.id));

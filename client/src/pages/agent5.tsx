@@ -23,6 +23,7 @@ const MDEditor = lazy(() => import('@uiw/react-md-editor'));
 import { Loader2, Download, FileText, Image as ImageIcon, CheckCircle2, Save, RefreshCw, ExternalLink, Pencil, Users, ArrowRight, Sparkles } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Project } from "@shared/schema";
+import { recordHumanInput } from "@/lib/human-inputs";
 
 export default function Agent5() {
   const [, params] = useRoute("/project/:id/agent/5");
@@ -201,6 +202,20 @@ export default function Agent5() {
       for (const [id, d] of Object.entries(gsGate2Decisions)) {
         approvals[id] = d.decision;
         if (d.editedText) edits[id] = d.editedText;
+      }
+      // Ledger: every edited artifact represents user-authored text that
+      // refines the AI-broadened material. Capture each edit as a separate
+      // proof-of-conception row, keyed by artifact id.
+      for (const [id, editedText] of Object.entries(edits)) {
+        if (typeof editedText !== "string" || !editedText.trim()) continue;
+        void recordHumanInput({
+          projectId,
+          source: "module5/genus-species-edit",
+          sourceRefId: id,
+          promptText: "User-edited Genus & Species artifact",
+          answerText: editedText,
+          tags: ["implementation_detail", "differentiation"],
+        });
       }
       return apiRequest("POST", `/api/projects/${projectId}/genus-species/finalize`, { approvals, edits });
     },

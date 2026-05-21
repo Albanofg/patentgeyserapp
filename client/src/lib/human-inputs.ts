@@ -37,6 +37,10 @@ export interface RecordHumanInputArgs {
 // to the user (the underlying field's own save status is the source of truth).
 export async function recordHumanInput(args: RecordHumanInputArgs): Promise<void> {
   if (!args.projectId) return;
+  // Skip empty answer text — the server rejects empty rows with a 500.
+  // Hooks fire on every render including the initial empty state; this guard
+  // keeps server logs clean and avoids pointless network calls.
+  if (!args.answerText || !args.answerText.trim()) return;
   try {
     await fetch(`/api/projects/${args.projectId}/human-inputs`, {
       method: "POST",

@@ -25,6 +25,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import type { Project } from "@shared/schema";
 import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
+import { recordHumanInput } from "@/lib/human-inputs";
 
 interface UnifiedIdea {
   id: string;
@@ -269,14 +270,23 @@ export default function Agent1Inspect() {
   };
 
   const handleSaveEdit = (id: string) => {
-    setIdeas(prev => prev.map(idea => 
-      idea.id === id 
+    setIdeas(prev => prev.map(idea =>
+      idea.id === id
         ? { ...idea, editedContent: editContent, status: "edited" as const }
         : idea
     ));
     setEditingId(null);
     // Auto-save to database
     saveIdeaMutation.mutate({ ideaId: id, updates: { editedContent: editContent, status: "edited" } });
+    // Ledger: capture the user's edited idea text for Proof of Human Conception.
+    void recordHumanInput({
+      projectId,
+      source: "module1/inspect-edit",
+      sourceRefId: id,
+      promptText: "Edited extracted idea",
+      answerText: editContent,
+      tags: ["conception_mechanism", "implementation_detail"],
+    });
     setEditContent("");
   };
 
@@ -353,7 +363,17 @@ const handleApplyAiSuggestion = (id: string) => {
       });
       return;
     }
-    addIdeaMutation.mutate(newIdeaContent.trim());
+    const trimmed = newIdeaContent.trim();
+    addIdeaMutation.mutate(trimmed);
+    // Ledger: capture the user-added idea for Proof of Human Conception.
+    void recordHumanInput({
+      projectId,
+      source: "module1/inspect-add",
+      sourceRefId: null,
+      promptText: "User-added idea (post-extraction)",
+      answerText: trimmed,
+      tags: ["conception_mechanism", "implementation_detail"],
+    });
   };
 
   // Per-idea actions (approve / edit / discard / ask-AI / save edit) are

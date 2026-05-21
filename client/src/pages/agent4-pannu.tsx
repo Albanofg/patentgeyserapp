@@ -22,6 +22,49 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import type { Project, PannuRecord } from "@shared/schema";
+import { useHumanInputWriter, type HumanInputTag } from "@/lib/human-inputs";
+
+// Pannu factor → controlled-vocabulary tags so the ledger row routes back to
+// the right factor when prefill rebuilds. Must mirror PANNU_FACTOR_TAGS on
+// the server (server/modules/human-inputs/tags.ts).
+const PANNU_FACTOR_TAG_MAP: Record<string, HumanInputTag[]> = {
+  conception: ["conception_mechanism", "conception_timeline"],
+  quality: ["technical_advance", "vs_obvious_combo"],
+  known_concepts: ["prior_art_awareness", "differentiation"],
+};
+
+// Child writer component — needed because we render textareas inside a
+// `.map()` and hooks can't live inside map callbacks. One instance per
+// textarea (3 per concept).
+function PannuAnswerLedgerWriter({
+  projectId,
+  conceptId,
+  factor,
+  question,
+  answerText,
+}: {
+  projectId: string | undefined;
+  conceptId: string;
+  factor: string;
+  question: string;
+  answerText: string;
+}) {
+  const tags = PANNU_FACTOR_TAG_MAP[factor] ?? ["free_text"];
+  // Skip empty initial state — the server rejects empty answer text. The
+  // hook still runs (hooks can't be conditional), but we pass a sentinel
+  // that matches lastWrittenRef on mount when text is empty, preventing a
+  // bad fire while still letting future edits flow through.
+  useHumanInputWriter({
+    projectId,
+    source: "module4b/pannu-answer",
+    sourceRefId: `${conceptId}::${factor}`,
+    promptText: question,
+    answerText,
+    tags,
+    conceptId,
+  });
+  return null;
+}
 
 type GenerationStep = 'idle' | 'provisional' | 'diagrams';
 
@@ -481,9 +524,9 @@ export default function Agent4Pannu() {
   const handleSubmitAnswers = (claim: ClaimForValidation) => {
     const state = validationStates[claim.conceptId];
     const claimAnswers = currentAnswers[claim.conceptId] || {};
-    
+
     if (!state?.questions) return;
-    
+
     const answers = state.questions.map(q => ({
       factor: q.factor,
       answer: claimAnswers[q.factor] || '',
@@ -1007,6 +1050,10 @@ export default function Agent4Pannu() {
                               const currentText = claimAnswers[q.factor] || '';
                               const prefillBusyKey = `${claim.conceptId}-${q.factor}-prefill`;
                               const isPrefillBusy = loadingAiSuggestion === prefillBusyKey;
+                              // Click → run the purpose-built summarizer for this single factor.
+                              // The summarizer prompt always produces a draft (no insufficient
+                              // branch). On network/parse failure, fall back to the clean
+                              // deterministic concat so the field is never empty.
                               const insertPrefill = async () => {
                                 if (!hasPrefill || isPrefillBusy) return;
                                 setLoadingAiSuggestion(prefillBusyKey);
@@ -1015,14 +1062,16 @@ export default function Agent4Pannu() {
                                     `/api/projects/${projectId}/pannu/prefill?conceptId=${encodeURIComponent(claim.conceptId)}&summarize=true&factor=${encodeURIComponent(q.factor)}`,
                                     { credentials: "include" },
                                   );
-                                  let polished = prefillDraft;
                                   if (res.ok) {
                                     const data = await res.json();
                                     const f = data?.factors?.[q.factor];
-                                    const candidate = typeof f?.draft === "string" ? f.draft.trim() : "";
-                                    if (candidate.length > 0) polished = candidate;
+                                    const draft = typeof f?.draft === "string" ? f.draft.trim() : "";
+                                    if (draft.length > 0) {
+                                      updateAnswer(claim.conceptId, q.factor, draft);
+                                      return;
+                                    }
                                   }
-                                  updateAnswer(claim.conceptId, q.factor, polished);
+                                  updateAnswer(claim.conceptId, q.factor, prefillDraft);
                                 } catch (e) {
                                   console.warn("[pannu] summarize-on-click failed:", e);
                                   updateAnswer(claim.conceptId, q.factor, prefillDraft);
@@ -1047,6 +1096,13 @@ export default function Agent4Pannu() {
                                     placeholder="Write your answer in your own words, or use what you already wrote earlier in the app."
                                     className="min-h-25"
                                     data-testid={`textarea-answer-${index}-${qIndex}`}
+                                  />
+                                  <PannuAnswerLedgerWriter
+                                    projectId={projectId}
+                                    conceptId={claim.conceptId}
+                                    factor={q.factor}
+                                    question={q.question}
+                                    answerText={currentText}
                                   />
 
                                   {/* Source preview line — appears above the
@@ -1084,13 +1140,13 @@ export default function Agent4Pannu() {
                                       data-testid={`button-insert-prefill-${index}-${qIndex}`}
                                       title={
                                         hasPrefill
-                                          ? "Polish what you typed earlier into a draft and insert it — you can still edit after"
+                                          ? "Refine what you wrote earlier across the app into a coherent answer — edit freely after"
                                           : "Upstream didn't capture any input for this factor — this should not happen. Please report it."
                                       }
                                       className={!hasPrefill ? "border-destructive text-destructive" : undefined}
                                     >
                                       {isPrefillBusy
-                                        ? "Polishing…"
+                                        ? "Refining…"
                                         : hasPrefill
                                           ? "Use what I already wrote"
                                           : "Missing upstream input — please report"}

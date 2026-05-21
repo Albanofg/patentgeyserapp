@@ -14,8 +14,6 @@ export interface FactorSummarizerInput {
 export interface FactorSummarizerOutput {
   draft: string;
   quote_seeds: string[];
-  insufficient: boolean;
-  missing: string[];
 }
 
 const FACTOR_DEFINITIONS: Record<PohcFactor, string> = {
@@ -55,30 +53,29 @@ export async function runFactorSummarizer(
 
     if (!parsed || typeof parsed !== "object") throw new Error("Summarizer returned no object");
     const draft = typeof parsed.draft === "string" ? parsed.draft : "";
-    const quoteSeeds = Array.isArray(parsed.quote_seeds) ? parsed.quote_seeds.filter((s) => typeof s === "string") : [];
-    const insufficient = typeof parsed.insufficient === "boolean" ? parsed.insufficient : true;
-    const missing = Array.isArray(parsed.missing) ? parsed.missing.filter((s) => typeof s === "string") : [];
+    const quoteSeeds = Array.isArray(parsed.quote_seeds)
+      ? parsed.quote_seeds.filter((s) => typeof s === "string")
+      : [];
 
     // Forbidden-token guard (defense in depth)
     const tokenRe = /pannu/i;
-    if (tokenRe.test(draft) || quoteSeeds.some((s) => tokenRe.test(s)) || missing.some((s) => tokenRe.test(s))) {
+    if (tokenRe.test(draft) || quoteSeeds.some((s) => tokenRe.test(s))) {
       throw new Error("Summarizer output contained forbidden token");
     }
 
-    // Branch invariants
-    if (!insufficient) {
-      if (draft.length < 40) throw new Error("Sufficient draft below minimum length");
-      if (quoteSeeds.length < 1) throw new Error("Sufficient branch missing quote_seeds");
-      for (const q of quoteSeeds) {
-        if (q.length < 8) throw new Error("quote_seed shorter than 8 chars");
-        if (!input.raw_source_text.includes(q)) throw new Error("quote_seed not found in raw_source_text");
-        if (!draft.includes(q)) throw new Error("quote_seed not found in draft");
-      }
+    // Invariants — prompt no longer has an insufficient branch; always validate.
+    if (draft.length < 40) throw new Error(`draft below minimum length: ${draft.length}`);
+    if (draft.length > 800) throw new Error(`draft above maximum length: ${draft.length}`);
+    if (quoteSeeds.length < 1) throw new Error("quote_seeds is empty");
+    for (const q of quoteSeeds) {
+      if (q.length < 8) throw new Error("quote_seed shorter than 8 chars");
+      if (!input.raw_source_text.includes(q)) throw new Error("quote_seed not found in raw_source_text");
+      if (!draft.includes(q)) throw new Error("quote_seed not found in draft");
     }
 
     return {
       success: true,
-      result: { draft, quote_seeds: quoteSeeds, insufficient, missing },
+      result: { draft, quote_seeds: quoteSeeds },
     };
   } catch (error: any) {
     const message = error?.message || String(error);

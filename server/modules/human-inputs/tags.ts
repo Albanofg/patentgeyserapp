@@ -58,14 +58,21 @@ export function pannuFactorsForTag(tag: string): PannuFactor[] {
 // Keep these short — they render as chips in the Pannu UI.
 export const SOURCE_LABELS: Record<string, string> = {
   "module0/qa-assistant": "AI Helper notes",
+  "module1/initial-idea": "Initial idea",
   "module1/idea-refinement": "Initial idea refinement",
   "module1/inspect": "Inspect & Refine notes",
+  "module1/inspect-add": "User-added idea (Inspect)",
+  "module1/inspect-edit": "Edited idea (Inspect)",
+  "module2/additional-notes": "Additional notes",
   "module2/expansion": "Concept expansion",
   "module2/refinement": "Refinement feedback",
   "module2/extracted-ideas": "Extracted ideas",
+  "module2/custom-idea": "Custom idea (Extract)",
   "module3/notes": "Prior art notes",
   "module4a/concept-notes": "White Space notes",
   "module4b/concept-rationale": "Key Concept rationale",
+  "module4b/pannu-answer": "Conception Test answer",
+  "module5/genus-species-edit": "Genus & Species edit",
 };
 
 export function friendlySourceLabel(source: string): string {
