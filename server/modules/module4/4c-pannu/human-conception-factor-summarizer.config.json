@@ -1,0 +1,7 @@
+{
+  "model": "gemini-flash-latest",
+  "fallback": "gemini-pro-latest",
+  "temperature": 0.2,
+  "topP": 0.9,
+  "maxTokens": 2000
+}

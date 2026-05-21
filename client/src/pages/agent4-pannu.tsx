@@ -102,6 +102,9 @@ export default function Agent4Pannu() {
     sources: Array<{ source: string; sourceLabel: string; text: string }>;
     coverage: number;
     draft: string;
+    summarized?: boolean;
+    insufficient?: boolean;
+    missing?: string[];
   }>>>({});
   const [loadingAiSuggestion, setLoadingAiSuggestion] = useState<string | null>(null);
   const [generationStep, setGenerationStep] = useState<GenerationStep>('idle');
@@ -268,18 +271,21 @@ export default function Agent4Pannu() {
       (async () => {
         try {
           const res = await fetch(
-            `/api/projects/${projectId}/pannu/prefill?conceptId=${encodeURIComponent(cid)}`,
+            `/api/projects/${projectId}/pannu/prefill?conceptId=${encodeURIComponent(cid)}&summarize=false`,
             { credentials: "include" },
           );
           if (!res.ok) return;
           const prefill = await res.json();
-          const meta: Record<string, { sources: any[]; coverage: number; draft: string }> = {};
+          const meta: Record<string, { sources: any[]; coverage: number; draft: string; summarized?: boolean; insufficient?: boolean; missing?: string[] }> = {};
           for (const factor of ["conception", "quality", "known_concepts"] as const) {
             const f = prefill?.factors?.[factor];
             meta[factor] = {
               sources: Array.isArray(f?.sources) ? f.sources : [],
               coverage: typeof f?.coverage === "number" ? f.coverage : 0,
               draft: typeof f?.draft === "string" ? f.draft : "",
+              summarized: typeof f?.summarized === "boolean" ? f.summarized : false,
+              insufficient: typeof f?.insufficient === "boolean" ? f.insufficient : false,
+              missing: Array.isArray(f?.missing) ? f.missing : [],
             };
           }
           setPrefillMeta(prev => (prev[cid] ? prev : { ...prev, [cid]: meta }));
@@ -328,18 +334,21 @@ export default function Agent4Pannu() {
       // generated material as their own work.
       try {
         const prefillRes = await fetch(
-          `/api/projects/${projectId}/pannu/prefill?conceptId=${encodeURIComponent(claim.conceptId)}`,
+          `/api/projects/${projectId}/pannu/prefill?conceptId=${encodeURIComponent(claim.conceptId)}&summarize=false`,
           { credentials: "include" },
         );
         if (prefillRes.ok) {
           const prefill = await prefillRes.json();
-          const meta: Record<string, { sources: any[]; coverage: number; draft: string }> = {};
+          const meta: Record<string, { sources: any[]; coverage: number; draft: string; summarized?: boolean; insufficient?: boolean; missing?: string[] }> = {};
           for (const factor of ["conception", "quality", "known_concepts"] as const) {
             const f = prefill?.factors?.[factor];
             meta[factor] = {
               sources: Array.isArray(f?.sources) ? f.sources : [],
               coverage: typeof f?.coverage === "number" ? f.coverage : 0,
               draft: typeof f?.draft === "string" ? f.draft : "",
+              summarized: typeof f?.summarized === "boolean" ? f.summarized : false,
+              insufficient: typeof f?.insufficient === "boolean" ? f.insufficient : false,
+              missing: Array.isArray(f?.missing) ? f.missing : [],
             };
           }
           setPrefillMeta(prev => ({ ...prev, [claim.conceptId]: meta }));
@@ -996,13 +1005,30 @@ export default function Agent4Pannu() {
                               const prefillDraft = factorMeta?.draft || "";
                               const hasPrefill = prefillDraft.trim().length > 0;
                               const currentText = claimAnswers[q.factor] || '';
-                              const insertPrefill = () => {
-                                if (!hasPrefill) return;
-                                // Replace whatever is currently in the textarea
-                                // with the pre-fill draft. We don't merge —
-                                // if the user wants the old text back, the
-                                // browser's undo (Ctrl+Z) works on textareas.
-                                updateAnswer(claim.conceptId, q.factor, prefillDraft);
+                              const prefillBusyKey = `${claim.conceptId}-${q.factor}-prefill`;
+                              const isPrefillBusy = loadingAiSuggestion === prefillBusyKey;
+                              const insertPrefill = async () => {
+                                if (!hasPrefill || isPrefillBusy) return;
+                                setLoadingAiSuggestion(prefillBusyKey);
+                                try {
+                                  const res = await fetch(
+                                    `/api/projects/${projectId}/pannu/prefill?conceptId=${encodeURIComponent(claim.conceptId)}&summarize=true`,
+                                    { credentials: "include" },
+                                  );
+                                  let polished = prefillDraft;
+                                  if (res.ok) {
+                                    const data = await res.json();
+                                    const f = data?.factors?.[q.factor];
+                                    const candidate = typeof f?.draft === "string" ? f.draft.trim() : "";
+                                    if (candidate.length > 0) polished = candidate;
+                                  }
+                                  updateAnswer(claim.conceptId, q.factor, polished);
+                                } catch (e) {
+                                  console.warn("[pannu] summarize-on-click failed:", e);
+                                  updateAnswer(claim.conceptId, q.factor, prefillDraft);
+                                } finally {
+                                  setLoadingAiSuggestion(null);
+                                }
                               };
 
                               return (
@@ -1054,15 +1080,20 @@ export default function Agent4Pannu() {
                                       variant="outline"
                                       size="sm"
                                       onClick={insertPrefill}
-                                      disabled={!hasPrefill}
+                                      disabled={!hasPrefill || isPrefillBusy}
                                       data-testid={`button-insert-prefill-${index}-${qIndex}`}
                                       title={
                                         hasPrefill
-                                          ? "Insert what you typed about this earlier — you can still edit after"
-                                          : "Nothing on file yet from earlier modules for this factor"
+                                          ? "Polish what you typed earlier into a draft and insert it — you can still edit after"
+                                          : "Upstream didn't capture any input for this factor — this should not happen. Please report it."
                                       }
+                                      className={!hasPrefill ? "border-destructive text-destructive" : undefined}
                                     >
-                                      {hasPrefill ? "Use what I already wrote" : "No earlier notes for this factor"}
+                                      {isPrefillBusy
+                                        ? "Polishing…"
+                                        : hasPrefill
+                                          ? "Use what I already wrote"
+                                          : "Missing upstream input — please report"}
                                     </Button>
                                     <Button
                                       variant="outline"

@@ -29,6 +29,12 @@ import {
 import { db } from "../../db";
 import { agentData } from "@shared/schema";
 import type { HumanInput } from "@shared/schema";
+import {
+  runFactorSummarizer,
+  fallbackFactorQuestion,
+  factorDefinition,
+  type PohcFactor,
+} from "../module4/4c-pannu/pannu";
 
 export interface PrefillSource {
   inputId: string;
@@ -44,6 +50,12 @@ export interface PrefillFactor {
   draft: string;
   coverage: number; // total character count across contributing rows
   sources: PrefillSource[];
+  // Summarizer fields (present when AI polishing ran for this factor)
+  summarized?: boolean;
+  insufficient?: boolean;
+  missing?: string[];
+  quote_seeds?: string[];
+  raw_draft?: string; // the deterministic concatenation pre-summarization
 }
 
 export interface PrefillResult {
@@ -73,10 +85,20 @@ interface RawSource {
 export async function buildPannuPrefill(args: {
   projectId: string;
   conceptId?: string | null;
+  claimText?: string | null;
+  factorQuestions?: Partial<Record<PannuFactor, string>>;
+  // When true, run the AI summarizer per factor; when false, return the
+  // deterministic concatenation only (legacy behavior).
+  summarize?: boolean;
 }): Promise<PrefillResult> {
   const fromLedger = await readFromLedger(args);
   const fromAgentData = await readFromAgentData(args);
-  const fromCoach = await readFromCoachMessages(args);
+  // coach_messages is intentionally NOT used as a prefill source. The
+  // leap-message mirror already writes substantive AI Helper answers into
+  // the human_inputs ledger with factor tags. Re-reading coach_messages
+  // here dragged in conversational navigation ("should I approve all 3?",
+  // "concept 2?", etc.) and double-counted the qualified answers.
+  const fromCoach: RawSource[] = [];
 
   console.log("[pannu prefill]", {
     projectId: args.projectId,
@@ -92,7 +114,13 @@ export async function buildPannuPrefill(args: {
     })),
   });
 
-  const all = [...fromLedger, ...fromAgentData, ...fromCoach];
+  // Defense in depth: drop short / conversational fragments before grouping.
+  // 80 chars is the floor; navigational chatter ("ok", "concept 2?",
+  // "move to the fifth one", "should I approve all 3?") sits well below it.
+  const MIN_SOURCE_CHARS = 80;
+  const all = [...fromLedger, ...fromAgentData, ...fromCoach].filter(
+    (r) => r.text.trim().length >= MIN_SOURCE_CHARS,
+  );
   const factors = groupByFactor(all);
 
   console.log("[pannu prefill] grouped", {
@@ -100,6 +128,56 @@ export async function buildPannuPrefill(args: {
     quality: { sources: factors.quality.sources.length, coverage: factors.quality.coverage },
     known_concepts: { sources: factors.known_concepts.sources.length, coverage: factors.known_concepts.coverage },
   });
+
+  // Optional AI polishing pass. Runs in parallel across the three factors.
+  // Each factor falls back to its deterministic concatenation if the
+  // summarizer fails or if there are no sources.
+  if (args.summarize) {
+    const claimText = (args.claimText ?? "").trim();
+    const factorEntries: PohcFactor[] = ["conception", "quality", "known_concepts"];
+    await Promise.all(
+      factorEntries.map(async (factor) => {
+        const f = factors[factor];
+        if (!f.sources || f.sources.length === 0) return;
+        const rawSourceText = f.sources.map((s) => s.text).join("\n\n");
+        const sourceBreakdown = f.sources.map((s) => ({
+          text: s.text,
+          tag: factor,
+          source: s.source,
+          charCount: s.text.length,
+        }));
+        const question = args.factorQuestions?.[factor] || fallbackFactorQuestion(factor);
+        const result = await runFactorSummarizer({
+          factor,
+          factor_question: question,
+          factor_definition: factorDefinition(factor),
+          claim_text: claimText,
+          raw_source_text: rawSourceText,
+          source_breakdown: sourceBreakdown,
+        });
+        if (result.success) {
+          const r = result.result;
+          // Never regress the button: if the summarizer says insufficient,
+          // keep the deterministic concatenation as the usable draft. The
+          // `insufficient` + `missing` fields still flow to the UI so we can
+          // show an honesty hint above the textarea without killing the
+          // "use what I already wrote" affordance.
+          factors[factor] = {
+            ...f,
+            raw_draft: f.draft,
+            draft: r.insufficient ? f.draft : r.draft,
+            summarized: !r.insufficient,
+            insufficient: r.insufficient,
+            missing: r.missing,
+            quote_seeds: r.quote_seeds,
+          };
+        } else {
+          // Leave deterministic draft in place; mark as not summarized.
+          factors[factor] = { ...f, summarized: false };
+        }
+      }),
+    );
+  }
 
   return {
     conceptId: args.conceptId ?? null,

@@ -6633,7 +6633,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/projects/:id/pannu/prefill", isAuthenticated, async (req, res) => {
     try {
       const conceptId = typeof req.query.conceptId === "string" ? req.query.conceptId : null;
-      const prefill = await buildPannuPrefill({ projectId: req.params.id, conceptId });
+      const summarize = req.query.summarize !== "false"; // default true
+
+      // Pull the concept's text + per-factor questions from the existing
+      // pannu_record so the summarizer has topic-lock and per-factor question
+      // context. Both are optional — the summarizer falls back to generic
+      // factor questions and empty claim text if not found.
+      let claimText: string | null = null;
+      const factorQuestions: Partial<Record<"conception" | "quality" | "known_concepts", string>> = {};
+      if (conceptId) {
+        try {
+          const records = await storage.getPannuRecords(req.params.id);
+          const record = records.find((r) => r.conceptId === conceptId);
+          if (record) {
+            claimText = record.claimText ?? null;
+            const qs = (record.questions ?? null) as any;
+            const list = Array.isArray(qs) ? qs : Array.isArray(qs?.questions) ? qs.questions : [];
+            for (const q of list) {
+              if (q && typeof q.factor === "string" && typeof q.question === "string") {
+                if (q.factor === "conception" || q.factor === "quality" || q.factor === "known_concepts") {
+                  factorQuestions[q.factor] = q.question;
+                }
+              }
+            }
+          }
+        } catch (e: any) {
+          console.warn("[pannu prefill] could not load concept context:", e?.message);
+        }
+      }
+
+      const prefill = await buildPannuPrefill({
+        projectId: req.params.id,
+        conceptId,
+        claimText,
+        factorQuestions,
+        summarize,
+      });
       res.json(prefill);
     } catch (error: any) {
       console.error("Pannu pre-fill error:", error);
