@@ -5468,7 +5468,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // spec and patches the stored array at the matching slot.
   app.post("/api/projects/:id/regenerate-diagram", isAuthenticated, async (req, res) => {
     try {
-      const { regenerateSingleDiagram } = await import("./modules/module5/5b-diagrams/diagrams");
+      const { runDiagrams, regenerateSingleDiagram } = await import("./modules/module5/5b-diagrams/diagrams");
       const chartNumber = Number(req.body?.chartNumber);
       if (!Number.isFinite(chartNumber)) {
         return res.status(400).json({ message: "chartNumber is required" });
@@ -5477,13 +5477,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const agent5Data = await storage.getAgentData(req.params.id, 5);
       const a5 = (agent5Data?.data ?? {}) as any;
       const existingDiagrams: any[] = Array.isArray(a5?.diagrams) ? a5.diagrams : [];
+      const storedPayload: any = a5?.diagramsPayload ?? null;
 
       const idx = existingDiagrams.findIndex((d: any) => Number(d?.chartNumber) === chartNumber);
       if (idx === -1) {
         return res.status(400).json({ message: `No diagram found with chartNumber ${chartNumber}` });
       }
+      const target = existingDiagrams[idx];
 
-      const result = await regenerateSingleDiagram({ existing: existingDiagrams[idx] });
+      // Preferred path: re-run the planner on the original stored payload
+      // so we get a genuinely fresh spec for the target diagram, then render
+      // only that one. This produces real variation rather than re-sending
+      // Eraser's cached DSL back to it.
+      if (storedPayload) {
+        try {
+          const planned: any = await runDiagrams(storedPayload);
+          const planArr: any[] = Array.isArray(planned)
+            ? planned
+            : Array.isArray(planned?.flowcharts)
+              ? planned.flowcharts
+              : Array.isArray(planned?.diagrams)
+                ? planned.diagrams
+                : [];
+          // Match by chartNumber first; if the new plan reshuffled, fall
+          // back to matching by title or figureId, then by index.
+          let match =
+            planArr.find((d: any) => Number(d?.chartNumber) === chartNumber) ||
+            (target?.figureId ? planArr.find((d: any) => d?.figureId === target.figureId) : null) ||
+            (target?.title ? planArr.find((d: any) => d?.title === target.title) : null) ||
+            planArr[idx] ||
+            null;
+          if (match) {
+            // Preserve identity fields the UI relies on.
+            match = { ...match, chartNumber, title: match.title || target.title, figureId: target.figureId };
+            const next = [...existingDiagrams];
+            next[idx] = match;
+            await storage.upsertAgentData({
+              projectId: req.params.id,
+              agentNumber: 5,
+              data: { ...a5, diagrams: next, diagramsGeneratedAt: new Date().toISOString() },
+            });
+            return res.json({ success: !!match.imageUrl, diagram: match });
+          }
+        } catch (planErr: any) {
+          console.warn("[regenerate-diagram] planner re-run failed, falling back to spec-rerender:", planErr?.message);
+        }
+      }
+
+      // Fallback path: no stored payload (legacy projects) or planner failed.
+      // Re-render Eraser from the existing spec.
+      const result = await regenerateSingleDiagram({ existing: target });
       const next = [...existingDiagrams];
       next[idx] = result.diagram;
 
@@ -5642,7 +5685,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       console.log(`Diagrams generated: ${diagrams.length} (${successfulFlowcharts} successful, ${failedFlowcharts} failed)`);
       
-      // Store diagrams in Agent 5 data - PRESERVE existing fields like broadKeyConcepts
+      // Store diagrams in Agent 5 data - PRESERVE existing fields like broadKeyConcepts.
+      // Also persist the diagramsPayload so per-diagram Regenerate can re-run
+      // the planner on the same input later without rebuilding the payload.
       await storage.upsertAgentData({
         projectId: req.params.id,
         agentNumber: 5,
@@ -5650,6 +5695,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           ...agent5DataObj, // Preserve existing fields (broadKeyConcepts, selectedClaimType, etc.)
           provisionalDraft,
           diagrams,
+          diagramsPayload,
           diagramsGeneratedAt: new Date().toISOString()
         },
       });

@@ -39,6 +39,11 @@ export default function Agent5() {
   // Genus & Species workflow inline state
   const [gsGate1Decisions, setGsGate1Decisions] = useState<Record<string, { decision: "approved" | "rejected"; editedText?: string }>>({});
   const [gsGate2Decisions, setGsGate2Decisions] = useState<Record<string, { decision: "approved" | "edited" | "rejected"; editedText?: string }>>({});
+  // Local pending text per artifact while the user is typing in the edit
+  // textarea. Only commits to gsGate2Decisions.editedText when the user
+  // clicks Save. Lets the user feel confident their change is captured
+  // (and lets them Cancel back to the original).
+  const [gsPendingEdits, setGsPendingEdits] = useState<Record<string, string>>({});
   const [gsExpandedArtifact, setGsExpandedArtifact] = useState<string | null>(null);
 
   const { data: project, isLoading: projectLoading } = useQuery<Project>({
@@ -582,7 +587,7 @@ export default function Agent5() {
     if (gsStatusStr === "awaiting_gate2") {
       (gs?.broadenings || []).forEach((b: any, i: number) => {
         items.push({
-          id: `gs_broadening_${i}`,
+          id: `Broadened Key Concept ${i + 1}`,
           type: "gs_artifact",
           editable: false,
           content: {
@@ -595,7 +600,7 @@ export default function Agent5() {
       });
       (gs?.appendings || []).forEach((a: any, i: number) => {
         items.push({
-          id: `gs_appending_${i}`,
+          id: `Key Concept Appendix ${i + 1}`,
           type: "gs_artifact",
           editable: false,
           content: {
@@ -607,13 +612,13 @@ export default function Agent5() {
         });
       });
       if (gs?.backgroundExtension) {
-        items.push({ id: "gs_background_extension", type: "gs_artifact", editable: false, content: { kind: "background_extension", empty: !(gs.backgroundExtension.additional_paragraphs || (typeof gs.backgroundExtension === "string" && gs.backgroundExtension)) } });
+        items.push({ id: "Background Extension", type: "gs_artifact", editable: false, content: { kind: "background_extension", empty: !(gs.backgroundExtension.additional_paragraphs || (typeof gs.backgroundExtension === "string" && gs.backgroundExtension)) } });
       }
       if (gs?.summaryExtension) {
-        items.push({ id: "gs_summary_extension", type: "gs_artifact", editable: false, content: { kind: "summary_extension", empty: !(gs.summaryExtension.additional_paragraphs || (typeof gs.summaryExtension === "string" && gs.summaryExtension)) } });
+        items.push({ id: "Summary Extension", type: "gs_artifact", editable: false, content: { kind: "summary_extension", empty: !(gs.summaryExtension.additional_paragraphs || (typeof gs.summaryExtension === "string" && gs.summaryExtension)) } });
       }
       if (gs?.abstractRewrite) {
-        items.push({ id: "gs_abstract", type: "gs_artifact", editable: false, content: { kind: "abstract_rewrite", word_count: gs.abstractRewrite.word_count ?? null, empty: !gs.abstractRewrite.abstract_text } });
+        items.push({ id: "Abstract Rewrite", type: "gs_artifact", editable: false, content: { kind: "abstract_rewrite", word_count: gs.abstractRewrite.word_count ?? null, empty: !gs.abstractRewrite.abstract_text } });
       }
     }
 
@@ -1357,7 +1362,11 @@ export default function Agent5() {
                                       {gsRegenInFlight[artifact.id] ? <><Loader2 className="h-3 w-3 mr-1 animate-spin"/>…</> : "Regenerate"}
                                     </Button>
                                     <Button size="sm" variant={(!d || d.decision === "approved") ? "default" : "outline"} className="text-xs h-6 px-2" onClick={() => setGsGate2Decisions(p => ({ ...p, [artifact.id]: { decision: "approved" } }))}>Keep</Button>
-                                    <Button size="sm" variant={d?.decision === "edited" ? "default" : "outline"} className="text-xs h-6 px-2" onClick={() => setGsGate2Decisions(p => ({ ...p, [artifact.id]: { decision: "edited", editedText: d?.editedText ?? artifact.text } }))}>Edit</Button>
+                                    <Button size="sm" variant={d?.decision === "edited" ? "default" : "outline"} className="text-xs h-6 px-2" onClick={() => {
+                                      const startingText = d?.editedText ?? artifact.text;
+                                      setGsGate2Decisions(p => ({ ...p, [artifact.id]: { decision: "edited", editedText: startingText } }));
+                                      setGsPendingEdits(p => ({ ...p, [artifact.id]: startingText }));
+                                    }}>Edit</Button>
                                     <Button size="sm" variant={d?.decision === "rejected" ? "destructive" : "outline"} className="text-xs h-6 px-2" onClick={() => setGsGate2Decisions(p => ({ ...p, [artifact.id]: { decision: "rejected" } }))}>Remove</Button>
                                   </div>
                                 </div>
@@ -1365,7 +1374,41 @@ export default function Agent5() {
                                   <p className="text-xs text-destructive/70 italic">Could not extract text — run Genus &amp; Species again to regenerate.</p>
                                 )}
                                 {d?.decision === "edited" ? (
-                                  <textarea className="w-full text-xs rounded border p-2 min-h-24 bg-background resize-y leading-relaxed" value={d.editedText ?? artifact.text} onChange={e => setGsGate2Decisions(p => ({ ...p, [artifact.id]: { ...p[artifact.id], editedText: e.target.value } }))} />
+                                  (() => {
+                                    const pending = gsPendingEdits[artifact.id] ?? d.editedText ?? artifact.text;
+                                    const saved = d.editedText ?? artifact.text;
+                                    const isDirty = pending !== saved;
+                                    return (
+                                      <div className="space-y-2">
+                                        <textarea
+                                          className="w-full text-xs rounded border p-2 min-h-24 bg-background resize-y leading-relaxed"
+                                          value={pending}
+                                          onChange={e => setGsPendingEdits(p => ({ ...p, [artifact.id]: e.target.value }))}
+                                        />
+                                        <div className="flex items-center gap-2 justify-end">
+                                          {isDirty && <span className="text-xs text-amber-600">Unsaved changes</span>}
+                                          {!isDirty && <span className="text-xs text-muted-foreground">Saved ✓</span>}
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            className="text-xs h-6 px-2"
+                                            disabled={!isDirty}
+                                            onClick={() => setGsPendingEdits(p => ({ ...p, [artifact.id]: saved }))}
+                                          >
+                                            Cancel
+                                          </Button>
+                                          <Button
+                                            size="sm"
+                                            className="text-xs h-6 px-2"
+                                            disabled={!isDirty}
+                                            onClick={() => setGsGate2Decisions(p => ({ ...p, [artifact.id]: { ...p[artifact.id], editedText: pending } }))}
+                                          >
+                                            Save
+                                          </Button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })()
                                 ) : gsExpandedArtifact === artifact.id ? (
                                   <div className="space-y-2">
                                     <p className="text-sm leading-relaxed text-foreground whitespace-pre-wrap">{artifact.text}</p>

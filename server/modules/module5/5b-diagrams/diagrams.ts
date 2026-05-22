@@ -138,7 +138,20 @@ function buildEraserPrompt(d: PlannedDiagram): {
   return { userPrompt, diagramType: eraserType, eraserDSL, useElementsAPI };
 }
 
-async function callEraser(
+// Prompt perturbations used between retries. Eraser's server proxies to
+// Claude; some prompts trigger an "assistant message prefill" rejection that
+// the same text will reproduce indefinitely. Slight rewordings shift Eraser's
+// internal routing enough to dodge the bad path without changing the diagram
+// semantics. Order = attempt 0..N.
+const ERASER_PERTURBATIONS: Array<(prompt: string) => string> = [
+  (p) => p,
+  (p) => `Please render the following as a clear technical diagram.\n\n${p}`,
+  (p) => `${p}\n\nGenerate the diagram now.`,
+  (p) =>
+    `Diagram request:\n\n${p.replace(/\bgenerate\b/gi, "produce").replace(/\bcreate\b/gi, "draw")}`,
+];
+
+async function callEraserOnce(
   prompt: string,
   diagramType: string,
 ): Promise<{ imageUrl: string | null; editLink: string | null; diagramCode: string | null; raw: any }> {
@@ -176,6 +189,28 @@ async function callEraser(
   };
 }
 
+async function callEraser(
+  prompt: string,
+  diagramType: string,
+): Promise<{ imageUrl: string | null; editLink: string | null; diagramCode: string | null; raw: any }> {
+  let lastErr: any = null;
+  for (let i = 0; i < ERASER_PERTURBATIONS.length; i++) {
+    const perturbed = ERASER_PERTURBATIONS[i](prompt);
+    try {
+      const result = await callEraserOnce(perturbed, diagramType);
+      if (i > 0) console.log(`[eraser] succeeded on perturbation attempt ${i}`);
+      return result;
+    } catch (err: any) {
+      lastErr = err;
+      const msg = err?.message || String(err);
+      // Don't retry on auth / quota errors — those won't change with rewording.
+      if (/401|403|quota|unauthor/i.test(msg)) throw err;
+      console.warn(`[eraser] attempt ${i} failed: ${msg.substring(0, 200)}`);
+    }
+  }
+  throw lastErr || new Error("Eraser failed across all perturbation attempts");
+}
+
 // Per-diagram regeneration: re-runs Eraser for a single previously-generated
 // diagram using its stored spec. Used by the per-card "Regenerate" button so
 // the user can recover a single failed render without rerunning the planner
@@ -189,17 +224,13 @@ export async function regenerateSingleDiagram(args: {
   const figureId = d.figureId || null;
   const diagramType = d.diagramType || "flowchart-diagram";
 
-  // Build the Eraser prompt from whatever spec the stored diagram carries.
-  // Prefer the already-generated diagramCode (most common, transient Eraser
-  // failure case). Fall back to re-running buildEraserPrompt against the
-  // stored components if the code itself was never generated.
-  let userPrompt: string;
-  if (typeof d.diagramCode === "string" && d.diagramCode.trim().length > 0) {
-    userPrompt = d.diagramCode;
-  } else {
-    const built = buildEraserPrompt(d);
-    userPrompt = built.userPrompt;
-  }
+  // Always rebuild the prompt from the original stored spec rather than
+  // reusing Eraser's previously-generated diagramCode. Reusing diagramCode
+  // sends Eraser's own output back in as the prompt, which deterministically
+  // produces the same image — so Regenerate looks like a no-op. Rebuilding
+  // from spec gives Eraser a fresh shot at the same semantic input.
+  const built = buildEraserPrompt(d);
+  const userPrompt = built.userPrompt;
 
   try {
     const eraserResp = await callEraser(userPrompt, diagramType);
