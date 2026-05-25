@@ -12,6 +12,7 @@
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { db } from "../../db";
 import { humanInputs, type HumanInput } from "@shared/schema";
+import { recordEventBackground } from "../../lib/provenance/hash-chain";
 
 export interface RecordHumanInputArgs {
   projectId: string;
@@ -63,6 +64,20 @@ export async function recordHumanInput(args: RecordHumanInputArgs): Promise<Huma
       })
       .where(eq(humanInputs.id, existing[0].id))
       .returning();
+    recordEventBackground({
+      projectId: args.projectId,
+      eventType: "human_input_saved",
+      refTable: "human_inputs",
+      refId: updated.id,
+      payload: {
+        source: args.source,
+        sourceRefId: args.sourceRefId ?? null,
+        answerText,
+        tags,
+        conceptId: args.conceptId ?? null,
+      },
+      metadata: { action: "update", charCount },
+    });
     return updated;
   }
 
@@ -79,6 +94,20 @@ export async function recordHumanInput(args: RecordHumanInputArgs): Promise<Huma
       charCount,
     })
     .returning();
+  recordEventBackground({
+    projectId: args.projectId,
+    eventType: "human_input_saved",
+    refTable: "human_inputs",
+    refId: inserted.id,
+    payload: {
+      source: args.source,
+      sourceRefId: args.sourceRefId ?? null,
+      answerText,
+      tags,
+      conceptId: args.conceptId ?? null,
+    },
+    metadata: { action: "insert", charCount },
+  });
   return inserted;
 }
 

@@ -458,6 +458,48 @@ export default function Agent5() {
     },
   });
 
+  // Proof Package — RFC 3161 timestamped .zip the inventor downloads as
+  // third-party cryptographic evidence the disclosure existed at a
+  // specific time. Wording must never claim ownership / replacement of
+  // a filing; see server route for the canonical legal phrasing.
+  const exportProofPackageMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch(`/api/projects/${projectId}/provenance/proof-package`, {
+        credentials: "include",
+      });
+      if (!response.ok) {
+        let msg = "Couldn't build proof package";
+        try {
+          const body = await response.json();
+          if (body?.message) msg = body.message;
+        } catch {}
+        throw new Error(msg);
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const match = /filename="([^"]+)"/.exec(disposition);
+      return { blob, filename: match?.[1] ?? `patentgeyser-proof-${projectId}.zip` };
+    },
+    onSuccess: ({ blob, filename }) => {
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", filename);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      toast({
+        title: "Evidence package downloaded",
+        description:
+          "Your Proof of Human Conception plus third-party cryptographic evidence that this disclosure existed at a specific time. Keep the .zip safe — it is independently verifiable.",
+      });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Couldn't build proof package", description: e.message });
+    },
+  });
+
   const exportDOCXMutation = useMutation({
     mutationFn: async () => {
       const response = await fetch(`/api/projects/${projectId}/export-docx`, {
@@ -1000,11 +1042,11 @@ export default function Agent5() {
             <div className="inline-flex items-center justify-center w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-primary/10 mb-2 sm:mb-4">
               <CheckCircle2 className="h-8 w-8 sm:h-10 sm:w-10 text-primary" />
             </div>
-            <h2 className="text-2xl sm:text-3xl font-bold">Provisional Draft Ready for Review!</h2>
+            <h2 className="text-2xl sm:text-3xl font-bold">Technical Disclosure Final Steps</h2>
             <p className="text-muted-foreground text-sm sm:text-base max-w-2xl mx-auto px-2">
-              Download your draft to review it and export for practitioner review.
+              Complete the last part of the process and download your Technical Disclosure.
             </p>
-            <div className="flex flex-col sm:flex-row flex-wrap gap-3 sm:gap-4 justify-center pt-4 px-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 pt-4 px-2 max-w-3xl mx-auto">
               <Button
                 size="lg"
                 className="w-full sm:w-auto text-base"
@@ -1085,7 +1127,7 @@ export default function Agent5() {
                           ) : (
                             <>
                               <Download className="h-5 w-5 mr-2" />
-                              Download Provisional Draft
+                              Download completed Technical Disclosure
                             </>
                           )}
                         </Button>
@@ -1100,12 +1142,13 @@ export default function Agent5() {
                 );
               })()}
 
-              {/* Proof of Human Conception — same prominence as Download
-                  Provisional Draft. Both gate on the same condition (diagrams
-                  ready) so they enable together. */}
+              {/* Proof of Human Conception + cryptographic proof package
+                  — a single .zip containing both the PoHC docx and the
+                  RFC 3161 / Bitcoin evidence files. One download = the
+                  inventor's complete evidence record. */}
               {(() => {
                 const hasDiagramsReady = diagrams.length > 0;
-                const pohcDisabled = exportPohcMutation.isPending || !hasDiagramsReady;
+                const pohcDisabled = exportProofPackageMutation.isPending || !hasDiagramsReady;
                 return (
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -1115,13 +1158,13 @@ export default function Agent5() {
                           variant="outline"
                           className="w-full text-base"
                           data-testid="button-download-pohc"
-                          onClick={() => exportPohcMutation.mutate()}
+                          onClick={() => exportProofPackageMutation.mutate()}
                           disabled={pohcDisabled}
                         >
-                          {exportPohcMutation.isPending ? (
+                          {exportProofPackageMutation.isPending ? (
                             <>
                               <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-                              Exporting...
+                              Building evidence package...
                             </>
                           ) : (
                             <>
@@ -1132,11 +1175,11 @@ export default function Agent5() {
                         </Button>
                       </span>
                     </TooltipTrigger>
-                    {!hasDiagramsReady && (
-                      <TooltipContent>
-                        Generate diagrams first — Proof of Human Conception unlocks alongside the provisional draft download.
-                      </TooltipContent>
-                    )}
+                    <TooltipContent>
+                      {hasDiagramsReady
+                        ? "Your private inventorship record plus RFC 3161 + Bitcoin cryptographic evidence — bundled as a single .zip, independently verifiable with OpenSSL."
+                        : "Generate diagrams first — your evidence package unlocks alongside the provisional draft download."}
+                    </TooltipContent>
                   </Tooltip>
                 );
               })()}

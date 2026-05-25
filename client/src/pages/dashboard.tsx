@@ -249,7 +249,16 @@ export default function Dashboard() {
               >
                 <div 
                   className="cursor-pointer flex-1"
-                  onClick={() => setLocation(`/project/${project.id}/agent/${project.currentSubstage || project.currentStage}`)}
+                  onClick={() => {
+                    // Substage is only meaningful when its leading digit
+                    // matches currentStage. Otherwise it's a stale value
+                    // from an earlier stage the user already moved past,
+                    // and using it would send them backward.
+                    const sub = project.currentSubstage || "";
+                    const subStageDigit = sub ? parseInt(sub, 10) : NaN;
+                    const useSubstage = sub && subStageDigit === project.currentStage;
+                    setLocation(`/project/${project.id}/agent/${useSubstage ? sub : project.currentStage}`);
+                  }}
                 >
                   <CardHeader>
                     {project.completed === 1 && (

@@ -2,6 +2,7 @@
 import { users, inventorsUsers, projects, agentData, pannuRecords, ideaSnapshots, priorArtSearches, emailWhitelist, type User, type InsertUser, type InventorUser, type InsertInventorUser, type Project, type InsertProject, type AgentData, type InsertAgentData, type PannuRecord, type InsertPannuRecord, type IdeaSnapshot, type InsertIdeaSnapshot, type PriorArtSearch, type InsertPriorArtSearch, type EmailWhitelistEntry } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, and, desc, sql, isNull, or, gte } from "drizzle-orm";
+import { recordEventBackground } from "./lib/provenance/hash-chain";
 
 // 2FA update data type
 export interface Update2FAData {
@@ -318,19 +319,32 @@ export class DatabaseStorage implements IStorage {
 
   async upsertAgentData(insertData: InsertAgentData): Promise<AgentData> {
     const existing = await this.getAgentData(insertData.projectId, insertData.agentNumber);
-    
+
+    const emitEvent = (row: AgentData, action: "insert" | "update") => {
+      recordEventBackground({
+        projectId: insertData.projectId,
+        eventType: "agent_data_saved",
+        refTable: "agent_data",
+        refId: row.id,
+        payload: insertData.data,
+        metadata: { agentNumber: insertData.agentNumber, action },
+      });
+    };
+
     if (existing) {
       const [updated] = await db
         .update(agentData)
         .set({ data: insertData.data, updatedAt: new Date() })
         .where(eq(agentData.id, existing.id))
         .returning();
+      emitEvent(updated, "update");
       return updated;
     } else {
       const [created] = await db
         .insert(agentData)
         .values(insertData)
         .returning();
+      emitEvent(created, "insert");
       return created;
     }
   }
@@ -393,6 +407,21 @@ export class DatabaseStorage implements IStorage {
       .insert(pannuRecords)
       .values(insertRecord)
       .returning();
+    recordEventBackground({
+      projectId: record.projectId,
+      eventType: "pohc_record_saved",
+      refTable: "pannu_records",
+      refId: record.id,
+      payload: {
+        conceptId: record.conceptId,
+        claimText: record.claimText,
+        questions: record.questions,
+        answers: record.answers,
+        certificationStatus: record.certificationStatus,
+        confidenceScore: record.confidenceScore,
+      },
+      metadata: { action: "insert" },
+    });
     return record;
   }
 
@@ -402,6 +431,23 @@ export class DatabaseStorage implements IStorage {
       .set({ ...data, updatedAt: new Date() })
       .where(eq(pannuRecords.id, id))
       .returning();
+    if (record) {
+      recordEventBackground({
+        projectId: record.projectId,
+        eventType: "pohc_record_saved",
+        refTable: "pannu_records",
+        refId: record.id,
+        payload: {
+          conceptId: record.conceptId,
+          claimText: record.claimText,
+          questions: record.questions,
+          answers: record.answers,
+          certificationStatus: record.certificationStatus,
+          confidenceScore: record.confidenceScore,
+        },
+        metadata: { action: "update" },
+      });
+    }
     return record || undefined;
   }
 
@@ -429,6 +475,20 @@ export class DatabaseStorage implements IStorage {
       .insert(ideaSnapshots)
       .values(insertSnapshot)
       .returning();
+    recordEventBackground({
+      projectId: snapshot.projectId,
+      eventType: "snapshot_created",
+      refTable: "idea_snapshots",
+      refId: snapshot.id,
+      payload: {
+        version: snapshot.version,
+        snapshotType: snapshot.snapshotType,
+        title: snapshot.title,
+        content: snapshot.content,
+        metadata: snapshot.metadata,
+      },
+      metadata: { snapshotType: snapshot.snapshotType, version: snapshot.version },
+    });
     return snapshot;
   }
 

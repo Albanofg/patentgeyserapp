@@ -152,18 +152,36 @@ export default function Agent4Pannu() {
   const [loadingAiSuggestion, setLoadingAiSuggestion] = useState<string | null>(null);
   const [generationStep, setGenerationStep] = useState<GenerationStep>('idle');
   const [visibleSteps, setVisibleSteps] = useState(0);
+  const [generationStart, setGenerationStart] = useState<number | null>(null);
+  const [elapsedSec, setElapsedSec] = useState(0);
 
+  // Cap visibleSteps at N-1 while generation is still running so the last
+  // step stays in spinner state — prevents the misleading "all green but
+  // still waiting" state.
   useEffect(() => {
     if (generationStep === 'idle') {
       setVisibleSteps(0);
+      setGenerationStart(null);
+      setElapsedSec(0);
       return;
     }
-    if (visibleSteps >= PROCESSING_STEPS.length) return;
+    if (generationStart === null) setGenerationStart(Date.now());
+    const cap = PROCESSING_STEPS.length - 1;
+    if (visibleSteps >= cap) return;
     const timer = setTimeout(() => {
-      setVisibleSteps((prev) => prev + 1);
-    }, 20000);
+      setVisibleSteps((prev) => Math.min(prev + 1, cap));
+    }, 18000);
     return () => clearTimeout(timer);
-  }, [generationStep, visibleSteps]);
+  }, [generationStep, visibleSteps, generationStart]);
+
+  // Elapsed timer.
+  useEffect(() => {
+    if (generationStep === 'idle' || generationStart === null) return;
+    const interval = setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - generationStart) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [generationStep, generationStart]);
 
   const { data: project, isLoading: projectLoading } = useQuery<Project>({
     queryKey: ["/api/projects", projectId],
@@ -305,38 +323,50 @@ export default function Agent4Pannu() {
   // generate-questions mutation, so the mutation's onSuccess never ran).
   useEffect(() => {
     if (!projectId) return;
-    for (const claim of keyConceptsForValidation) {
-      const cid = claim.conceptId;
-      const state = validationStates[cid];
-      if (!state) continue;
-      if (state.status === 'pending' || state.status === 'generating') continue;
-      if (prefillMeta[cid]) continue;
-      (async () => {
-        try {
-          const res = await fetch(
-            `/api/projects/${projectId}/pannu/prefill?conceptId=${encodeURIComponent(cid)}&summarize=false`,
-            { credentials: "include" },
-          );
-          if (!res.ok) return;
-          const prefill = await res.json();
-          const meta: Record<string, { sources: any[]; coverage: number; draft: string; summarized?: boolean; insufficient?: boolean; missing?: string[] }> = {};
-          for (const factor of ["conception", "quality", "known_concepts"] as const) {
-            const f = prefill?.factors?.[factor];
-            meta[factor] = {
-              sources: Array.isArray(f?.sources) ? f.sources : [],
-              coverage: typeof f?.coverage === "number" ? f.coverage : 0,
-              draft: typeof f?.draft === "string" ? f.draft : "",
-              summarized: typeof f?.summarized === "boolean" ? f.summarized : false,
-              insufficient: typeof f?.insufficient === "boolean" ? f.insufficient : false,
-              missing: Array.isArray(f?.missing) ? f.missing : [],
-            };
-          }
-          setPrefillMeta(prev => (prev[cid] ? prev : { ...prev, [cid]: meta }));
-        } catch (e) {
-          console.warn("[pannu] on-mount prefill fetch failed:", e);
+    // Identify concepts that need prefill metadata. The prefill data is
+    // project-wide (same sources/coverage/draft for every concept), so we
+    // fetch ONCE and fan it out to every concept that needs it — instead of
+    // firing N identical requests per page load.
+    const needsPrefill = keyConceptsForValidation.filter((claim) => {
+      const state = validationStates[claim.conceptId];
+      if (!state) return false;
+      if (state.status === 'pending' || state.status === 'generating') return false;
+      if (prefillMeta[claim.conceptId]) return false;
+      return true;
+    });
+    if (needsPrefill.length === 0) return;
+
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/projects/${projectId}/pannu/prefill?summarize=false`,
+          { credentials: "include" },
+        );
+        if (!res.ok) return;
+        const prefill = await res.json();
+        const meta: Record<string, { sources: any[]; coverage: number; draft: string; summarized?: boolean; insufficient?: boolean; missing?: string[] }> = {};
+        for (const factor of ["conception", "quality", "known_concepts"] as const) {
+          const f = prefill?.factors?.[factor];
+          meta[factor] = {
+            sources: Array.isArray(f?.sources) ? f.sources : [],
+            coverage: typeof f?.coverage === "number" ? f.coverage : 0,
+            draft: typeof f?.draft === "string" ? f.draft : "",
+            summarized: typeof f?.summarized === "boolean" ? f.summarized : false,
+            insufficient: typeof f?.insufficient === "boolean" ? f.insufficient : false,
+            missing: Array.isArray(f?.missing) ? f.missing : [],
+          };
         }
-      })();
-    }
+        setPrefillMeta((prev) => {
+          const next = { ...prev };
+          for (const claim of needsPrefill) {
+            if (!next[claim.conceptId]) next[claim.conceptId] = meta;
+          }
+          return next;
+        });
+      } catch (e) {
+        console.warn("[pannu] on-mount prefill fetch failed:", e);
+      }
+    })();
     // We don't include prefillMeta in deps — only the keys we already
     // fetched matter, and we read those via the early-return check above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -795,36 +825,47 @@ export default function Agent4Pannu() {
                 </p>
 
                 <div className="w-full text-left space-y-2">
-                  {PROCESSING_STEPS.map((step, i) => (
-                    <div
-                      key={step}
-                      className="flex items-center gap-2 transition-all duration-500 ease-out"
-                      data-testid={`step-item-${i}`}
-                      style={{
-                        opacity: i < visibleSteps ? 1 : 0.55,
-                        transform: i < visibleSteps ? "translateY(0) scale(1)" : "translateY(4px) scale(0.95)",
-                      }}
-                    >
-                      {i < visibleSteps ? (
-                        <CheckCircle2
-                          className="h-4 w-4 shrink-0 transition-colors duration-500 text-green-600 dark:text-green-400"
-                        />
-                      ) : (
-                        <Circle
-                          className="h-4 w-4 shrink-0 transition-colors duration-500 text-muted-foreground"
-                        />
-                      )}
-                      <span className={`text-sm transition-colors duration-500 ${
-                        i < visibleSteps ? "text-foreground" : "text-muted-foreground"
-                      }`}>
-                        {step}
-                      </span>
-                    </div>
-                  ))}
+                  {PROCESSING_STEPS.map((step, i) => {
+                    const isDone = i < visibleSteps;
+                    const isActive = i === visibleSteps;
+                    return (
+                      <div
+                        key={step}
+                        className="flex items-center gap-2 transition-all duration-500 ease-out"
+                        data-testid={`step-item-${i}`}
+                        style={{
+                          opacity: isDone || isActive ? 1 : 0.55,
+                          transform: isDone || isActive ? "translateY(0) scale(1)" : "translateY(4px) scale(0.95)",
+                        }}
+                      >
+                        {isDone ? (
+                          <CheckCircle2 className="h-4 w-4 shrink-0 text-green-600 dark:text-green-400" />
+                        ) : isActive ? (
+                          <Loader2 className="h-4 w-4 shrink-0 text-primary animate-spin" />
+                        ) : (
+                          <Circle className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        )}
+                        <span className={`text-sm transition-colors duration-500 ${
+                          isDone ? "text-foreground" : isActive ? "text-foreground font-medium" : "text-muted-foreground"
+                        }`}>
+                          {step}
+                          {isActive && <span className="text-muted-foreground"> — in progress…</span>}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
 
-                <p className="text-sm text-muted-foreground pt-2">
-                  Your downloadable .docx draft will be ready shortly.
+                <div className="w-full h-1 bg-muted rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-primary/70 rounded-full"
+                    style={{ width: "33%", animation: "pannuIndeterminate 1.6s ease-in-out infinite" }}
+                  />
+                </div>
+                <style>{`@keyframes pannuIndeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }`}</style>
+
+                <p className="text-xs text-muted-foreground text-center pt-2">
+                  Elapsed: {Math.floor(elapsedSec / 60)}:{String(elapsedSec % 60).padStart(2, "0")} · this can take several minutes — please keep this tab open
                 </p>
               </div>
             </CardContent>

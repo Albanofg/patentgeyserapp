@@ -4,9 +4,9 @@ import https from "https";
 import crypto from "crypto";
 import { storage } from "./storage";
 import { pool, db } from "./db";
-import { insertProjectSchema, aiUsageLog } from "@shared/schema";
+import { insertProjectSchema, aiUsageLog, provenanceEvents, provenanceStamps, provenanceAnchors } from "@shared/schema";
 import { runWithUsageContext } from "./ai/request-context";
-import { and as drizzleAnd, gte as drizzleGte, lte as drizzleLte, eq as drizzleEq, desc as drizzleDesc, sql as drizzleSql } from "drizzle-orm";
+import { and as drizzleAnd, gte as drizzleGte, lte as drizzleLte, eq as drizzleEq, asc as drizzleAsc, desc as drizzleDesc, sql as drizzleSql } from "drizzle-orm";
 import { TERMS_VERSION } from "@shared/terms";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
@@ -33,6 +33,12 @@ import { runExtractConcepts } from "./modules/module2/2b-extract-concepts/extrac
 import { runWhitespace } from "./modules/module4/4a-whitespace/whitespace";
 import { runClaims } from "./modules/module4/4b-key-concepts/claims";
 import { runPannuQuestions, runPannuScorer } from "./modules/module4/4c-pannu/pannu";
+import { createCheckpointBackground } from "./lib/provenance/checkpoint";
+import { verifyChain } from "./lib/provenance/hash-chain";
+import { TSA_PROVIDERS } from "./lib/provenance/tsa-providers";
+import { runDailyAnchor } from "./lib/provenance/anchor";
+import { buildMerkleTree } from "./lib/provenance/merkle";
+import { buildPoHCDocx } from "./lib/pohc-docx";
 import { recordHumanInput, deleteHumanInput, listHumanInputs } from "./modules/human-inputs/ledger";
 import { buildPannuPrefill } from "./modules/human-inputs/prefill";
 import { HUMAN_INPUT_TAGS } from "./modules/human-inputs/tags";
@@ -42,6 +48,10 @@ import { runBroaderClaims } from "./modules/module5/5c-broader-key-concepts/broa
 import { runProvisional } from "./modules/module5/5a-provisional/provisional";
 
 const SALT_ROUNDS = 10;
+
+// RFC 4122 UUID v1–v5. Used to validate path params before DB lookups so
+// we don't pass arbitrary user input through query layers or log noise.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const registerRequestSchema = z.object({
   email: z.string().trim().toLowerCase().email("Enter a valid email address"),
@@ -3114,9 +3124,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Update project to agent 2 with substage 2a
       await storage.updateProject(req.params.id, { currentStage: 2, currentSubstage: '2a' });
 
-      res.json({ 
-        success: true, 
-        message: "Brainstorming finalized. Moving to concept expansion." 
+      // Provenance: brainstorm finalize is a checkpoint — chain it and stamp.
+      createCheckpointBackground({
+        projectId: req.params.id,
+        eventType: "finalize_brainstorm",
+        refTable: "agent_data",
+        refId: null,
+        payload: { agentNumber: 1, comprehensiveSummary },
+      });
+
+      res.json({
+        success: true,
+        message: "Brainstorming finalized. Moving to concept expansion."
       });
     } catch (error: any) {
       console.error("Finalize agent 1 error:", error);
@@ -4004,7 +4023,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         },
       });
 
-      res.json({ 
+      // Provenance: first complete provisional draft — the spec's
+      // "first complete disclosure" trigger. The canonical payload is the
+      // full draft text so the proof package can independently re-derive
+      // the hash that every TSA signed.
+      createCheckpointBackground({
+        projectId: req.params.id,
+        eventType: "generate_first_draft",
+        refTable: "agent_data",
+        refId: null,
+        payload: {
+          agentNumber: 2,
+          provisionalDraft: result.patentableIdeas || result.draftSpecification || result.provisionalDraft,
+          isRefinement,
+        },
+      });
+
+      res.json({
         success: true,
         provisionalDraft: result.patentableIdeas || result.draftSpecification || result.provisionalDraft
       });
@@ -5449,11 +5484,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Update project to stage 5
       await storage.updateProject(req.params.id, { currentStage: 5 });
-      
-      res.json({ 
-        success: true, 
+
+      // Provenance: provisional finalize is a checkpoint.
+      createCheckpointBackground({
+        projectId: req.params.id,
+        eventType: "finalize_provisional",
+        refTable: "agent_data",
+        refId: null,
+        payload: { provisionalDraft },
+      });
+
+      res.json({
+        success: true,
         provisionalDraft,
-        message: "Provisional ready! You can generate diagrams from The Showcase." 
+        message: "Provisional ready! You can generate diagrams from The Showcase."
       });
     } catch (error: any) {
       console.error("Finalize provisional error:", error);
@@ -5721,12 +5765,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Update project to stage 5
       await storage.updateProject(req.params.id, { currentStage: 5 });
-      
-      res.json({ 
-        success: true, 
+
+      // Provenance: diagrams generated. Per the spec, "user uploads drawings
+      // or supporting files" is a checkpoint trigger; this app generates the
+      // drawings rather than uploading them, but the evidence requirement is
+      // the same. We stamp the diagram set + the disclosure they were built
+      // from so the proof package binds them together.
+      createCheckpointBackground({
+        projectId: req.params.id,
+        eventType: "generate_diagrams",
+        refTable: "agent_data",
+        refId: null,
+        payload: {
+          diagramCount: diagrams.length,
+          diagramTypes: diagrams.map((d: any) => d.diagramType || d.type || d.title || null),
+          diagrams,
+          provisionalDraft,
+        },
+      });
+
+      res.json({
+        success: true,
         provisionalDraft,
         diagrams,
-        message: "Showcase ready!" 
+        message: "Showcase ready!"
       });
     } catch (error: any) {
       console.error("Generate showcase error:", error);
@@ -5969,7 +6031,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       await storage.mergeAgentData(req.params.id, 5, { provisionalDraft: parsedDraft });
-      
+
+      // Provenance: each saved section is a new version of the disclosure.
+      // The canonical payload is the whole merged draft so the proof
+      // package binds to the full document, not just the diff.
+      createCheckpointBackground({
+        projectId: req.params.id,
+        eventType: "update_spec_section",
+        refTable: "agent_data",
+        refId: null,
+        payload: {
+          section,
+          updatedDraft: parsedDraft,
+        },
+      });
+
       res.json({ success: true, section, updatedDraft: parsedDraft });
     } catch (error: any) {
       console.error("Update specification section error:", error);
@@ -6386,6 +6462,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const mergePayload: any = { genusSpecies: completed };
       if (updatedDraft) mergePayload.provisionalDraft = updatedDraft;
       await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...a5, ...mergePayload } });
+
+      // Provenance: G&S finalize is a checkpoint.
+      createCheckpointBackground({
+        projectId: req.params.id,
+        eventType: "finalize_gs",
+        refTable: "agent_data",
+        refId: null,
+        payload: { finalSpec, gate2Approvals: completed.gate2Approvals, gate2Edits: completed.gate2Edits },
+      });
+
       res.json({ success: true, status: "complete", finalSpec });
     } catch (error: any) {
       console.error("[genus-species] finalize error:", error);
@@ -6512,6 +6598,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         appliedToDraftAt: new Date().toISOString(),
       };
       await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...a5, provisionalDraft: draft, genusSpecies: updatedGs } });
+
+      // Provenance: G&S expansion merged into the draft — this is a major
+      // version of the disclosure (background, summary, detailed_description,
+      // abstract, and key concepts all change). Stamp the merged draft so
+      // the proof package can prove this exact merged content existed.
+      createCheckpointBackground({
+        projectId: req.params.id,
+        eventType: "apply_gs_to_draft",
+        refTable: "agent_data",
+        refId: null,
+        payload: {
+          provisionalDraft: draft,
+          appliedAt: updatedGs.appliedToDraftAt,
+        },
+      });
+
       res.json({ success: true, appliedToDraft: true });
     } catch (error: any) {
       console.error("[genus-species] apply-to-draft error:", error);
@@ -7904,6 +8006,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       doc.end();
+
+      // Provenance: provisional PDF export is a checkpoint.
+      createCheckpointBackground({
+        projectId: req.params.id,
+        eventType: "export_provisional",
+        refTable: "export",
+        refId: null,
+        payload: { exportType: "pdf", at: new Date().toISOString() },
+      });
     } catch (error: any) {
       console.error("Export PDF error:", error);
       res.status(500).json({ message: "Failed to export PDF" });
@@ -7918,151 +8029,528 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // and MUST NOT be uploaded with the patent filing.
   app.get("/api/projects/:id/export-pohc-docx", isAuthenticated, async (req, res) => {
     try {
-      const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } = await import('docx');
+      if (!UUID_RE.test(req.params.id)) return res.status(400).json({ message: "Invalid project id" });
       const project = await storage.getProject(req.params.id);
       if (!project) return res.status(404).json({ message: "Project not found" });
-
-      const [logEntries, humanInputs] = await Promise.all([
-        getQALog(req.params.id, true),
-        listHumanInputs({ projectId: req.params.id }),
-      ]);
-
-      const RED = "C00000";
-      const bodyFontSize = 22; // half-points (= 11pt)
-
-      const fmtDate = (d: any): string => {
-        if (!d) return "";
-        const dt = new Date(d);
-        return Number.isNaN(dt.getTime()) ? "" : dt.toISOString();
-      };
-
-      const paragraphs: any[] = [];
-
-      // Title IS the warning — the only "scary" surface, exactly where the
-      // inventor's eyes land first when opening the file.
-      paragraphs.push(
-        new Paragraph({
-          alignment: AlignmentType.CENTER,
-          spacing: { before: 0, after: 240 },
-          children: [
-            new TextRun({ text: "DO NOT UPLOAD THIS FILE WITH YOUR PATENT", bold: true, color: RED, size: 40 }),
-          ],
-        }),
-        new Paragraph({
-          alignment: AlignmentType.CENTER,
-          spacing: { after: 480 },
-          children: [
-            new TextRun({
-              text: "This is your private Proof of Human Conception record — inventorship evidence for your own files only.",
-              color: RED,
-              size: bodyFontSize,
-              italics: true,
-            }),
-          ],
-        }),
-      );
-
-      // Project header (after the warning, neutral styling)
-      paragraphs.push(
-        new Paragraph({
-          heading: HeadingLevel.HEADING_1,
-          spacing: { before: 200, after: 200 },
-          children: [new TextRun({ text: `Proof of Human Conception — ${project.title || "Untitled"}` })],
-        }),
-        new Paragraph({
-          spacing: { after: 240 },
-          children: [
-            new TextRun({ text: `Project ID: `, bold: true, size: bodyFontSize }),
-            new TextRun({ text: project.id, size: bodyFontSize }),
-            new TextRun({ text: `\nExported: `, bold: true, size: bodyFontSize, break: 1 }),
-            new TextRun({ text: new Date().toISOString(), size: bodyFontSize }),
-          ],
-        }),
-      );
-
-      // Section 1 — AI Helper invention log (pohcLog)
-      const formalEntries = logEntries.filter((e: any) => e?._source !== "human_inputs");
-      paragraphs.push(
-        new Paragraph({
-          heading: HeadingLevel.HEADING_2,
-          spacing: { before: 400, after: 200 },
-          children: [new TextRun({ text: `1. Invention Log — AI Helper Captures (${formalEntries.length})` })],
-        }),
-      );
-      if (formalEntries.length === 0) {
-        paragraphs.push(new Paragraph({ children: [new TextRun({ text: "No AI Helper log entries captured.", italics: true, size: bodyFontSize })] }));
-      } else {
-        formalEntries.forEach((e: any, i: number) => {
-          const tags = Array.isArray(e?.tags) ? e.tags.join(", ") : "";
-          paragraphs.push(
-            new Paragraph({
-              spacing: { before: 240, after: 60 },
-              children: [
-                new TextRun({ text: `Entry ${i + 1}`, bold: true, size: bodyFontSize }),
-                new TextRun({ text: `  ·  ${e.entryType || "unknown"}`, size: bodyFontSize - 2 }),
-                new TextRun({ text: `  ·  captured ${fmtDate(e.capturedAt)}`, size: bodyFontSize - 2 }),
-                ...(e.capturedAtTrail ? [new TextRun({ text: `  ·  ${e.capturedAtTrail}`, size: bodyFontSize - 2, italics: true })] : []),
-                ...(tags ? [new TextRun({ text: `  ·  tags: ${tags}`, size: bodyFontSize - 2 })] : []),
-              ],
-            }),
-            new Paragraph({
-              spacing: { after: 120 },
-              children: [new TextRun({ text: String(e.verbatimText || ""), size: bodyFontSize })],
-            }),
-          );
-        });
+      if (!sessionOwnsProject(req, project)) {
+        return res.status(404).json({ message: "Project not found" });
       }
 
-      // Section 2 — Human inputs ledger (every textarea verbatim)
-      paragraphs.push(
-        new Paragraph({
-          heading: HeadingLevel.HEADING_2,
-          spacing: { before: 400, after: 200 },
-          children: [new TextRun({ text: `2. Typed Inputs Across the Platform (${humanInputs.length})` })],
-        }),
-      );
-      if (humanInputs.length === 0) {
-        paragraphs.push(new Paragraph({ children: [new TextRun({ text: "No typed inputs captured.", italics: true, size: bodyFontSize })] }));
-      } else {
-        humanInputs.forEach((row: any, i: number) => {
-          const tags = Array.isArray(row?.tags) ? row.tags.join(", ") : "";
-          paragraphs.push(
-            new Paragraph({
-              spacing: { before: 240, after: 60 },
-              children: [
-                new TextRun({ text: `Input ${i + 1}`, bold: true, size: bodyFontSize }),
-                new TextRun({ text: `  ·  source: ${row.source || "unknown"}`, size: bodyFontSize - 2 }),
-                ...(row.conceptId ? [new TextRun({ text: `  ·  ${row.conceptId}`, size: bodyFontSize - 2 })] : []),
-                new TextRun({ text: `  ·  updated ${fmtDate(row.updatedAt || row.createdAt)}`, size: bodyFontSize - 2 }),
-                ...(tags ? [new TextRun({ text: `  ·  tags: ${tags}`, size: bodyFontSize - 2 })] : []),
-              ],
-            }),
-            ...(row.promptText
-              ? [
-                  new Paragraph({
-                    spacing: { after: 40 },
-                    children: [new TextRun({ text: `Q: ${row.promptText}`, italics: true, size: bodyFontSize - 2 })],
-                  }),
-                ]
-              : []),
-            new Paragraph({
-              spacing: { after: 120 },
-              children: [new TextRun({ text: String(row.answerText || ""), size: bodyFontSize })],
-            }),
-          );
-        });
-      }
+      const pohc = await buildPoHCDocx(req.params.id);
+      if (!pohc) return res.status(404).json({ message: "Project not found" });
 
-      const doc = new Document({ sections: [{ properties: {}, children: paragraphs }] });
-      const buffer = await Packer.toBuffer(doc);
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-      res.setHeader("Content-Disposition", `attachment; filename=pohc-${project.title || req.params.id}.docx`);
-      res.send(buffer);
+      res.setHeader("Content-Disposition", `attachment; filename="${pohc.filename}"`);
+      res.send(pohc.buffer);
+
+      createCheckpointBackground({
+        projectId: req.params.id,
+        eventType: "export_pohc",
+        refTable: "export",
+        refId: null,
+        payload: { exportType: "pohc_docx", at: new Date().toISOString() },
+      });
     } catch (error: any) {
       console.error("[export-pohc-docx] error:", error);
       res.status(500).json({ message: error?.message || "Failed to export PoHC" });
     }
   });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Provenance cron — daily OpenTimestamps Bitcoin Merkle anchor.
+  //
+  // Protected by a shared secret. Two paths to authenticate:
+  //   1. Vercel Cron sends `x-vercel-cron-signature` (validated by Vercel
+  //      at the platform level when the route is in `vercel.json` crons).
+  //      We accept any request that carries the `user-agent: vercel-cron/...`
+  //      AND has a non-empty signature header.
+  //   2. Manual / external schedulers: send `x-cron-secret` matching
+  //      process.env.PROVENANCE_CRON_SECRET.
+  //
+  // If neither matches, return 401 with no body details (don't leak which
+  // mechanism we're checking).
+  app.post("/api/cron/provenance-anchor", async (req, res) => {
+    const cronSecret = process.env.PROVENANCE_CRON_SECRET;
+    const headerSecret = req.header("x-cron-secret");
+    const vercelSig = req.header("x-vercel-cron-signature");
+    const ua = req.header("user-agent") || "";
+
+    const authedByVercel = !!vercelSig && /vercel-cron/i.test(ua);
+    const authedBySecret = !!cronSecret && headerSecret === cronSecret;
+
+    if (!authedByVercel && !authedBySecret) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    try {
+      // Anchor "yesterday" UTC by default so we only fold events from a
+      // day that has fully closed. Caller can override with ?date=YYYY-MM-DD
+      // for backfill.
+      let target: Date;
+      const dateParam = String(req.query.date ?? "");
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+        target = new Date(`${dateParam}T00:00:00.000Z`);
+        if (Number.isNaN(target.getTime())) {
+          return res.status(400).json({ message: "Invalid date" });
+        }
+      } else {
+        const now = new Date();
+        target = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1));
+      }
+
+      const result = await runDailyAnchor(target);
+      res.json({ ok: true, ...result });
+    } catch (error: any) {
+      console.error("[cron/provenance-anchor] error:", error);
+      res.status(500).json({ message: error?.message || "Anchor run failed" });
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Provenance — chain verification + downloadable proof package.
+  //
+  // Wording rule (mirrors the user-facing copy elsewhere): never claim
+  // ownership or that this replaces a filing. This system creates third-
+  // party cryptographic evidence that a specific disclosure existed at or
+  // before a verified time and has not been altered.
+  // ───────────────────────────────────────────────────────────────────────
+
+  // Verify the append-only hash chain for a project. Returns the chain
+  // status plus the list of TSA stamps attached to each event.
+  app.get("/api/projects/:id/provenance/verify", isAuthenticated, async (req, res) => {
+    try {
+      if (!UUID_RE.test(req.params.id)) {
+        return res.status(400).json({ message: "Invalid project id" });
+      }
+      const project = await storage.getProject(req.params.id);
+      if (!project) return res.status(404).json({ message: "Project not found" });
+      // Authorization: 404 (not 403) so we don't leak existence of other
+      // users' projects to a guessing attacker.
+      if (!sessionOwnsProject(req, project)) {
+        return res.status(404).json({ message: "Project not found" });
+      }
+
+      const chain = await verifyChain(req.params.id);
+
+      const events = await db
+        .select({
+          id: provenanceEvents.id,
+          eventType: provenanceEvents.eventType,
+          refTable: provenanceEvents.refTable,
+          refId: provenanceEvents.refId,
+          payloadHash: provenanceEvents.payloadHash,
+          prevHash: provenanceEvents.prevHash,
+          eventHash: provenanceEvents.eventHash,
+          createdAt: provenanceEvents.createdAt,
+        })
+        .from(provenanceEvents)
+        .where(drizzleEq(provenanceEvents.projectId, req.params.id))
+        .orderBy(drizzleAsc(provenanceEvents.createdAt));
+
+      const stamps = await db
+        .select({
+          id: provenanceStamps.id,
+          eventId: provenanceStamps.eventId,
+          tsaUrl: provenanceStamps.tsaUrl,
+          requestHash: provenanceStamps.requestHash,
+          createdAt: provenanceStamps.createdAt,
+        })
+        .from(provenanceStamps)
+        .where(drizzleEq(provenanceStamps.projectId, req.params.id));
+
+      const stampsByEvent = new Map<string, typeof stamps>();
+      for (const s of stamps) {
+        const arr = stampsByEvent.get(s.eventId) ?? [];
+        arr.push(s);
+        stampsByEvent.set(s.eventId, arr);
+      }
+
+      res.json({
+        projectId: req.params.id,
+        chain,
+        events: events.map((e) => ({
+          ...e,
+          stamps: stampsByEvent.get(e.id) ?? [],
+        })),
+        tsaProviders: TSA_PROVIDERS.map((p) => ({ label: p.label, url: p.url })),
+      });
+    } catch (error: any) {
+      console.error("[provenance/verify] error:", error);
+      res.status(500).json({ message: error?.message || "Verification failed" });
+    }
+  });
+
+  // Build and stream a Proof Package zip for a specific checkpoint event.
+  // Contains everything a third party needs to independently verify that
+  // the disclosure bytes existed at or before each TSA's signed time:
+  //   - canonical-disclosure.json   (exact bytes that were hashed)
+  //   - sha256.txt                  (the imprint sent to every TSA)
+  //   - timestamp-response-N.tsr    (one per TSA that responded)
+  //   - tsa-certificates.pem        (cert chains for offline verify)
+  //   - tsa-provider-details.json   (URL + label + policy metadata)
+  //   - event-chain.json            (full hash chain for this project)
+  //   - verification-instructions.txt
+  // Convenience variant: serve the proof package for the most recent
+  // *stamped* checkpoint event (i.e. one that has at least one TSA token).
+  // Used by the UI "Download Proof Package" button.
+  app.get("/api/projects/:id/provenance/proof-package", isAuthenticated, async (req, res) => {
+    try {
+      if (!UUID_RE.test(req.params.id)) {
+        return res.status(400).json({ message: "Invalid project id" });
+      }
+      const project = await storage.getProject(req.params.id);
+      if (!project) return res.status(404).json({ message: "Project not found" });
+      if (!sessionOwnsProject(req, project)) {
+        return res.status(404).json({ message: "Project not found" });
+      }
+
+      const [latest] = await db
+        .select({ id: provenanceEvents.id })
+        .from(provenanceEvents)
+        .innerJoin(provenanceStamps, drizzleEq(provenanceStamps.eventId, provenanceEvents.id))
+        .where(drizzleEq(provenanceEvents.projectId, req.params.id))
+        .orderBy(drizzleDesc(provenanceEvents.createdAt))
+        .limit(1);
+
+      if (!latest) {
+        return res.status(404).json({
+          message: "No stamped checkpoints yet. Finalize a stage or export a draft to create one.",
+        });
+      }
+
+      await streamProofPackage(req, res, req.params.id, latest.id);
+    } catch (error: any) {
+      console.error("[provenance/proof-package latest] error:", error);
+      if (!res.headersSent) {
+        res.status(500).json({ message: error?.message || "Failed to locate proof package" });
+      }
+    }
+  });
+
+  app.get("/api/projects/:id/provenance/proof-package/:eventId", isAuthenticated, async (req, res) => {
+    try {
+      if (!UUID_RE.test(req.params.id) || !UUID_RE.test(req.params.eventId)) {
+        return res.status(400).json({ message: "Invalid id" });
+      }
+      const project = await storage.getProject(req.params.id);
+      if (!project) return res.status(404).json({ message: "Project not found" });
+      if (!sessionOwnsProject(req, project)) {
+        return res.status(404).json({ message: "Project not found" });
+      }
+
+      await streamProofPackage(req, res, req.params.id, req.params.eventId);
+    } catch (error: any) {
+      console.error("[provenance/proof-package] error:", error);
+      if (!res.headersSent) {
+        res.status(500).json({ message: error?.message || "Failed to build proof package" });
+      }
+    }
+  });
+
+  // Helper: builds the zip and streams it. Caller must have already
+  // validated ownership and existence of the project.
+  async function streamProofPackage(_req: Request, res: Response, projectId: string, eventId: string): Promise<void> {
+    const [event] = await db
+      .select()
+      .from(provenanceEvents)
+      .where(drizzleAnd(
+        drizzleEq(provenanceEvents.id, eventId),
+        drizzleEq(provenanceEvents.projectId, projectId),
+      ))
+      .limit(1);
+    if (!event) {
+      res.status(404).json({ message: "Checkpoint not found" });
+      return;
+    }
+
+      const eventStamps = await db
+        .select()
+        .from(provenanceStamps)
+        .where(drizzleEq(provenanceStamps.eventId, event.id))
+        .orderBy(drizzleAsc(provenanceStamps.createdAt));
+
+      const fullChain = await db
+        .select()
+        .from(provenanceEvents)
+        .where(drizzleEq(provenanceEvents.projectId, projectId))
+        .orderBy(drizzleAsc(provenanceEvents.createdAt));
+
+      const archiver = (await import("archiver")).default;
+      const filename = `patentgeyser-proof-${projectId}-${event.id}.zip`;
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+      const archive = archiver("zip", { zlib: { level: 9 } });
+      archive.on("error", (err) => {
+        console.error("[proof-package] archive error:", err);
+        try { res.status(500).end(); } catch {}
+      });
+      archive.pipe(res);
+
+      // 1. The exact canonical bytes that produced payloadHash. Verifier
+      //    recomputes sha256 of this file and confirms it equals sha256.txt
+      //    AND matches the MessageImprint inside every .tsr.
+      if (event.payloadCanonical) {
+        archive.append(event.payloadCanonical, { name: "canonical-disclosure.json" });
+      } else {
+        archive.append(
+          "// This checkpoint was created before canonical payload persistence " +
+          "was enabled. Hash-chain verification is still possible from " +
+          "event-chain.json, but the original disclosure bytes are not bundled.\n",
+          { name: "canonical-disclosure.json" },
+        );
+      }
+
+      archive.append(event.payloadHash + "\n", { name: "sha256.txt" });
+
+      // 2. One .tsr per TSA that responded. Numbered in TSA_PROVIDERS order
+      //    where possible so the filenames map to tsa-provider-details.json.
+      const certPems: string[] = [];
+      const providerDetails: any[] = [];
+      eventStamps.forEach((s, i) => {
+        const idx = i + 1;
+        const tsrBytes = Buffer.from(s.tsaResponse, "base64");
+        archive.append(tsrBytes, { name: `timestamp-response-${idx}.tsr` });
+
+        if (s.tsaCert) {
+          const certBytes = Buffer.from(s.tsaCert, "base64");
+          // Best-effort: if it already looks like PEM, append as-is; otherwise
+          // wrap as DER → PEM CERTIFICATE block. We don't parse here.
+          const asText = certBytes.toString("utf8");
+          if (asText.includes("-----BEGIN")) {
+            certPems.push(asText.trim());
+          } else {
+            const b64 = certBytes.toString("base64");
+            const wrapped = b64.match(/.{1,64}/g)?.join("\n") ?? b64;
+            certPems.push(`-----BEGIN CERTIFICATE-----\n${wrapped}\n-----END CERTIFICATE-----`);
+          }
+        }
+
+        providerDetails.push({
+          index: idx,
+          tsaUrl: s.tsaUrl,
+          requestHash: s.requestHash,
+          stampedAt: s.createdAt,
+          tsrFile: `timestamp-response-${idx}.tsr`,
+        });
+      });
+
+      if (certPems.length > 0) {
+        archive.append(certPems.join("\n\n") + "\n", { name: "tsa-certificates.pem" });
+      }
+
+      archive.append(JSON.stringify(providerDetails, null, 2), { name: "tsa-provider-details.json" });
+
+      // 3. The full project chain so the verifier can confirm this event's
+      //    position and that nothing upstream has been mutated.
+      const chainJson = fullChain.map((e) => ({
+        id: e.id,
+        eventType: e.eventType,
+        refTable: e.refTable,
+        refId: e.refId,
+        payloadHash: e.payloadHash,
+        prevHash: e.prevHash,
+        eventHash: e.eventHash,
+        createdAt: e.createdAt,
+      }));
+      archive.append(JSON.stringify({
+        projectId,
+        focusEventId: event.id,
+        events: chainJson,
+      }, null, 2), { name: "event-chain.json" });
+
+      // 3b. OpenTimestamps Bitcoin anchor for the day this event was
+      // created (if the daily cron has already run for that date). We
+      // include the raw .ots bytes from the first calendar plus a JSON
+      // sidecar that contains every calendar's proof and the Merkle
+      // inclusion path the verifier needs to tie this specific event back
+      // to the anchored root.
+      if (event.createdAt) {
+        const eventDateStr = new Date(event.createdAt).toISOString().slice(0, 10);
+        const [anchor] = await db
+          .select()
+          .from(provenanceAnchors)
+          .where(drizzleAnd(
+            drizzleEq(provenanceAnchors.projectId, projectId),
+            drizzleEq(provenanceAnchors.anchorDate, eventDateStr),
+          ))
+          .limit(1);
+
+        if (anchor) {
+          // Reproduce the same day-events ordering anchor.ts used so the
+          // Merkle path we ship matches the root that was anchored.
+          const dayStart = new Date(`${eventDateStr}T00:00:00.000Z`);
+          const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+          const dayEvents = await db
+            .select({
+              id: provenanceEvents.id,
+              eventHash: provenanceEvents.eventHash,
+              createdAt: provenanceEvents.createdAt,
+            })
+            .from(provenanceEvents)
+            .where(drizzleAnd(
+              drizzleEq(provenanceEvents.projectId, projectId),
+              drizzleGte(provenanceEvents.createdAt, dayStart),
+              drizzleLte(provenanceEvents.createdAt, new Date(dayEnd.getTime() - 1)),
+            ));
+          dayEvents.sort((a, b) => {
+            const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            if (ta !== tb) return ta - tb;
+            return a.id.localeCompare(b.id);
+          });
+
+          const focusIdx = dayEvents.findIndex((e) => e.id === event.id);
+          if (focusIdx >= 0) {
+            const tree = buildMerkleTree(dayEvents.map((e) => e.eventHash));
+            // Sanity: tree root must match the one stored on the anchor row.
+            const inclusionProof = {
+              anchorDate: eventDateStr,
+              merkleRoot: tree.rootHex,
+              storedMerkleRoot: anchor.merkleRoot,
+              rootsMatch: tree.rootHex === anchor.merkleRoot,
+              eventCount: tree.leafCount,
+              focusEventIndex: focusIdx,
+              focusLeaf: dayEvents[focusIdx].eventHash,
+              auditPath: tree.proofs[focusIdx],
+            };
+            archive.append(
+              JSON.stringify(inclusionProof, null, 2),
+              { name: "merkle-proof.json" },
+            );
+
+            // Parse the stored OTS payload (JSON of base64 proofs from
+            // each calendar) and emit one .ots binary per calendar plus
+            // a sidecar manifest.
+            try {
+              const parsed = JSON.parse(anchor.otsProof);
+              const calendars: Array<{ label: string; url: string; proofB64: string }> =
+                parsed?.calendars ?? [];
+              const manifest: any[] = [];
+              calendars.forEach((c, i) => {
+                const proofBytes = Buffer.from(c.proofB64, "base64");
+                const name = `bitcoin-anchor-${c.label || `cal${i + 1}`}.ots`;
+                archive.append(proofBytes, { name });
+                manifest.push({ calendar: c.label, url: c.url, file: name });
+              });
+              archive.append(JSON.stringify({
+                merkleRoot: anchor.merkleRoot,
+                anchorDate: eventDateStr,
+                calendars: manifest,
+                note: "Each .ots file is an independent OpenTimestamps proof for the same Merkle root. Use `ots verify` after Bitcoin confirms the timestamp.",
+              }, null, 2), { name: "bitcoin-anchor-details.json" });
+            } catch (e: any) {
+              console.warn("[proof-package] could not parse stored OTS payload:", e?.message || e);
+            }
+          }
+        }
+      }
+
+      // 3c. Proof of Human Conception .docx — the inventor's private
+      // inventorship record (AI Helper captures + every typed verbatim).
+      // Bundled here so this single zip is the complete "evidence packet"
+      // the inventor downloads from the Showcase page.
+      try {
+        const pohc = await buildPoHCDocx(projectId);
+        if (pohc) {
+          archive.append(pohc.buffer, { name: "proof-of-human-conception.docx" });
+        }
+      } catch (e: any) {
+        console.warn("[proof-package] PoHC docx build failed (continuing):", e?.message || e);
+      }
+
+      // 4. Human-readable verification instructions. Deliberately conservative
+      //    wording — describes evidence, never ownership.
+      const instructions = `Patent Geyser — Proof Package verification instructions
+=========================================================
+
+What this package proves
+------------------------
+This package creates third-party cryptographic evidence that the specific
+invention disclosure bytes in canonical-disclosure.json existed at or before
+the times signed by the listed RFC 3161 Time Stamp Authorities, and have
+not been altered since. It does not prove ownership of the invention and
+does not replace filing a patent application.
+
+Files in this package
+---------------------
+canonical-disclosure.json    The exact bytes that were hashed.
+sha256.txt                   SHA-256 hex of canonical-disclosure.json.
+timestamp-response-N.tsr     One RFC 3161 TimeStampToken per TSA (binary).
+tsa-certificates.pem         TSA cert chains (concatenated PEM).
+tsa-provider-details.json    URLs and stamp metadata per TSA.
+event-chain.json             Full append-only hash chain for the project.
+proof-of-human-conception.docx
+                             Private inventorship record — every captured
+                             verbatim. Marked "DO NOT UPLOAD WITH PATENT".
+merkle-proof.json            (Optional) Inclusion path tying this event's
+                             hash to the Merkle root anchored on Bitcoin.
+bitcoin-anchor-*.ots         (Optional) OpenTimestamps proofs of that
+                             Merkle root — one per calendar.
+bitcoin-anchor-details.json  (Optional) Calendar manifest.
+
+How to verify (OpenSSL >= 1.1)
+------------------------------
+1. Recompute the disclosure hash and compare to sha256.txt:
+       openssl dgst -sha256 canonical-disclosure.json
+
+2. Verify each TSA token signs that same hash. For each timestamp-response-N.tsr:
+       openssl ts -verify \\
+         -in timestamp-response-N.tsr \\
+         -data canonical-disclosure.json \\
+         -CAfile tsa-certificates.pem
+   Expected output: "Verification: OK"
+
+3. Read the signed time inside each token:
+       openssl ts -reply -in timestamp-response-N.tsr -text
+
+4. Confirm chain integrity. For each event in event-chain.json, recompute
+       event_hash = sha256(prev_hash || payload_hash || event_type || created_at_iso)
+   and confirm it matches the stored event_hash. Any mismatch indicates the
+   chain has been tampered with after the fact.
+
+Multiple TSA tokens
+-------------------
+This package may contain timestamp tokens from more than one independent
+Time Stamp Authority. Each token is independently verifiable. Two or more
+matching signed times from independent TSAs is materially stronger evidence
+than a single TSA.
+
+Bitcoin anchor (long-term verification)
+---------------------------------------
+If the package contains bitcoin-anchor-*.ots files, the Merkle root in
+merkle-proof.json was committed to the Bitcoin blockchain via the
+OpenTimestamps protocol. Verify with the "ots" CLI
+(https://github.com/opentimestamps/opentimestamps-client):
+
+    ots verify bitcoin-anchor-alice.ots
+    ots verify bitcoin-anchor-bob.ots
+
+Then confirm the event's inclusion in the anchored root by walking the
+audit path in merkle-proof.json. Bitcoin anchoring may take several hours
+to several days to fully confirm; until then "ots upgrade" will fetch the
+upgraded proof from the calendar.
+
+Generated by Patent Geyser.
+`;
+      archive.append(instructions, { name: "verification-instructions.txt" });
+
+      // Record the proof-package export as its own checkpoint so the
+      // download itself is part of the chain.
+      createCheckpointBackground({
+        projectId,
+        eventType: "export_proof_package",
+        refTable: "provenance_events",
+        refId: event.id,
+        payload: {
+          focusEventId: event.id,
+          tsaStampCount: eventStamps.length,
+          at: new Date().toISOString(),
+        },
+      });
+
+      await archive.finalize();
+  }
 
   // Export DOCX
   app.get("/api/projects/:id/export-docx", isAuthenticated, async (req, res) => {

@@ -138,6 +138,62 @@ export const pannuRecords = pgTable("pannu_records", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// Provenance & proof system
+//
+// Three tables that, together, produce a cryptographically verifiable record
+// that a given disclosure existed at a given time and has not been altered:
+//
+//   provenance_events  — append-only hash-chained log of every meaningful
+//                        write. Internal tamper detection; chain breaks on
+//                        any historic mutation.
+//   provenance_stamps  — RFC 3161 TimeStampTokens from FreeTSA, one per
+//                        checkpoint event (finalize / export).
+//   provenance_anchors — daily Merkle root anchored via OpenTimestamps into
+//                        the Bitcoin blockchain. The legal heavyweight: free,
+//                        permanent, third-party verifiable.
+//
+// All-free architecture: FreeTSA + OpenTimestamps + local SHA-256. No paid
+// timestamp authorities, no per-stamp cost.
+// ─────────────────────────────────────────────────────────────────────────
+
+export const provenanceEvents = pgTable("provenance_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  projectId: varchar("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  userId: varchar("user_id"),
+  eventType: text("event_type").notNull(),
+  refTable: text("ref_table").notNull(),
+  refId: text("ref_id"),
+  payloadHash: text("payload_hash").notNull(),
+  payloadCanonical: text("payload_canonical"),
+  prevHash: text("prev_hash"),
+  eventHash: text("event_hash").notNull(),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const provenanceStamps = pgTable("provenance_stamps", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  projectId: varchar("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  eventId: varchar("event_id").notNull().references(() => provenanceEvents.id, { onDelete: "cascade" }),
+  tsaUrl: text("tsa_url").notNull(),
+  requestHash: text("request_hash").notNull(),
+  tsaResponse: text("tsa_response").notNull(), // base64-encoded .tsr bytes
+  tsaCert: text("tsa_cert"),                   // base64-encoded cert chain
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const provenanceAnchors = pgTable("provenance_anchors", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  projectId: varchar("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  anchorDate: text("anchor_date").notNull(), // YYYY-MM-DD UTC
+  eventCount: integer("event_count").notNull(),
+  merkleRoot: text("merkle_root").notNull(),
+  otsProof: text("ots_proof").notNull(),     // base64-encoded .ots bytes
+  otsUpgradedAt: timestamp("ots_upgraded_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // Human-input ledger — every verbatim statement the user types into any
 // agent page, captured at save-time, tagged so downstream steps can pre-fill
 // answers from prior typing instead of asking the user to retype.

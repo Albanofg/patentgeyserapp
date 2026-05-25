@@ -29,6 +29,8 @@ export default function Agent4PannuIntro() {
   const projectId = params?.id;
   const [isGenerating, setIsGenerating] = useState(false);
   const [visibleSteps, setVisibleSteps] = useState(0);
+  const [generationStart, setGenerationStart] = useState<number | null>(null);
+  const [elapsedSec, setElapsedSec] = useState(0);
 
   const PROCESSING_STEPS = [
     "Understanding invention description",
@@ -36,7 +38,7 @@ export default function Agent4PannuIntro() {
     "Generating example embodiments",
     "Expanding technical descriptions",
     "Organizing specification sections",
-    "Formatting draft document",
+    "Finalizing draft document",
   ];
 
   const { data: project, isLoading: projectLoading } = useQuery<Project>({
@@ -51,6 +53,9 @@ export default function Agent4PannuIntro() {
     },
     onMutate: () => {
       setIsGenerating(true);
+      setGenerationStart(Date.now());
+      setElapsedSec(0);
+      setVisibleSteps(0);
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId] });
@@ -69,17 +74,32 @@ export default function Agent4PannuIntro() {
     },
   });
 
+  // Step progression: cap at N-1 while the mutation is still running so the
+  // last step stays in "active" state (spinner) until generation actually
+  // finishes. Prevents the misleading "all green but still waiting" state.
   useEffect(() => {
     if (!isGenerating) {
       setVisibleSteps(0);
       return;
     }
-    if (visibleSteps >= PROCESSING_STEPS.length) return;
+    const cap = PROCESSING_STEPS.length - 1;
+    if (visibleSteps >= cap) return;
     const timer = setTimeout(() => {
-      setVisibleSteps((prev) => prev + 1);
-    }, 20000);
+      setVisibleSteps((prev) => Math.min(prev + 1, cap));
+    }, 18000);
     return () => clearTimeout(timer);
   }, [isGenerating, visibleSteps]);
+
+  // Elapsed timer + tip rotation while generating.
+  useEffect(() => {
+    if (!isGenerating || generationStart === null) return;
+    const interval = setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - generationStart) / 1000));
+    }, 1000);
+    return () => {
+      clearInterval(interval);
+    };
+  }, [isGenerating, generationStart]);
 
   // ── Page snapshot for the AI Helper ─────────────────────────────────────
   // Pannu intro is a pure explainer page. No editable content. Three
@@ -162,35 +182,51 @@ export default function Agent4PannuIntro() {
                 </p>
 
                 <div className="w-full text-left space-y-2">
-                  {PROCESSING_STEPS.map((step, i) => (
-                    <div
-                      key={step}
-                      className="flex items-center gap-2 transition-all duration-500 ease-out"
-                      style={{
-                        opacity: i < visibleSteps ? 1 : 0.55,
-                        transform: i < visibleSteps ? "translateY(0) scale(1)" : "translateY(4px) scale(0.95)",
-                      }}
-                    >
-                      {i < visibleSteps ? (
-                        <CheckCircle2
-                          className="h-4 w-4 shrink-0 transition-colors duration-500 text-green-600 dark:text-green-400"
-                        />
-                      ) : (
-                        <Circle
-                          className="h-4 w-4 shrink-0 transition-colors duration-500 text-muted-foreground"
-                        />
-                      )}
-                      <span className={`text-sm transition-colors duration-500 ${
-                        i < visibleSteps ? "text-foreground" : "text-muted-foreground"
-                      }`}>
-                        {step}
-                      </span>
-                    </div>
-                  ))}
+                  {PROCESSING_STEPS.map((step, i) => {
+                    const isDone = i < visibleSteps;
+                    const isActive = i === visibleSteps;
+                    return (
+                      <div
+                        key={step}
+                        className="flex items-center gap-2 transition-all duration-500 ease-out"
+                        style={{
+                          opacity: isDone || isActive ? 1 : 0.55,
+                          transform: isDone || isActive ? "translateY(0) scale(1)" : "translateY(4px) scale(0.95)",
+                        }}
+                      >
+                        {isDone ? (
+                          <CheckCircle2 className="h-4 w-4 shrink-0 text-green-600 dark:text-green-400" />
+                        ) : isActive ? (
+                          <Loader2 className="h-4 w-4 shrink-0 text-primary animate-spin" />
+                        ) : (
+                          <Circle className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        )}
+                        <span className={`text-sm transition-colors duration-500 ${
+                          isDone ? "text-foreground" : isActive ? "text-foreground font-medium" : "text-muted-foreground"
+                        }`}>
+                          {step}
+                          {isActive && <span className="text-muted-foreground"> — in progress…</span>}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
 
-                <p className="text-sm text-muted-foreground pt-2">
-                  Your downloadable .docx draft will be ready shortly.
+                {/* Indeterminate progress bar — keeps motion on screen so the
+                    user sees the system is alive even when no step ticks. */}
+                <div className="w-full h-1 bg-muted rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-primary/70 rounded-full"
+                    style={{
+                      width: "33%",
+                      animation: "pannuIndeterminate 1.6s ease-in-out infinite",
+                    }}
+                  />
+                </div>
+                <style>{`@keyframes pannuIndeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }`}</style>
+
+                <p className="text-xs text-muted-foreground text-center pt-2">
+                  Elapsed: {Math.floor(elapsedSec / 60)}:{String(elapsedSec % 60).padStart(2, "0")} · this can take several minutes — please keep this tab open
                 </p>
               </div>
             </CardContent>

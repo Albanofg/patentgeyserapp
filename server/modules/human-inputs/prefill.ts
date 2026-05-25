@@ -106,19 +106,8 @@ export async function buildPannuPrefill(args: {
   // "concept 2?", etc.) and double-counted the qualified answers.
   const fromCoach: RawSource[] = [];
 
-  console.log("[pannu prefill]", {
-    projectId: args.projectId,
-    conceptId: args.conceptId ?? null,
-    ledgerRows: fromLedger.length,
-    agentDataRows: fromAgentData.length,
-    coachRows: fromCoach.length,
-    agentDataSample: fromAgentData.slice(0, 3).map((r) => ({
-      source: r.source,
-      sourceRefId: r.sourceRefId,
-      factors: r.factors,
-      textChars: r.text.length,
-    })),
-  });
+  // Verbose prefill logging removed — was firing once per concept per page
+  // load and flooding the terminal. The summarizer logs still fire on click.
 
   // Defense in depth: drop short / conversational fragments before grouping.
   // 80 chars is the floor; navigational chatter ("ok", "concept 2?",
@@ -129,11 +118,6 @@ export async function buildPannuPrefill(args: {
   );
   const factors = groupByFactor(all);
 
-  console.log("[pannu prefill] grouped", {
-    conception: { sources: factors.conception.sources.length, coverage: factors.conception.coverage },
-    quality: { sources: factors.quality.sources.length, coverage: factors.quality.coverage },
-    known_concepts: { sources: factors.known_concepts.sources.length, coverage: factors.known_concepts.coverage },
-  });
 
   // Optional AI polishing pass. Runs SEQUENTIALLY across the three factors
   // (one Flash call at a time) to keep model load predictable and to avoid
