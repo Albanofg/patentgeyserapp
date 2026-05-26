@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgSchema, text, varchar, timestamp, integer, jsonb, boolean, date } from "drizzle-orm/pg-core";
+import { pgSchema, text, varchar, timestamp, integer, jsonb, boolean, date, vector } from "drizzle-orm/pg-core";
 
 // All PatentGeyser (inventor/consumer) tables live under the `inventor_geyser`
 // Postgres schema. The same Neon DB also hosts the twin (lawyer) app under the
@@ -443,7 +443,10 @@ export const projectFamilyArtifacts = pgTable("project_family_artifacts", {
   preview: text("preview").notNull(),
   charCount: integer("char_count").notNull().default(0),
   hash: text("hash").notNull(),
-  embedding: jsonb("embedding"),
+  // pgvector column. 1536 dims matches OpenAI text-embedding-3-small native
+  // output. NULL until the save-time embedding writer fills it. Used by
+  // getRelevantFamilyArtifacts for semantic retrieval on edit-text stages.
+  embedding: vector("embedding", { dimensions: 1536 }),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 

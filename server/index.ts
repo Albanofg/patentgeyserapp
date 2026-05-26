@@ -4,6 +4,7 @@ import cors from "cors";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { probeSchema } from "./schema-probe";
+import { backfillAllFamilyProjects } from "./lib/families";
 
 const app = express();
 
@@ -70,6 +71,15 @@ app.use((req, res, next) => {
   // (not inside individual query sites) so the failure mode is honest —
   // the app refuses to serve traffic against a half-migrated database.
   await probeSchema();
+
+  // One-shot, fire-and-forget refresh of every Project that belongs to a
+  // family. Existing artifact-cache rows may have been written with an
+  // older truncation rule; rebuilding them in the background converges the
+  // cache to the current storage shape without blocking startup or any
+  // request path. Idempotent — safe to run on every boot.
+  backfillAllFamilyProjects()
+    .then((r) => console.log(`[families] startup backfill refreshed=${r.refreshed} failed=${r.failed}`))
+    .catch((err) => console.error("[families] startup backfill error", err));
 
   const server = await registerRoutes(app);
 

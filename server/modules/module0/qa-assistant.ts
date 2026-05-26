@@ -32,7 +32,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../../db";
 import { recordUsage, extractGeminiUsage, extractOpenAIUsage } from "../../ai/usage-log";
 import { computeRouting, renderRouting, type RoutingFields } from "./routing";
-import { getSiblingsReference, type SiblingReference } from "../../lib/families";
+import { getSiblingsReference, getRelevantFamilyArtifacts, type SiblingReference, type RetrievedArtifact } from "../../lib/families";
 import { listFamilyContextFilesForPrompt } from "../../lib/family-context-files";
 
 // ─── Module-owned table declarations ────────────────────────────────────────
@@ -568,6 +568,31 @@ function summarizeArrayItem(item: any): string {
 // hedge absence claims per FAMILY_AWARE_MODE.
 const SIBLING_PROMPT_CAP = 10;
 const CONTEXT_FILE_PROMPT_CAP = 25;
+// Number of semantically-retrieved artifacts to ship on edit-text stages.
+// Each artifact carries its full text + sibling metadata; 15 keeps a wide
+// net while staying well under the per-turn token budget.
+const RETRIEVAL_TOP_K = 15;
+
+// Soft cap for a single artifact's preview text inside the prompt. Pathological
+// content (e.g. a 30 KB blob pasted as a single key concept) gets truncated
+// here — but never mid-sentence. We cut at the last sentence boundary that
+// fits, falling back to the last word boundary, and append a continuation
+// marker. Anything under the cap passes through unchanged.
+const PROMPT_ARTIFACT_SOFT_CAP = 4000;
+
+function truncateAtSentenceBoundary(text: string, max: number): string {
+  if (!text || text.length <= max) return text;
+  const window = text.slice(0, max);
+  // Prefer the last full sentence boundary (. ! ?) followed by whitespace or end.
+  const sentenceMatch = window.match(/[\s\S]*[.!?](?=\s|$)/);
+  if (sentenceMatch && sentenceMatch[0].length >= max * 0.4) {
+    return sentenceMatch[0].trimEnd() + " […]";
+  }
+  // Fall back to the last word boundary so we never cut a word in half.
+  const wordCut = window.lastIndexOf(" ");
+  const cut = wordCut > max * 0.4 ? wordCut : max;
+  return window.slice(0, cut).trimEnd() + " […]";
+}
 
 // Emits the `## FAMILY CONTEXT` section as a single structured JSON block.
 // The schema matches the FAMILY CONTEXT FIELDS contract declared in
@@ -578,6 +603,7 @@ const CONTEXT_FILE_PROMPT_CAP = 25;
 function renderFamilyContext(input: {
   familyId: string | null;
   siblings: SiblingReference[];
+  retrievedArtifacts: RetrievedArtifact[];
   contextFiles: Array<{ id: string; filename: string; summary: string | null; extractionStatus: "ready" | "failed" | "pending" }>;
   projectFiledStatus: {
     inventorNames: string[] | null;
@@ -587,26 +613,88 @@ function renderFamilyContext(input: {
     notes: string | null;
   } | null;
 }): string {
-  const shownSiblings = (input.siblings ?? []).slice(0, SIBLING_PROMPT_CAP);
-  const siblingsOverflow = Math.max(0, (input.siblings ?? []).length - shownSiblings.length);
   const shownFiles = (input.contextFiles ?? []).slice(0, CONTEXT_FILE_PROMPT_CAP);
   const referenceFilesOverflow = Math.max(0, (input.contextFiles ?? []).length - shownFiles.length);
 
-  const payload = {
-    familyId: input.familyId,
-    siblings: shownSiblings.map((s) => ({
+  const cap = (s: string | null | undefined): string | null =>
+    s ? truncateAtSentenceBoundary(s, PROMPT_ARTIFACT_SOFT_CAP) : null;
+
+  // RETRIEVAL MODE — when semantic retrieval ran (edit-text stages), group
+  // retrieved artifacts by their parent sibling so the JSON shape stays
+  // consistent with the FAMILY CONTEXT contract: an array of siblings, each
+  // carrying its content. siblings_overflow is 0 here because retrieval
+  // already scanned the entire family — there's no "more not shown" tier.
+  //
+  // RECENCY MODE — when retrieval did not run (selection-only stages or
+  // empty family), fall back to the recency-based top-N siblings as before.
+  const useRetrieval = (input.retrievedArtifacts ?? []).length > 0;
+
+  let siblingsOut: any[];
+  let siblingsOverflow: number;
+  let retrievalMode: "semantic" | "recency";
+
+  if (useRetrieval) {
+    retrievalMode = "semantic";
+    // Group by sibling, preserving the order of first appearance (which is
+    // already similarity-sorted from the SQL ORDER BY).
+    const grouped = new Map<string, {
+      siblingId: string;
+      title: string;
+      stage: number | "filed";
+      ideaSummary: string | null;
+      extractedIdeaTitles: string[];
+      keyConceptPreviews: string[];
+      topSimilarity: number;
+    }>();
+    for (const r of input.retrievedArtifacts) {
+      let bucket = grouped.get(r.siblingId);
+      if (!bucket) {
+        bucket = {
+          siblingId: r.siblingId,
+          title: r.siblingTitle,
+          stage: r.siblingCompleted ? "filed" : r.siblingStage,
+          ideaSummary: null,
+          extractedIdeaTitles: [],
+          keyConceptPreviews: [],
+          topSimilarity: r.similarity,
+        };
+        grouped.set(r.siblingId, bucket);
+      }
+      bucket.topSimilarity = Math.max(bucket.topSimilarity, r.similarity);
+      const text = cap(r.text) ?? "";
+      if (r.artifactKind === "idea_summary") {
+        if (!bucket.ideaSummary) bucket.ideaSummary = text;
+      } else if (r.artifactKind === "extracted_idea") {
+        bucket.extractedIdeaTitles.push(text);
+      } else if (r.artifactKind === "key_concept") {
+        bucket.keyConceptPreviews.push(text);
+      }
+    }
+    siblingsOut = Array.from(grouped.values()).map(({ topSimilarity, ...rest }) => rest);
+    siblingsOverflow = 0;
+  } else {
+    retrievalMode = "recency";
+    const shownSiblings = (input.siblings ?? []).slice(0, SIBLING_PROMPT_CAP);
+    siblingsOverflow = Math.max(0, (input.siblings ?? []).length - shownSiblings.length);
+    siblingsOut = shownSiblings.map((s) => ({
       siblingId: s.id,
       title: s.title,
       stage: s.completed ? "filed" : s.currentStage,
-      ideaSummary: s.artifacts.ideaSummary?.preview ?? null,
+      ideaSummary: cap(s.artifacts.ideaSummary?.preview ?? null),
       extractedIdeaTitles: s.artifacts.extractedIdeas.map((e) => e.title),
-      keyConceptPreviews: s.artifacts.keyConcepts.map((k) => k.preview),
-    })),
+      keyConceptPreviews: s.artifacts.keyConcepts.map((k) => cap(k.preview) ?? ""),
+    }));
+  }
+
+  const payload = {
+    familyId: input.familyId,
+    retrievalMode,
+    siblings: siblingsOut,
     siblingsOverflow,
     referenceFiles: shownFiles.map((f) => ({
       fileId: f.id,
       filename: f.filename,
-      summary: f.summary,
+      summary: cap(f.summary),
       extractionStatus: f.extractionStatus,
     })),
     referenceFilesOverflow,
@@ -1130,6 +1218,11 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
   // family. Defensive: any failure degrades to [] so a families issue never
   // breaks the QA assistant turn.
   let siblings: SiblingReference[] = [];
+  // Populated only on edit-text stages (1, 2, 4, 6, 7, 8). When non-empty,
+  // the FAMILY CONTEXT block ships these in `siblings[].keyConceptPreviews`
+  // etc. INSTEAD OF the recency-based summaries — so the helper sees the
+  // most semantically relevant content across the entire family.
+  let retrievedArtifacts: RetrievedArtifact[] = [];
   let contextFiles: Array<{ id: string; filename: string; summary: string | null; extractionStatus: "ready" | "failed" | "pending" }> = [];
   let projectFamilyId: string | null = null;
   let projectFiledStatus: {
@@ -1174,6 +1267,24 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     } catch (err) {
       console.error("[qa-assistant] family/context-files lookup failed", err);
       contextFiles = [];
+    }
+
+    // Semantic retrieval — fires only on edit-text stages so we don't burn
+    // an embed call when the helper is in a pure-selection or pure-teaching
+    // turn. Stage 3 and 5 are selection-only; stages 1, 2, 4, 6, 7, 8 all
+    // can produce text intended to edit the current Project, which is when
+    // family-wide semantic context is most useful.
+    if (projectFamilyId) {
+      const stage = (pc as any)?.currentStage;
+      const isEditTextStage = stage === 1 || stage === 2 || stage === 4 || stage === 6 || stage === 7 || stage === 8;
+      if (isEditTextStage) {
+        try {
+          retrievedArtifacts = await getRelevantFamilyArtifacts(projectId!, payload.message ?? "", RETRIEVAL_TOP_K);
+        } catch (err) {
+          console.error("[qa-assistant] getRelevantFamilyArtifacts failed", err);
+          retrievedArtifacts = [];
+        }
+      }
     }
   }
 
@@ -1228,6 +1339,7 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     s.push(`## FAMILY CONTEXT\n${renderFamilyContext({
       familyId: projectFamilyId,
       siblings,
+      retrievedArtifacts,
       contextFiles,
       projectFiledStatus,
     })}`);

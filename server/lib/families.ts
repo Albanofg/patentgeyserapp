@@ -28,6 +28,7 @@ import {
   type ProjectFamilyArtifact,
 } from "@shared/schema";
 import { db } from "../db";
+import { embedBatch, embedOne } from "./embeddings";
 
 // -----------------------------------------------------------------------------
 // Ownership
@@ -203,16 +204,14 @@ export async function listProjectsInFamily(familyId: string) {
 // Save-time digest writer — the heart of the cost-control story.
 // -----------------------------------------------------------------------------
 
-const PREVIEW_CHARS = 200;
-const KEY_CONCEPT_PREVIEW_CHARS = 80;
+// The cache stores the FULL artifact text — no arbitrary truncation. A cut
+// at N characters lands mid-sentence and produces fragments without meaning,
+// which defeats the whole point of an overlap preview. If a downstream
+// consumer needs to bound size (e.g. the QA prompt's per-turn budget), it
+// truncates at a sentence boundary then, not here.
 
 function sha256(s: string): string {
   return createHash("sha256").update(s, "utf8").digest("hex");
-}
-
-function previewOf(s: string, max = PREVIEW_CHARS): string {
-  if (!s) return "";
-  return s.length <= max ? s : s.slice(0, max);
 }
 
 function normalizeForHash(s: string): string {
@@ -245,7 +244,7 @@ function extractDigests(agentNumber: number, data: any): DigestRow[] {
       rows.push({
         artifactKind: "idea_summary",
         artifactRef: "main",
-        preview: previewOf(summary),
+        preview: summary,
         charCount: summary.length,
         hash: sha256(normalizeForHash(summary)),
       });
@@ -268,7 +267,7 @@ function extractDigests(agentNumber: number, data: any): DigestRow[] {
       rows.push({
         artifactKind: "extracted_idea",
         artifactRef: ref,
-        preview: previewOf(title),
+        preview: title,
         charCount: title.length,
         hash: sha256(normalizeForHash(title)),
       });
@@ -293,7 +292,7 @@ function extractDigests(agentNumber: number, data: any): DigestRow[] {
       rows.push({
         artifactKind: "key_concept",
         artifactRef: ref,
-        preview: previewOf(text, KEY_CONCEPT_PREVIEW_CHARS),
+        preview: text,
         charCount: text.length,
         hash: sha256(normalizeForHash(text)),
       });
@@ -346,6 +345,17 @@ async function refreshFamilyArtifacts(
     4: ["key_concept"],
   };
 
+  // Batch-embed every new artifact's full text in a single API call before
+  // the transaction. Best-effort: a null embedding still produces a valid
+  // row (the row is just invisible to semantic retrieval until next refresh).
+  const allNewRows: DigestRow[] = [];
+  for (const n of agentNumbers) allNewRows.push(...(newRowsByAgent.get(n) ?? []));
+  const embeddings = allNewRows.length
+    ? await embedBatch(allNewRows.map((r) => r.preview))
+    : [];
+  const embedByIndex = new Map<DigestRow, number[] | null>();
+  for (let i = 0; i < allNewRows.length; i++) embedByIndex.set(allNewRows[i], embeddings[i]);
+
   await db.transaction(async (tx) => {
     for (const n of agentNumbers) {
       const kinds = kindsByAgent[n] ?? [];
@@ -370,6 +380,7 @@ async function refreshFamilyArtifacts(
           preview: r.preview,
           charCount: r.charCount,
           hash: r.hash,
+          embedding: embedByIndex.get(r) ?? null,
         })),
       );
     }
@@ -385,6 +396,29 @@ export function refreshFamilyArtifactsBackground(
   refreshFamilyArtifacts(projectId, scope).catch((err) => {
     console.error("[families] refresh failed", { projectId, scope, error: err?.message ?? err });
   });
+}
+
+// One-shot pass that re-builds the artifact cache for every Project that
+// currently belongs to a family. Safe to run any number of times — the
+// underlying refresh is idempotent. Used at startup to migrate cached rows
+// whose previews were written with an older cap.
+export async function backfillAllFamilyProjects(): Promise<{ refreshed: number; failed: number }> {
+  const rows = await db
+    .select({ id: projects.id })
+    .from(projects)
+    .where(and(isNull(projects.deletedAt), sql`${projects.familyId} IS NOT NULL`));
+  let refreshed = 0;
+  let failed = 0;
+  for (const row of rows) {
+    try {
+      await refreshFamilyArtifacts(row.id, "all");
+      refreshed++;
+    } catch (err) {
+      failed++;
+      console.error("[families] backfill failed for project", row.id, err);
+    }
+  }
+  return { refreshed, failed };
 }
 
 // -----------------------------------------------------------------------------
@@ -518,4 +552,83 @@ export async function findOverlapsInFamily(
 // exact same normalisation the writer uses.
 export function digestHashFor(text: string): string {
   return sha256(normalizeForHash(text));
+}
+
+// -----------------------------------------------------------------------------
+// Semantic retrieval — pgvector cosine-similarity over the family's cached
+// artifacts. Used by the QA assistant on edit-text stages to surface the
+// most relevant content across the entire family, not just the most recent
+// N siblings.
+// -----------------------------------------------------------------------------
+
+export interface RetrievedArtifact {
+  siblingId: string;
+  siblingTitle: string;
+  siblingStage: number;
+  siblingCompleted: number;
+  artifactKind: "idea_summary" | "extracted_idea" | "key_concept";
+  artifactRef: string;
+  text: string; // full artifact text (the preview column now holds it whole)
+  similarity: number; // cosine similarity, 0..1 (1 = identical direction)
+}
+
+// Find the top-K family artifacts most semantically similar to `query`.
+// Excludes the source Project's own artifacts (we want sibling content).
+// Returns empty array if the Project has no family, no siblings, the query
+// embeds fails, or no rows have embeddings yet.
+export async function getRelevantFamilyArtifacts(
+  sourceProjectId: string,
+  query: string,
+  topK: number = 15,
+): Promise<RetrievedArtifact[]> {
+  if (!query || !query.trim()) return [];
+  const [source] = await db
+    .select({ familyId: projects.familyId })
+    .from(projects)
+    .where(eq(projects.id, sourceProjectId))
+    .limit(1);
+  if (!source?.familyId) return [];
+
+  const qvec = await embedOne(query);
+  if (!qvec) return [];
+  const qLiteral = `[${qvec.join(",")}]`;
+
+  // Raw SQL: pgvector's `<=>` is cosine *distance* (0 = identical, 2 = opposite).
+  // similarity = 1 - distance, then clamped at the application layer for safety.
+  // We filter to the family, exclude the source project, exclude soft-deleted
+  // siblings, and require an embedding to be present.
+  const rows = await db.execute(sql`
+    SELECT
+      a.project_id      AS sibling_id,
+      p.title           AS sibling_title,
+      p.current_stage   AS sibling_stage,
+      p.completed       AS sibling_completed,
+      a.artifact_kind   AS artifact_kind,
+      a.artifact_ref    AS artifact_ref,
+      a.preview         AS text,
+      1 - (a.embedding <=> ${qLiteral}::vector) AS similarity
+    FROM inventor_geyser.project_family_artifacts a
+    INNER JOIN inventor_geyser.projects p ON p.id = a.project_id
+    WHERE a.family_id = ${source.familyId}
+      AND a.project_id <> ${sourceProjectId}
+      AND a.embedding IS NOT NULL
+      AND p.deleted_at IS NULL
+    ORDER BY a.embedding <=> ${qLiteral}::vector ASC
+    LIMIT ${topK}
+  `);
+
+  const out: RetrievedArtifact[] = [];
+  for (const r of (rows as any).rows ?? []) {
+    out.push({
+      siblingId: r.sibling_id,
+      siblingTitle: r.sibling_title,
+      siblingStage: Number(r.sibling_stage),
+      siblingCompleted: Number(r.sibling_completed),
+      artifactKind: r.artifact_kind,
+      artifactRef: r.artifact_ref,
+      text: r.text,
+      similarity: Math.max(0, Math.min(1, Number(r.similarity))),
+    });
+  }
+  return out;
 }
