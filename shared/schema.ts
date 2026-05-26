@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgSchema, text, varchar, timestamp, integer, jsonb, boolean } from "drizzle-orm/pg-core";
+import { pgSchema, text, varchar, timestamp, integer, jsonb, boolean, date } from "drizzle-orm/pg-core";
 
 // All PatentGeyser (inventor/consumer) tables live under the `inventor_geyser`
 // Postgres schema. The same Neon DB also hosts the twin (lawyer) app under the
@@ -78,6 +78,19 @@ export const projects = pgTable("projects", {
   // their consumed credit is preserved; pre-stage-5 deletes are hard-deletes
   // and the credit is refunded.
   deletedAt: timestamp("deleted_at"),
+  // Optional family membership. FK enforced at DB level (ON DELETE SET NULL).
+  familyId: varchar("family_id"),
+  // Patent metadata — all optional, populated as the inventor learns / files.
+  inventorNames: text("inventor_names").array(),
+  filedDate: date("filed_date"),
+  status: text("status"), // 'draft' | 'filed' | 'published' | 'granted' | 'abandoned'
+  applicationNumber: text("application_number"),
+  publicationNumber: text("publication_number"),
+  assignee: text("assignee"),
+  jurisdiction: text("jurisdiction"),
+  patentType: text("patent_type"), // 'provisional' | 'utility' | 'design' | 'plant' | 'pct' | 'other'
+  externalUrl: text("external_url"),
+  notes: text("notes"),
 });
 
 // Agent data table - stores outputs from each agent stage as JSON
@@ -397,3 +410,108 @@ export const emailWhitelist = pgTable("email_whitelist", {
 });
 
 export type EmailWhitelistEntry = typeof emailWhitelist.$inferSelect;
+
+// -----------------------------------------------------------------------------
+// Project Families — organizational grouping of sibling patents covering the
+// same product domain. A family is just a label + ownership; the membership
+// link is `projects.family_id`. Cross-sibling overlap warnings are powered by
+// the `projectFamilyArtifacts` cache below (digests computed once at save time
+// on the owning project, never recomputed at viewer-side check time).
+// -----------------------------------------------------------------------------
+
+export const projectFamilies = pgTable("project_families", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  ownerUserId: varchar("owner_user_id"),
+  inventorsUserId: varchar("inventors_user_id"),
+  title: text("title").notNull(),
+  description: text("description"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+  deletedAt: timestamp("deleted_at"),
+});
+
+// Cached per-artifact digest of a sibling's notable content. Written exactly
+// once per save by the owning project; read by sibling-overlap checks. Hash
+// is mandatory; embedding is optional (populated when semantic overlap layer
+// is enabled — V1 ships hash-only, embedding column stays NULL).
+export const projectFamilyArtifacts = pgTable("project_family_artifacts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  projectId: varchar("project_id").notNull(),
+  familyId: varchar("family_id"),
+  artifactKind: text("artifact_kind").notNull(), // 'idea_summary' | 'extracted_idea' | 'key_concept'
+  artifactRef: text("artifact_ref").notNull(),
+  preview: text("preview").notNull(),
+  charCount: integer("char_count").notNull().default(0),
+  hash: text("hash").notNull(),
+  embedding: jsonb("embedding"),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertProjectFamilySchema = createInsertSchema(projectFamilies).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+});
+
+export const insertProjectFamilyArtifactSchema = createInsertSchema(projectFamilyArtifacts).omit({
+  id: true,
+  updatedAt: true,
+});
+
+export type ProjectFamily = typeof projectFamilies.$inferSelect;
+export type InsertProjectFamily = z.infer<typeof insertProjectFamilySchema>;
+export type ProjectFamilyArtifact = typeof projectFamilyArtifacts.$inferSelect;
+export type InsertProjectFamilyArtifact = z.infer<typeof insertProjectFamilyArtifactSchema>;
+
+// External reference documents uploaded at the family level. Used as
+// shared context for every sibling. Heavy fields (file_bytes_b64,
+// extracted_text) are only read on demand — list endpoints return only
+// metadata + summary.
+export const projectFamilyContextFiles = pgTable("project_family_context_files", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  familyId: varchar("family_id").notNull(),
+  uploadedByUserId: varchar("uploaded_by_user_id"),
+  uploadedByInventorsUserId: varchar("uploaded_by_inventors_user_id"),
+  originalFilename: text("original_filename").notNull(),
+  mimeType: text("mime_type").notNull(),
+  byteSize: integer("byte_size").notNull().default(0),
+  fileBytesB64: text("file_bytes_b64").notNull(),
+  extractedText: text("extracted_text"),
+  extractionStatus: text("extraction_status").notNull().default("pending"),
+  extractionError: text("extraction_error"),
+  summary: text("summary"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+  deletedAt: timestamp("deleted_at"),
+  // Patent metadata — same shape as projects so the same dialog edits both.
+  inventorNames: text("inventor_names").array(),
+  filedDate: date("filed_date"),
+  status: text("status"),
+  applicationNumber: text("application_number"),
+  publicationNumber: text("publication_number"),
+  assignee: text("assignee"),
+  jurisdiction: text("jurisdiction"),
+  patentType: text("patent_type"),
+  externalUrl: text("external_url"),
+  notes: text("notes"),
+});
+
+export type ProjectFamilyContextFile = typeof projectFamilyContextFiles.$inferSelect;
+
+// Shared metadata shape used by both projects and context-files. The dialog
+// component edits exactly this set; the API accepts the same shape on either
+// resource. All fields are optional.
+export const patentMetadataSchema = z.object({
+  inventorNames: z.array(z.string()).optional().nullable(),
+  filedDate: z.string().optional().nullable(), // ISO date string
+  status: z.enum(["draft", "filed", "published", "granted", "converted", "abandoned", "expired"]).optional().nullable(),
+  applicationNumber: z.string().optional().nullable(),
+  publicationNumber: z.string().optional().nullable(),
+  assignee: z.string().optional().nullable(),
+  jurisdiction: z.string().optional().nullable(),
+  patentType: z.enum(["provisional", "utility", "design", "plant", "pct", "other"]).optional().nullable(),
+  externalUrl: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
+});
+export type PatentMetadata = z.infer<typeof patentMetadataSchema>;

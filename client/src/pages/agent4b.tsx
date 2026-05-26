@@ -11,6 +11,8 @@ import { AgentHeader } from "@/components/agent-header";
 import { Loader2, FileText, Check, CheckCircle2, ChevronDown, ChevronUp, ArrowRight } from "lucide-react";
 import type { Project } from "@shared/schema";
 import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
+import { SiblingsReferencePanel } from "@/components/siblings-reference-panel";
+import { SiblingOverlapWarning, type OverlapCandidate } from "@/components/sibling-overlap-warning";
 
 type KeyConceptItem = {
   id: string;
@@ -374,6 +376,15 @@ export default function Agent4b() {
           </Card>
         ) : (
           <div className="space-y-6">
+            {projectId && <SiblingsReferencePanel projectId={projectId} />}
+            {projectId && (
+              <SiblingOverlapWarning
+                projectId={projectId}
+                candidates={allConcepts
+                  .filter((c) => selectedClaimIds.has(c.id))
+                  .map<OverlapCandidate>((c) => ({ kind: "key_concept", text: c.text }))}
+              />
+            )}
             {/* Selection Summary */}
             <Card className="border-primary/20 bg-primary/5">
               <CardHeader className="pb-3">

@@ -25,6 +25,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import type { Project } from "@shared/schema";
 import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
+import { SiblingsReferencePanel } from "@/components/siblings-reference-panel";
 import { recordHumanInput } from "@/lib/human-inputs";
 
 interface UnifiedIdea {
@@ -537,6 +538,13 @@ const handleApplyAiSuggestion = (id: string) => {
 
   return (
     <div className="h-full flex flex-col bg-background">
+      {projectId && (
+        <div className="px-4 pt-3 shrink-0">
+          <div className="max-w-4xl mx-auto">
+            <SiblingsReferencePanel projectId={projectId} />
+          </div>
+        </div>
+      )}
       <div className="border-b p-4 shrink-0">
         <div className="max-w-4xl mx-auto space-y-3">
           <div className="flex items-start justify-between gap-3">

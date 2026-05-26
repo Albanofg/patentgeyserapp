@@ -26,6 +26,9 @@ const REQUIRED_TABLES: RequiredTable[] = [
   { schema: "inventor_geyser", table: "prior_art_searches", migrationHint: "npx drizzle-kit push" },
   { schema: "inventor_geyser", table: "pannu_records", migrationHint: "npx drizzle-kit push" },
   { schema: "inventor_geyser", table: "human_inputs", migrationHint: "psql $DATABASE_URL -f migrations/0001_human_inputs.sql  (or: npx drizzle-kit push)" },
+  { schema: "inventor_geyser", table: "project_families", migrationHint: "psql $DATABASE_URL -f migrations/0004_project_families.sql" },
+  { schema: "inventor_geyser", table: "project_family_artifacts", migrationHint: "psql $DATABASE_URL -f migrations/0004_project_families.sql" },
+  { schema: "inventor_geyser", table: "project_family_context_files", migrationHint: "psql $DATABASE_URL -f migrations/0005_family_context_files.sql" },
 ];
 
 export async function probeSchema(): Promise<void> {

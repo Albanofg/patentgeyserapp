@@ -10,6 +10,7 @@ import { Loader2, Lightbulb, CheckCircle, XCircle, ChevronRight } from "lucide-r
 import { Checkbox } from "@/components/ui/checkbox";
 import type { Project } from "@shared/schema";
 import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
+import { SiblingsReferencePanel } from "@/components/siblings-reference-panel";
 
 interface ExtractedIdea {
   id: string;
@@ -240,6 +241,7 @@ export default function Agent2c() {
       <main className="flex-1 overflow-auto">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
           <div className="space-y-8">
+            {projectId && <SiblingsReferencePanel projectId={projectId} />}
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-2xl font-bold">Select Concepts for Prior Art Research</h2>

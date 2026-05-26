@@ -12,6 +12,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import type { Project } from "@shared/schema";
 import ReactMarkdown from "react-markdown";
 import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
+import { SiblingsReferencePanel } from "@/components/siblings-reference-panel";
 
 interface ExtractedIdea {
   id: string;
@@ -296,6 +297,7 @@ export default function Agent2() {
       <main className="flex-1 overflow-auto">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
           <div className="space-y-8">
+            {projectId && <SiblingsReferencePanel projectId={projectId} />}
             {/* Main Idea Section */}
             <Card>
               <CardHeader>

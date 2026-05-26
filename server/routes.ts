@@ -33,6 +33,29 @@ import { runExtractConcepts } from "./modules/module2/2b-extract-concepts/extrac
 import { runWhitespace } from "./modules/module4/4a-whitespace/whitespace";
 import { runClaims } from "./modules/module4/4b-key-concepts/claims";
 import { runPannuQuestions, runPannuScorer } from "./modules/module4/4c-pannu/pannu";
+import {
+  createFamily,
+  getFamily,
+  listFamiliesByOwner,
+  updateFamily,
+  softDeleteFamily,
+  attachProjectToFamily,
+  attachManyProjectsToFamily,
+  detachProjectFromFamily,
+  listProjectsInFamily,
+  getSiblingsReference,
+  findOverlapsInFamily,
+  sessionOwnsFamily,
+} from "./lib/families";
+import {
+  uploadFamilyContextFile,
+  listFamilyContextFiles,
+  getFamilyContextFileExtractedText,
+  getFamilyContextFileBytes,
+  softDeleteFamilyContextFile,
+  updateFamilyContextFileMetadata,
+  validateUpload,
+} from "./lib/family-context-files";
 import { createCheckpointBackground } from "./lib/provenance/checkpoint";
 import { verifyChain } from "./lib/provenance/hash-chain";
 import { TSA_PROVIDERS } from "./lib/provenance/tsa-providers";
@@ -2197,12 +2220,344 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ? { inventorsUserId: authUser.id, userId: null }
         : { userId: authUser.id, inventorsUserId: null };
 
+      // Validate optional family attachment — caller must own the family.
+      if (clientFields.familyId) {
+        const fam = await getFamily(clientFields.familyId);
+        if (!fam || !sessionOwnsFamily(req, fam)) {
+          return res.status(404).json({ message: "Family not found" });
+        }
+      }
+
       const projectData = insertProjectSchema.parse({ ...clientFields, ...ownerFields });
       const project = await storage.createProject(projectData);
       res.json(project);
     } catch (error: any) {
       console.error("Create project error:", error);
       res.status(400).json({ message: error.message || "Failed to create project" });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Project Families — organisational grouping of sibling patents. The family
+  // itself is just a label; the cost-controlled overlap check is powered by
+  // the project_family_artifacts digest cache (see server/lib/families.ts).
+  // ---------------------------------------------------------------------------
+
+  // Internal: resolve the current session's owner kind+id, matching the same
+  // dual-auth (legacy / paid) pattern used by projects.
+  function familyOwnerFromSession(req: Request): { kind: "legacy" | "paid"; id: string } | null {
+    const session = req.session as any;
+    const sid: string | undefined = session?.userId;
+    if (!sid) return null;
+    return { kind: session.userKind === "paid" ? "paid" : "legacy", id: sid };
+  }
+
+  // Create family
+  app.post("/api/families", isAuthenticated, async (req, res) => {
+    try {
+      const owner = familyOwnerFromSession(req);
+      if (!owner) return res.status(401).json({ message: "Unauthorized" });
+      const { title, description } = req.body || {};
+      if (typeof title !== "string" || !title.trim()) {
+        return res.status(400).json({ message: "title is required" });
+      }
+      const family = await createFamily({
+        ownerKind: owner.kind,
+        ownerId: owner.id,
+        title: title.trim(),
+        description: typeof description === "string" ? description : null,
+      });
+      res.json(family);
+    } catch (err: any) {
+      console.error("Create family error:", err);
+      res.status(500).json({ message: err?.message ?? "Failed to create family" });
+    }
+  });
+
+  // List current user's families
+  app.get("/api/families", isAuthenticated, async (req, res) => {
+    try {
+      const owner = familyOwnerFromSession(req);
+      if (!owner) return res.status(401).json({ message: "Unauthorized" });
+      const families = await listFamiliesByOwner({ kind: owner.kind, ownerId: owner.id });
+      res.json(families);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message ?? "Failed to list families" });
+    }
+  });
+
+  // Family detail + members
+  app.get("/api/families/:id", isAuthenticated, async (req, res) => {
+    try {
+      const fam = await getFamily(req.params.id);
+      if (!fam || !sessionOwnsFamily(req, fam)) return res.status(404).json({ message: "Not found" });
+      const members = await listProjectsInFamily(fam.id);
+      res.json({ ...fam, members });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message ?? "Failed to load family" });
+    }
+  });
+
+  // Rename / re-describe
+  app.patch("/api/families/:id", isAuthenticated, async (req, res) => {
+    try {
+      const fam = await getFamily(req.params.id);
+      if (!fam || !sessionOwnsFamily(req, fam)) return res.status(404).json({ message: "Not found" });
+      const { title, description } = req.body || {};
+      const updated = await updateFamily(fam.id, {
+        title: typeof title === "string" ? title : undefined,
+        description: description === undefined ? undefined : (typeof description === "string" ? description : null),
+      });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message ?? "Failed to update family" });
+    }
+  });
+
+  // Soft-delete family (detaches members; preserves projects + credits)
+  app.delete("/api/families/:id", isAuthenticated, async (req, res) => {
+    try {
+      const fam = await getFamily(req.params.id);
+      if (!fam || !sessionOwnsFamily(req, fam)) return res.status(404).json({ message: "Not found" });
+      await softDeleteFamily(fam.id);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message ?? "Failed to delete family" });
+    }
+  });
+
+  // Batch attach: move N existing patents into a family in one round-trip.
+  // Used by the "Add existing patents" picker on the family card. Per-project
+  // ownership is enforced; any not-owned ids are simply skipped (returned in
+  // `skipped`) so the caller can show a partial-success toast.
+  app.post("/api/families/:id/attach-projects", isAuthenticated, async (req, res) => {
+    try {
+      const fam = await getFamily(req.params.id);
+      if (!fam || !sessionOwnsFamily(req, fam)) return res.status(404).json({ message: "Family not found" });
+      const { projectIds } = req.body || {};
+      if (!Array.isArray(projectIds) || projectIds.length === 0) {
+        return res.status(400).json({ message: "projectIds must be a non-empty array" });
+      }
+      const skipped: string[] = [];
+      const eligible: string[] = [];
+      for (const id of projectIds) {
+        if (typeof id !== "string") continue;
+        const project = await storage.getProject(id);
+        if (!project || !sessionOwnsProject(req, project)) {
+          skipped.push(id);
+          continue;
+        }
+        eligible.push(id);
+      }
+      const result = await attachManyProjectsToFamily(eligible, fam.id);
+      res.json({ attached: result.ok, failed: result.failed, skipped });
+    } catch (err: any) {
+      console.error("Bulk attach error:", err);
+      res.status(500).json({ message: err?.message ?? "Failed to attach projects" });
+    }
+  });
+
+  // Attach project to a family
+  app.post("/api/projects/:id/family", isAuthenticated, async (req, res) => {
+    try {
+      const project = await storage.getProject(req.params.id);
+      if (!project || !sessionOwnsProject(req, project)) {
+        return res.status(404).json({ message: "Project not found" });
+      }
+      const { familyId } = req.body || {};
+      if (typeof familyId !== "string" || !familyId.trim()) {
+        return res.status(400).json({ message: "familyId is required" });
+      }
+      const fam = await getFamily(familyId);
+      if (!fam || !sessionOwnsFamily(req, fam)) {
+        return res.status(404).json({ message: "Family not found" });
+      }
+      await attachProjectToFamily(project.id, fam.id);
+      res.json({ ok: true, familyId: fam.id });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message ?? "Failed to attach project" });
+    }
+  });
+
+  // Detach project from its family
+  app.delete("/api/projects/:id/family", isAuthenticated, async (req, res) => {
+    try {
+      const project = await storage.getProject(req.params.id);
+      if (!project || !sessionOwnsProject(req, project)) {
+        return res.status(404).json({ message: "Project not found" });
+      }
+      await detachProjectFromFamily(project.id);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message ?? "Failed to detach project" });
+    }
+  });
+
+  // Read-only siblings reference (cached digests only — never full bodies).
+  // Primary consumer: the coach modal + the territory panel inside each
+  // project. Returns [] when the project has no family.
+  app.get("/api/projects/:id/siblings", isAuthenticated, async (req, res) => {
+    try {
+      const project = await storage.getProject(req.params.id);
+      if (!project || !sessionOwnsProject(req, project)) {
+        return res.status(404).json({ message: "Project not found" });
+      }
+      const siblings = await getSiblingsReference(project.id);
+      res.json(siblings);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message ?? "Failed to load siblings" });
+    }
+  });
+
+  // ---------- Family Context Files ----------
+  // External reference documents (typically prior patents in the same product
+  // domain). Heavy AI work (text extraction + one-line summary) runs ONCE at
+  // upload time. Later per-turn QA prompts see only the cached summary.
+
+  // POST /api/families/:id/context-files — upload one file (base64 in JSON).
+  // Foreground response so the inventor sees the summary as soon as it's
+  // available. Cap ~25 MB (matches express body limit).
+  app.post("/api/families/:id/context-files", isAuthenticated, async (req, res) => {
+    try {
+      const fam = await getFamily(req.params.id);
+      if (!fam || !sessionOwnsFamily(req, fam)) return res.status(404).json({ message: "Family not found" });
+      const { originalFilename, mimeType, fileBytesB64 } = req.body || {};
+      if (typeof originalFilename !== "string" || !originalFilename.trim()) {
+        return res.status(400).json({ message: "originalFilename is required" });
+      }
+      if (typeof mimeType !== "string" || !mimeType.trim()) {
+        return res.status(400).json({ message: "mimeType is required" });
+      }
+      const validation = validateUpload({ mimeType, fileBytesB64 });
+      if (validation) return res.status(400).json({ message: validation });
+
+      const session = req.session as any;
+      const ownerKind = session.userKind === "paid" ? "paid" : "legacy";
+      const uploaded = await uploadFamilyContextFile({
+        familyId: fam.id,
+        uploadedByUserId: ownerKind === "legacy" ? session.userId : null,
+        uploadedByInventorsUserId: ownerKind === "paid" ? session.userId : null,
+        originalFilename: originalFilename.trim(),
+        mimeType,
+        fileBytesB64,
+      });
+      res.json(uploaded);
+    } catch (err: any) {
+      console.error("Upload context file error:", err);
+      res.status(500).json({ message: err?.message ?? "Failed to upload file" });
+    }
+  });
+
+  // GET /api/families/:id/context-files — metadata + summary only. Never
+  // ships file_bytes_b64 or extracted_text.
+  app.get("/api/families/:id/context-files", isAuthenticated, async (req, res) => {
+    try {
+      const fam = await getFamily(req.params.id);
+      if (!fam || !sessionOwnsFamily(req, fam)) return res.status(404).json({ message: "Family not found" });
+      const files = await listFamilyContextFiles(fam.id);
+      res.json(files);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message ?? "Failed to list files" });
+    }
+  });
+
+  // GET /api/families/:id/context-files/:fileId/full-text — returns the full
+  // extracted plain text of one file. Used by the AI helper's fetch tool when
+  // the model needs to read a specific document. Authentication enforced.
+  app.get("/api/families/:id/context-files/:fileId/full-text", isAuthenticated, async (req, res) => {
+    try {
+      const fam = await getFamily(req.params.id);
+      if (!fam || !sessionOwnsFamily(req, fam)) return res.status(404).json({ message: "Family not found" });
+      const row = await getFamilyContextFileExtractedText(req.params.fileId);
+      if (!row || row.familyId !== fam.id) return res.status(404).json({ message: "File not found" });
+      res.json({ originalFilename: row.originalFilename, extractedText: row.extractedText ?? "" });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message ?? "Failed to fetch file" });
+    }
+  });
+
+  // GET /api/families/:id/context-files/:fileId/download — returns raw bytes
+  // for human download. Decoded from the base64 column.
+  app.get("/api/families/:id/context-files/:fileId/download", isAuthenticated, async (req, res) => {
+    try {
+      const fam = await getFamily(req.params.id);
+      if (!fam || !sessionOwnsFamily(req, fam)) return res.status(404).json({ message: "Family not found" });
+      const row = await getFamilyContextFileBytes(req.params.fileId);
+      if (!row || row.familyId !== fam.id) return res.status(404).json({ message: "File not found" });
+      const buf = Buffer.from(row.fileBytesB64, "base64");
+      res.setHeader("Content-Type", row.mimeType);
+      res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(row.originalFilename)}"`);
+      res.send(buf);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message ?? "Failed to download file" });
+    }
+  });
+
+  // PATCH /api/families/:id/context-files/:fileId — metadata update (inventor
+  // names, filed date, status, etc). Same shape as PATCH /api/projects/:id.
+  app.patch("/api/families/:id/context-files/:fileId", isAuthenticated, async (req, res) => {
+    try {
+      const fam = await getFamily(req.params.id);
+      if (!fam || !sessionOwnsFamily(req, fam)) return res.status(404).json({ message: "Family not found" });
+      const existing = await getFamilyContextFileBytes(req.params.fileId);
+      if (!existing || existing.familyId !== fam.id) return res.status(404).json({ message: "File not found" });
+
+      const updateSchema = z.object({
+        inventorNames: z.array(z.string()).optional().nullable(),
+        filedDate: z.string().optional().nullable(),
+        status: z.enum(["draft", "filed", "published", "granted", "converted", "abandoned", "expired"]).optional().nullable(),
+        applicationNumber: z.string().optional().nullable(),
+        publicationNumber: z.string().optional().nullable(),
+        assignee: z.string().optional().nullable(),
+        jurisdiction: z.string().optional().nullable(),
+        patentType: z.enum(["provisional", "utility", "design", "plant", "pct", "other"]).optional().nullable(),
+        externalUrl: z.string().optional().nullable(),
+        notes: z.string().optional().nullable(),
+      });
+      const parsed = updateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.issues[0]?.message || "Invalid input" });
+      }
+      const updated = await updateFamilyContextFileMetadata(req.params.fileId, parsed.data);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message ?? "Failed to update file" });
+    }
+  });
+
+  // DELETE /api/families/:id/context-files/:fileId — soft delete.
+  app.delete("/api/families/:id/context-files/:fileId", isAuthenticated, async (req, res) => {
+    try {
+      const fam = await getFamily(req.params.id);
+      if (!fam || !sessionOwnsFamily(req, fam)) return res.status(404).json({ message: "Family not found" });
+      const row = await getFamilyContextFileBytes(req.params.fileId);
+      if (!row || row.familyId !== fam.id) return res.status(404).json({ message: "File not found" });
+      await softDeleteFamilyContextFile(req.params.fileId);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message ?? "Failed to delete file" });
+    }
+  });
+
+  // Overlap check — pure hash lookup against the family's digest cache.
+  // Body: { candidates: [{ kind, text }, ...] }. Returns hits only.
+  app.post("/api/projects/:id/siblings/overlap-check", isAuthenticated, async (req, res) => {
+    try {
+      const project = await storage.getProject(req.params.id);
+      if (!project || !sessionOwnsProject(req, project)) {
+        return res.status(404).json({ message: "Project not found" });
+      }
+      const { candidates } = req.body || {};
+      if (!Array.isArray(candidates)) {
+        return res.status(400).json({ message: "candidates must be an array" });
+      }
+      const safe = candidates
+        .filter((c: any) => c && typeof c.text === "string" && typeof c.kind === "string")
+        .map((c: any) => ({ kind: c.kind, text: c.text }));
+      const hits = await findOverlapsInFamily(project.id, safe as any);
+      res.json({ hits });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message ?? "Failed to run overlap check" });
     }
   });
 
@@ -2246,21 +2601,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ message: "Forbidden" });
       }
 
-      // Validate using Zod schema
+      // Validate using Zod schema. Title is optional now — the same endpoint
+      // also accepts patent-metadata fields. All fields are optional so the
+      // dialog can save any subset.
       const updateSchema = z.object({
-        title: z.string().min(1, "Title is required").max(200, "Title is too long").trim(),
+        title: z.string().min(1).max(200).trim().optional(),
+        inventorNames: z.array(z.string()).optional().nullable(),
+        filedDate: z.string().optional().nullable(),
+        status: z.enum(["draft", "filed", "published", "granted", "converted", "abandoned", "expired"]).optional().nullable(),
+        applicationNumber: z.string().optional().nullable(),
+        publicationNumber: z.string().optional().nullable(),
+        assignee: z.string().optional().nullable(),
+        jurisdiction: z.string().optional().nullable(),
+        patentType: z.enum(["provisional", "utility", "design", "plant", "pct", "other"]).optional().nullable(),
+        externalUrl: z.string().optional().nullable(),
+        notes: z.string().optional().nullable(),
       });
 
       const validation = updateSchema.safeParse(req.body);
       if (!validation.success) {
-        return res.status(400).json({ 
+        return res.status(400).json({
           message: validation.error.issues[0]?.message || "Invalid input"
         });
       }
 
-      const updatedProject = await storage.updateProject(req.params.id, { 
-        title: validation.data.title 
-      });
+      // Strip undefined keys so we don't overwrite existing values with NaN/missing.
+      const patch: Record<string, any> = {};
+      for (const [k, v] of Object.entries(validation.data)) {
+        if (v !== undefined) patch[k] = v === "" ? null : v;
+      }
+
+      const updatedProject = await storage.updateProject(req.params.id, patch as any);
       res.json(updatedProject);
     } catch (error: any) {
       console.error("Update project error:", error);

@@ -3,6 +3,7 @@ import { users, inventorsUsers, projects, agentData, pannuRecords, ideaSnapshots
 import { db, pool } from "./db";
 import { eq, and, desc, sql, isNull, or, gte } from "drizzle-orm";
 import { recordEventBackground } from "./lib/provenance/hash-chain";
+import { refreshFamilyArtifactsBackground } from "./lib/families";
 
 // 2FA update data type
 export interface Update2FAData {
@@ -331,6 +332,14 @@ export class DatabaseStorage implements IStorage {
       });
     };
 
+    // Fire the family-artifact digest refresh for this project/agent in the
+    // background. No-op when the project is not part of a family.
+    const refreshFamily = (agentNumber: number) => {
+      if (agentNumber === 1 || agentNumber === 2 || agentNumber === 4) {
+        refreshFamilyArtifactsBackground(insertData.projectId, agentNumber);
+      }
+    };
+
     if (existing) {
       const [updated] = await db
         .update(agentData)
@@ -338,6 +347,7 @@ export class DatabaseStorage implements IStorage {
         .where(eq(agentData.id, existing.id))
         .returning();
       emitEvent(updated, "update");
+      refreshFamily(insertData.agentNumber);
       return updated;
     } else {
       const [created] = await db
@@ -345,28 +355,37 @@ export class DatabaseStorage implements IStorage {
         .values(insertData)
         .returning();
       emitEvent(created, "insert");
+      refreshFamily(insertData.agentNumber);
       return created;
     }
   }
 
   async mergeAgentData(projectId: string, agentNumber: number, partialData: Record<string, any>): Promise<AgentData> {
     const existing = await this.getAgentData(projectId, agentNumber);
-    
+
+    const refreshFamily = () => {
+      if (agentNumber === 1 || agentNumber === 2 || agentNumber === 4) {
+        refreshFamilyArtifactsBackground(projectId, agentNumber);
+      }
+    };
+
     if (existing) {
       const [updated] = await db
         .update(agentData)
-        .set({ 
+        .set({
           data: sql`${agentData.data} || ${JSON.stringify(partialData)}::jsonb`,
-          updatedAt: new Date() 
+          updatedAt: new Date()
         })
         .where(eq(agentData.id, existing.id))
         .returning();
+      refreshFamily();
       return updated;
     } else {
       const [created] = await db
         .insert(agentData)
         .values({ projectId, agentNumber, data: partialData })
         .returning();
+      refreshFamily();
       return created;
     }
   }

@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
+import { SiblingsReferencePanel } from "@/components/siblings-reference-panel";
 import { Label } from "@/components/ui/label";
 import type { Project } from "@shared/schema";
 import { recordHumanInput } from "@/lib/human-inputs";
@@ -393,6 +394,7 @@ export default function Agent2b() {
       <main className="flex-1 overflow-auto">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
           <div className="space-y-8">
+            {projectId && <SiblingsReferencePanel projectId={projectId} />}
             {!hasExtractedIdeas && (
               <Card>
                 <CardContent className="pt-6">
