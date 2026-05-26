@@ -759,7 +759,7 @@ export default function Dashboard() {
             setBulkAddFilter("");
           }
         }}>
-          <DialogContent data-testid="dialog-bulk-add-patents" className="max-w-lg">
+          <DialogContent data-testid="dialog-bulk-add-patents" className="max-w-3xl">
             <DialogHeader>
               <DialogTitle>Add existing Projects to this family</DialogTitle>
               <DialogDescription>

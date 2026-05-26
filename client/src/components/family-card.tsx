@@ -6,7 +6,8 @@
 // Heavy keyboard / interaction logic lives on the parent dashboard — this
 // component is presentational + emits events upward.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, ChevronRight, FolderOpen, MoreVertical, Plus, Edit, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +15,70 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { Project } from "@shared/schema";
 import { FamilyContextFiles } from "@/components/family-context-files";
+
+// Small portaled dropdown — renders the menu at document.body so it escapes
+// the family card's overflow / scroll boundaries, sits on top of every other
+// surface, and has a fully opaque background. Pure styling utility; the menu
+// items themselves are passed in as children.
+function PortalMenu({
+  open,
+  anchorRef,
+  onClose,
+  children,
+}: {
+  open: boolean;
+  anchorRef: React.RefObject<HTMLElement | null>;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const anchor = anchorRef.current;
+    if (!anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    const estimatedWidth = 200;
+    const left = Math.min(
+      rect.right - estimatedWidth,
+      window.innerWidth - estimatedWidth - 8,
+    );
+    setPos({ top: rect.bottom + 4, left: Math.max(8, left) });
+  }, [open, anchorRef]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (menuRef.current && menuRef.current.contains(e.target as Node)) return;
+      if (anchorRef.current && anchorRef.current.contains(e.target as Node)) return;
+      onClose();
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, anchorRef, onClose]);
+
+  if (!open || !pos) return null;
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      role="menu"
+      style={{ position: "fixed", top: pos.top, left: pos.left, zIndex: 1000 }}
+      className="min-w-48 rounded-md border border-border bg-card text-card-foreground shadow-xl py-1"
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
 
 export interface FamilyRow {
   id: string;
@@ -54,6 +119,7 @@ export function FamilyCard({
 }: Props) {
   const [open, setOpen] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuAnchorRef = useRef<HTMLButtonElement | null>(null);
   const memberCount = members.length;
 
   const lastUpdated = useMemo(() => {
@@ -107,35 +173,31 @@ export function FamilyCard({
             >
               <Plus className="h-3.5 w-3.5 mr-1" /> Add Project
             </Button>
-            <div className="relative">
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}
-                onBlur={() => setTimeout(() => setMenuOpen(false), 150)}
-                data-testid={`family-menu-${family.id}`}
+            <Button
+              ref={menuAnchorRef}
+              size="sm"
+              variant="ghost"
+              onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}
+              data-testid={`family-menu-${family.id}`}
+            >
+              <MoreVertical className="h-4 w-4" />
+            </Button>
+            <PortalMenu open={menuOpen} anchorRef={menuAnchorRef} onClose={() => setMenuOpen(false)}>
+              <button
+                className="w-full text-left text-sm px-3 py-2 hover-elevate flex items-center gap-2"
+                onClick={() => { setMenuOpen(false); onRenameFamily(family); }}
+                data-testid={`family-rename-${family.id}`}
               >
-                <MoreVertical className="h-4 w-4" />
-              </Button>
-              {menuOpen && (
-                <div className="absolute right-0 top-full mt-1 z-10 bg-popover border border-border rounded-md shadow-md min-w-[140px] py-1">
-                  <button
-                    className="w-full text-left text-sm px-3 py-1.5 hover-elevate flex items-center gap-2"
-                    onMouseDown={(e) => { e.preventDefault(); setMenuOpen(false); onRenameFamily(family); }}
-                    data-testid={`family-rename-${family.id}`}
-                  >
-                    <Edit className="h-3.5 w-3.5" /> Rename
-                  </button>
-                  <button
-                    className="w-full text-left text-sm px-3 py-1.5 hover-elevate flex items-center gap-2 text-destructive"
-                    onMouseDown={(e) => { e.preventDefault(); setMenuOpen(false); onDeleteFamily(family); }}
-                    data-testid={`family-delete-${family.id}`}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" /> Delete family
-                  </button>
-                </div>
-              )}
-            </div>
+                <Edit className="h-4 w-4" /> Edit title
+              </button>
+              <button
+                className="w-full text-left text-sm px-3 py-2 hover-elevate flex items-center gap-2 text-destructive"
+                onClick={() => { setMenuOpen(false); onDeleteFamily(family); }}
+                data-testid={`family-delete-${family.id}`}
+              >
+                <Trash2 className="h-4 w-4" /> Delete family
+              </button>
+            </PortalMenu>
           </div>
         </div>
         <CollapsibleContent>
@@ -181,6 +243,7 @@ interface RowProps {
 
 function FamilyMemberRow({ project, onOpen, onEdit, onDelete, onDetach, getStageLabel }: RowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuAnchorRef = useRef<HTMLButtonElement | null>(null);
   return (
     <div
       // Compact on mobile, roomier on desktop so the progress bar reads cleanly.
@@ -222,37 +285,35 @@ function FamilyMemberRow({ project, onOpen, onEdit, onDelete, onDetach, getStage
           </span>
         </span>
       </button>
-      <div className="flex items-center gap-1 flex-none relative">
+      <div className="flex items-center gap-1 flex-none">
         <Button
+          ref={menuAnchorRef}
           size="sm"
           variant="ghost"
           onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}
-          onBlur={() => setTimeout(() => setMenuOpen(false), 150)}
         >
           <MoreVertical className="h-4 w-4" />
         </Button>
-        {menuOpen && (
-          <div className="absolute right-0 top-full mt-1 z-10 bg-popover border border-border rounded-md shadow-md min-w-[160px] py-1">
-            <button
-              className="w-full text-left text-sm px-3 py-1.5 hover-elevate flex items-center gap-2"
-              onMouseDown={(e) => { e.preventDefault(); setMenuOpen(false); onEdit(); }}
-            >
-              <Edit className="h-3.5 w-3.5" /> Rename
-            </button>
-            <button
-              className="w-full text-left text-sm px-3 py-1.5 hover-elevate flex items-center gap-2"
-              onMouseDown={(e) => { e.preventDefault(); setMenuOpen(false); onDetach(); }}
-            >
-              <FolderOpen className="h-3.5 w-3.5" /> Remove from family
-            </button>
-            <button
-              className="w-full text-left text-sm px-3 py-1.5 hover-elevate flex items-center gap-2 text-destructive"
-              onMouseDown={(e) => { e.preventDefault(); setMenuOpen(false); onDelete(); }}
-            >
-              <Trash2 className="h-3.5 w-3.5" /> Delete Project
-            </button>
-          </div>
-        )}
+        <PortalMenu open={menuOpen} anchorRef={menuAnchorRef} onClose={() => setMenuOpen(false)}>
+          <button
+            className="w-full text-left text-sm px-3 py-2 hover-elevate flex items-center gap-2"
+            onClick={() => { setMenuOpen(false); onEdit(); }}
+          >
+            <Edit className="h-4 w-4" /> Edit details
+          </button>
+          <button
+            className="w-full text-left text-sm px-3 py-2 hover-elevate flex items-center gap-2"
+            onClick={() => { setMenuOpen(false); onDetach(); }}
+          >
+            <FolderOpen className="h-4 w-4" /> Remove from family
+          </button>
+          <button
+            className="w-full text-left text-sm px-3 py-2 hover-elevate flex items-center gap-2 text-destructive"
+            onClick={() => { setMenuOpen(false); onDelete(); }}
+          >
+            <Trash2 className="h-4 w-4" /> Delete Project
+          </button>
+        </PortalMenu>
       </div>
     </div>
   );

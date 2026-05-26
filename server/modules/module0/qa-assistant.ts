@@ -562,88 +562,58 @@ function summarizeArrayItem(item: any): string {
   return s.length > 240 ? `${s.slice(0, 240)}…` : s;
 }
 
-// Read-only render of the family-cache digests for every OTHER project in
-// the same family. Bounded by design: previews are server-truncated
-// (200 chars for idea summaries, 80 chars for key concepts) and only titles
-// are emitted for extracted ideas. Full bodies are NEVER loaded here.
-// Hard cap on how many sibling blocks ship to the model per turn. Families
-// can contain dozens of patents; the cache returns them all (cheap), but the
-// prompt only carries the most recently updated N. The remainder is summarised
-// as a one-line overflow so the model knows more siblings exist and can call
-// the overlap endpoint if it needs to compare against a specific one.
+// Per-turn caps. Families can contain dozens of Projects + reference docs; the
+// caches return them all (cheap), but the prompt only carries the top-N most
+// recently updated and reports the rest via overflow counts so the model can
+// hedge absence claims per FAMILY_AWARE_MODE.
 const SIBLING_PROMPT_CAP = 10;
-
-function renderSiblings(siblings: SiblingReference[]): string {
-  if (!siblings || siblings.length === 0) return "(none — this project is not in a family, or it is the only patent in its family)";
-  const shown = siblings.slice(0, SIBLING_PROMPT_CAP);
-  const hidden = siblings.length - shown.length;
-  const blocks: string[] = [];
-  if (hidden > 0) {
-    blocks.push(`(showing ${shown.length} of ${siblings.length} siblings, most recently updated first; ${hidden} more not shown — ask the inventor or use the overlap check if you need to compare against a specific sibling)`);
-  }
-  for (const s of shown) {
-    const head = `### ${s.title} — stage ${s.currentStage}${s.completed ? " (completed)" : ""} — id=${s.id}`;
-    const parts: string[] = [head];
-    if (s.artifacts.ideaSummary) {
-      const ia = s.artifacts.ideaSummary;
-      parts.push(`- Idea Summary preview (${ia.charCount} chars total): ${ia.preview}`);
-    }
-    if (s.artifacts.extractedIdeas.length) {
-      parts.push(`- Extracted Idea titles (${s.artifacts.extractedIdeas.length}): ${s.artifacts.extractedIdeas.map((e) => e.title).join(" | ")}`);
-    }
-    if (s.artifacts.keyConcepts.length) {
-      parts.push(`- Selected Key Concepts (${s.artifacts.keyConcepts.length}): ${s.artifacts.keyConcepts.map((k) => k.preview).join(" | ")}`);
-    }
-    blocks.push(parts.join("\n"));
-  }
-  return blocks.join("\n\n");
-}
-
-// Cap on file rows rendered per turn. Each row is one short line; even a
-// family with 50 reference docs ships under 5 KB of prompt.
 const CONTEXT_FILE_PROMPT_CAP = 25;
 
-// Render only the metadata fields the inventor has actually filled in.
-// Empty / null fields are omitted so the prompt doesn't carry a wall of
-// "(unset)" lines for a draft patent.
-function renderPatentMetadata(meta: {
-  inventorNames: string[] | null;
-  filedDate: string | null;
-  status: string | null;
-  applicationNumber: string | null;
-  publicationNumber: string | null;
-  assignee: string | null;
-  jurisdiction: string | null;
-  patentType: string | null;
-  externalUrl: string | null;
-  notes: string | null;
-} | null): string {
-  if (!meta) return "(no metadata recorded yet)";
-  const lines: string[] = [];
-  if (Array.isArray(meta.inventorNames) && meta.inventorNames.length) lines.push(`- Inventor(s): ${meta.inventorNames.join(", ")}`);
-  if (meta.filedDate) lines.push(`- Filed date: ${meta.filedDate}`);
-  if (meta.status) lines.push(`- Status: ${meta.status}`);
-  if (meta.patentType) lines.push(`- Patent type: ${meta.patentType}`);
-  if (meta.jurisdiction) lines.push(`- Jurisdiction: ${meta.jurisdiction}`);
-  if (meta.applicationNumber) lines.push(`- Application no: ${meta.applicationNumber}`);
-  if (meta.publicationNumber) lines.push(`- Publication no: ${meta.publicationNumber}`);
-  if (meta.assignee) lines.push(`- Assignee: ${meta.assignee}`);
-  if (meta.externalUrl) lines.push(`- External URL: ${meta.externalUrl}`);
-  if (meta.notes) lines.push(`- Notes: ${meta.notes}`);
-  return lines.length ? lines.join("\n") : "(no metadata recorded yet)";
-}
+// Emits the `## FAMILY CONTEXT` section as a single structured JSON block.
+// The schema matches the FAMILY CONTEXT FIELDS contract declared in
+// qa-assistant.md so the agent can read fields by their declared names
+// (`familyId`, `siblings[].siblingId`, `siblingsOverflow`, etc.) without
+// inferring shape from markdown. Empty arrays and null fields are emitted
+// verbatim so the activation gate ("siblings is non-empty") reads cleanly.
+function renderFamilyContext(input: {
+  familyId: string | null;
+  siblings: SiblingReference[];
+  contextFiles: Array<{ id: string; filename: string; summary: string | null; extractionStatus: "ready" | "failed" | "pending" }>;
+  projectFiledStatus: {
+    inventorNames: string[] | null;
+    filedDate: string | null;
+    status: string | null;
+    applicationNumber: string | null;
+    notes: string | null;
+  } | null;
+}): string {
+  const shownSiblings = (input.siblings ?? []).slice(0, SIBLING_PROMPT_CAP);
+  const siblingsOverflow = Math.max(0, (input.siblings ?? []).length - shownSiblings.length);
+  const shownFiles = (input.contextFiles ?? []).slice(0, CONTEXT_FILE_PROMPT_CAP);
+  const referenceFilesOverflow = Math.max(0, (input.contextFiles ?? []).length - shownFiles.length);
 
-function renderContextFiles(files: Array<{ id: string; filename: string; summary: string | null }>): string {
-  if (!files || files.length === 0) return "(none uploaded for this family)";
-  const shown = files.slice(0, CONTEXT_FILE_PROMPT_CAP);
-  const hidden = files.length - shown.length;
-  const lines: string[] = [];
-  if (hidden > 0) lines.push(`(showing ${shown.length} of ${files.length}; ${hidden} more not shown — fetch by id if you need a specific one)`);
-  for (const f of shown) {
-    const s = f.summary && f.summary.trim() ? f.summary.trim() : "(no summary — extraction may have failed)";
-    lines.push(`- id=${f.id} · ${f.filename}: ${s}`);
-  }
-  return lines.join("\n");
+  const payload = {
+    familyId: input.familyId,
+    siblings: shownSiblings.map((s) => ({
+      siblingId: s.id,
+      title: s.title,
+      stage: s.completed ? "filed" : s.currentStage,
+      ideaSummary: s.artifacts.ideaSummary?.preview ?? null,
+      extractedIdeaTitles: s.artifacts.extractedIdeas.map((e) => e.title),
+      keyConceptPreviews: s.artifacts.keyConcepts.map((k) => k.preview),
+    })),
+    siblingsOverflow,
+    referenceFiles: shownFiles.map((f) => ({
+      fileId: f.id,
+      filename: f.filename,
+      summary: f.summary,
+      extractionStatus: f.extractionStatus,
+    })),
+    referenceFilesOverflow,
+    projectFiledStatus: input.projectFiledStatus,
+  };
+
+  return "```json\n" + JSON.stringify(payload, null, 2) + "\n```";
 }
 
 function renderProjectContext(pc: QAPayload["projectContext"]): string {
@@ -1160,17 +1130,13 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
   // family. Defensive: any failure degrades to [] so a families issue never
   // breaks the QA assistant turn.
   let siblings: SiblingReference[] = [];
-  let contextFiles: Array<{ id: string; filename: string; summary: string | null }> = [];
-  let projectMetadata: {
+  let contextFiles: Array<{ id: string; filename: string; summary: string | null; extractionStatus: "ready" | "failed" | "pending" }> = [];
+  let projectFamilyId: string | null = null;
+  let projectFiledStatus: {
     inventorNames: string[] | null;
     filedDate: string | null;
     status: string | null;
     applicationNumber: string | null;
-    publicationNumber: string | null;
-    assignee: string | null;
-    jurisdiction: string | null;
-    patentType: string | null;
-    externalUrl: string | null;
     notes: string | null;
   } | null = null;
   if (persistent) {
@@ -1188,27 +1154,20 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     try {
       const projRow = await db.execute(sql`
         SELECT family_id,
-               inventor_names, filed_date, status, application_number,
-               publication_number, assignee, jurisdiction, patent_type,
-               external_url, notes
+               inventor_names, filed_date, status, application_number, notes
           FROM inventor_geyser.projects WHERE id = ${projectId} LIMIT 1
       `);
       const row: any = (projRow as any).rows?.[0] ?? null;
-      const fid = (row?.family_id ?? null) as string | null;
-      if (fid) {
-        contextFiles = await listFamilyContextFilesForPrompt(fid);
+      projectFamilyId = (row?.family_id ?? null) as string | null;
+      if (projectFamilyId) {
+        contextFiles = await listFamilyContextFilesForPrompt(projectFamilyId);
       }
       if (row) {
-        projectMetadata = {
+        projectFiledStatus = {
           inventorNames: row.inventor_names ?? null,
           filedDate: row.filed_date ?? null,
           status: row.status ?? null,
           applicationNumber: row.application_number ?? null,
-          publicationNumber: row.publication_number ?? null,
-          assignee: row.assignee ?? null,
-          jurisdiction: row.jurisdiction ?? null,
-          patentType: row.patent_type ?? null,
-          externalUrl: row.external_url ?? null,
           notes: row.notes ?? null,
         };
       }
@@ -1266,9 +1225,12 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
       }`,
     );
     s.push(`## TURN ROUTER STATE\n${renderRouting(routingNow)}`);
-    s.push(`## PATENT METADATA\n${renderPatentMetadata(projectMetadata)}`);
-    s.push(`## SIBLINGS IN FAMILY\n${renderSiblings(siblings)}`);
-    s.push(`## FAMILY REFERENCE FILES\n${renderContextFiles(contextFiles)}`);
+    s.push(`## FAMILY CONTEXT\n${renderFamilyContext({
+      familyId: projectFamilyId,
+      siblings,
+      contextFiles,
+      projectFiledStatus,
+    })}`);
     s.push(`## AGENT MODULE STATE\n${renderProjectContext(pc)}`);
     if (payload.pageSnapshot) {
       s.push(`## CURRENT PAGE\n${renderPageSnapshot(payload.pageSnapshot)}`);

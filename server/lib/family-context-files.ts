@@ -333,17 +333,30 @@ export async function softDeleteFamilyContextFile(fileId: string): Promise<void>
 }
 
 // Used by the QA assistant per-turn context builder.
-// Returns one row per non-deleted file with just { id, filename, summary }.
-// Cheap to ship into the prompt; never includes extracted_text.
-export async function listFamilyContextFilesForPrompt(familyId: string): Promise<Array<{ id: string; filename: string; summary: string | null }>> {
+// Returns one row per non-deleted file with id, filename, summary, and the
+// per-file extractionStatus the prompt's family-aware rules read.
+export async function listFamilyContextFilesForPrompt(familyId: string): Promise<Array<{
+  id: string;
+  filename: string;
+  summary: string | null;
+  extractionStatus: "ready" | "failed" | "pending";
+}>> {
   const rows = await db
     .select({
       id: projectFamilyContextFiles.id,
       filename: projectFamilyContextFiles.originalFilename,
       summary: projectFamilyContextFiles.summary,
+      extractionStatus: projectFamilyContextFiles.extractionStatus,
     })
     .from(projectFamilyContextFiles)
     .where(and(eq(projectFamilyContextFiles.familyId, familyId), isNull(projectFamilyContextFiles.deletedAt)))
     .orderBy(desc(projectFamilyContextFiles.createdAt));
-  return rows.map((r) => ({ id: r.id, filename: r.filename, summary: r.summary ?? null }));
+  // Normalise extraction status. Storage uses 'ok'|'failed'|'pending';
+  // prompt contract uses 'ready'|'failed'|'pending'.
+  return rows.map((r) => ({
+    id: r.id,
+    filename: r.filename,
+    summary: r.summary ?? null,
+    extractionStatus: r.extractionStatus === "ok" ? "ready" : (r.extractionStatus as "failed" | "pending"),
+  }));
 }
