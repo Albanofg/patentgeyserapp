@@ -805,7 +805,7 @@ export default function Dashboard() {
                       </button>
                     </div>
                   </div>
-                  <div className="max-h-[360px] overflow-y-auto border border-border rounded-md divide-y divide-border">
+                  <div className="max-h-90 overflow-y-auto border border-border rounded-md divide-y divide-border">
                     {looseProjects
                       .filter((p) => !bulkAddFilter.trim() || p.title.toLowerCase().includes(bulkAddFilter.toLowerCase()))
                       .map((p) => {

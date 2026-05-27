@@ -807,6 +807,12 @@ export default function Agent5() {
     });
 
     return {
+      // The Showcase hosts two prompt-phases: Genus & Species Expansion
+      // (phase 7) while the G&S workflow is still running/awaiting gates, and
+      // Final Provisional Draft Inspection (phase 8) once it's applied. Declare
+      // the live one from G&S status so the helper opens the right rulebook;
+      // the app's URL stage 5 matches neither.
+      phase: gsStatus?.status === "complete" ? 8 : 7,
       pageName: "The Showcase (Stage 5)",
       route: `/project/${projectId}/agent/5`,
       description:

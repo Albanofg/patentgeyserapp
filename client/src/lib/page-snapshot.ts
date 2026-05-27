@@ -65,6 +65,18 @@ export type PageSnapshotAction = {
 export type PageSnapshot = {
   /** Human-readable name of the page, e.g. "Inspect & Refine Ideas (Stage 1)". */
   pageName: string;
+  /**
+   * The AI Helper's authoritative prompt-phase for this page (1–8), per
+   * LAW_DECLARED_PHASE_AUTHORITATIVE in qa-assistant.md. The page is the only
+   * thing that truly knows which phase the inventor is in, so it declares it
+   * here and the server consumes it directly as `currentLocation.stage` rather
+   * than guessing from the URL. Pages whose URL digit already equals their
+   * phase still declare it for explicitness; pages that host more than one
+   * phase (e.g. the Showcase = Genus & Species 7 / final draft 8) compute it
+   * from their live sub-state. Omit on non-workflow surfaces — the server then
+   * falls back to its URL/DB derivation.
+   */
+  phase?: number;
   /** The pathname (so the model can correlate with currentLocation). */
   route: string;
   /** One- to three-sentence description of what the user is doing here. */

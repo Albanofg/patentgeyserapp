@@ -105,6 +105,26 @@ function tagsInclude(tags: string[] | null | undefined, id: string): boolean {
 }
 
 /**
+ * Does an entry's tag set satisfy a scope id? Stage 6 scope ids are compound
+ * (`Key Concept Set N_<dimension>`) but the agent tags pohc_answer entries with
+ * the COMPONENTS separately — `["<questionId>", "Key Concept Set N", "<dimension>"]`
+ * per qa-assistant.md PHASE_6 — so a strict equality check against the compound
+ * id never matches, leaving every dimension stuck at not_started and freezing
+ * the walk on the first concept. Accept either the compound id as a single tag
+ * OR both component tags present. Non-compound ids fall back to exact match, so
+ * stages 1–5 are unaffected.
+ */
+export function tagsSatisfyScopeId(tags: string[] | null | undefined, id: string): boolean {
+  if (tagsInclude(tags, id)) return true;
+  const compound = id.match(/^(Key Concept Set \d+)_(.+)$/);
+  if (compound) {
+    const [, setId, dimension] = compound;
+    return tagsInclude(tags, setId) && tagsInclude(tags, dimension);
+  }
+  return false;
+}
+
+/**
  * Compute the per-id leap progress map. A leap is complete when pohcLog
  * contains a first_conceptual_leap entry tagged to the id (Stages 2/4/5)
  * OR a pohc_answer entry tagged to the id (Stage 6). It's turn_b_pending
@@ -130,7 +150,7 @@ function computeLeapProgress(
   // and the prompt treated that pair as a state contradiction.
   for (const id of scope) {
     const completed = pohcLog.some(
-      (e) => completionTypes.has(e.entryType || "") && tagsInclude(e.tags, id),
+      (e) => completionTypes.has(e.entryType || "") && tagsSatisfyScopeId(e.tags, id),
     );
     out[id] = completed ? "complete" : "not_started";
   }

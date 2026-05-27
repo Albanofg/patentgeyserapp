@@ -152,6 +152,11 @@ export default function Agent4c() {
         ];
 
     return {
+      // Provisional Draft Review is a draft-inspection surface → prompt-phase 8
+      // (Final Provisional Draft Inspection), the closest match; the app packs
+      // it under URL stage 4c. Declared so the helper audits the draft rather
+      // than running PHASE_4 (White Space).
+      phase: 8,
       pageName: "Provisional Draft Review (Stage 4c)",
       route: `/project/${projectId}/agent/4c`,
       description: hasConcepts

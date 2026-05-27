@@ -106,6 +106,8 @@ export default function Agent4PannuIntro() {
   // navigation actions: back to 4b, skip the validation entirely, or start
   // the Pannu flow at /agent/4-conception.
   const snapshot = useMemo<PageSnapshot>(() => ({
+    // Proof of Human Conception (intro) is prompt-phase 6, not URL stage 4.
+    phase: 6,
     pageName: "Proof of Human Conception — Introduction",
     route: `/project/${projectId}/agent/4-conception-intro`,
     description:

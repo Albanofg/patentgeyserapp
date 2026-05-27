@@ -83,7 +83,7 @@ export default function Agent3() {
     enabled: !!projectId,
   });
 
-  const { data: agent3Data, isLoading: agent3Loading } = useQuery({
+  const { data: agent3Data, isLoading: agent3Loading } = useQuery<any>({
     queryKey: ["/api/projects", projectId, "agent", 3],
     enabled: !!projectId,
   });

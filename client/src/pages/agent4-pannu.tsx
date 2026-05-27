@@ -772,6 +772,11 @@ export default function Agent4Pannu() {
     });
 
     return {
+      // Proof of Human Conception is prompt-phase 6 (the app packs it under
+      // URL stage 4-conception). Declared so the helper opens PHASE_6 and its
+      // state machine walks every Key Concept Set × dimension — replacing the
+      // server-side substage remap that previously did this.
+      phase: 6,
       pageName: "Proof of Human Conception (Stage 4 — Pannu)",
       route: `/project/${projectId}/agent/4-conception`,
       description:

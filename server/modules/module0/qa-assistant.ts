@@ -31,7 +31,7 @@ import {
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../../db";
 import { recordUsage, extractGeminiUsage, extractOpenAIUsage } from "../../ai/usage-log";
-import { computeRouting, renderRouting, type RoutingFields } from "./routing";
+import { computeRouting, renderRouting, tagsSatisfyScopeId, type RoutingFields } from "./routing";
 import { getSiblingsReference, getRelevantFamilyArtifacts, type SiblingReference, type RetrievedArtifact } from "../../lib/families";
 import { listFamilyContextFilesForPrompt } from "../../lib/family-context-files";
 
@@ -375,6 +375,11 @@ interface QAPayload {
    */
   pageSnapshot?: {
     pageName: string;
+    // Authoritative prompt-phase (1–8) the page declares for itself, per
+    // LAW_DECLARED_PHASE_AUTHORITATIVE. The route handler consumes this as the
+    // effective stage; rendered into the snapshot block so the model also sees
+    // its declared location.
+    phase?: number;
     route: string;
     description?: string;
     items?: Array<{
@@ -767,6 +772,11 @@ function friendlyStageLabel(stage: number | null | undefined, substage: string |
     if (s.includes("practitioner")) return "Find a Practitioner";
     return "The Showcase";
   }
+  // Stage 6 = the phase-aligned number the AI Helper sees on the Proof of Human
+  // Conception page (the app's `/agent/4-conception` substage, remapped in the
+  // qa-assistant route). Entries captured there are stamped stage 6, so label
+  // them the same as the stage-4 conception substage above.
+  if (stage === 6) return "Inventorship Validation";
   return null;
 }
 
@@ -1358,6 +1368,66 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     return `${s.join("\n\n")}${recoveryNote}\n\n## NEW USER MESSAGE\n${payload.message}`;
   }
 
+  // STAGE 6 CROSS-SOURCE COMPLETION — the inventor's PoHC validation answers
+  // are saved to the human_inputs ledger (source "module4b/pannu-answer"), NOT
+  // to the coach pohcLog. Without surfacing them, the router can't tell a
+  // dimension is already answered and the helper re-interrogates the inventor
+  // for work they already did in the app's own fields. Synthesize a
+  // pohc_answer-shaped entry per filled PoHC field, tagged to its Key Concept
+  // Set + dimension, and append it to visibleLog BEFORE routing — so the router
+  // (completion), the scope filter, and the rendered context all read the same
+  // augmented log and stay consistent (LAW_SCOPE_COMPLETENESS: cross-phase reuse
+  // produces answers, never empty fields). Mapping failures degrade to "not
+  // answered" (the helper offers to walk the dimension), never to a false
+  // "complete", so a bad map can't silently drop an unanswered field.
+  if (persistent && pc.currentStage === 6) {
+    try {
+      const { listHumanInputs } = await import("../human-inputs/ledger");
+      const pohcInputs = (await listHumanInputs({ projectId: projectId! })).filter(
+        (r: any) =>
+          r.source === "module4b/pannu-answer" &&
+          typeof r.answerText === "string" &&
+          r.answerText.trim().length > 0,
+      );
+      const kcs: any[] = Array.isArray((pc as any).selectedKeyConcepts)
+        ? (pc as any).selectedKeyConcepts
+        : [];
+      const idToSetLabel = new Map<string, string>();
+      kcs.forEach((k, i) => {
+        if (k && k.id != null) idToSetLabel.set(String(k.id), `Key Concept Set ${i + 1}`);
+      });
+      // App PoHC factor names → routing dimension names (STAGE6_DIMENSIONS).
+      const FACTOR_TO_DIMENSION: Record<string, string> = {
+        conception: "conception",
+        quality: "contribution_quality",
+        known_concepts: "exceeding_known",
+      };
+      for (const r of pohcInputs as any[]) {
+        const setLabel = r.conceptId != null ? idToSetLabel.get(String(r.conceptId)) : undefined;
+        // factor is the segment after "::" in sourceRefId ("<conceptId>::<factor>").
+        const factor =
+          typeof r.sourceRefId === "string" && r.sourceRefId.includes("::")
+            ? r.sourceRefId.split("::").pop()!
+            : "";
+        const dimension = FACTOR_TO_DIMENSION[factor];
+        if (!setLabel || !dimension) continue; // unmappable → leave as not answered
+        visibleLog.push({
+          id: `humanpohc_${r.id}`,
+          projectId: projectId!,
+          entryType: "pohc_answer",
+          verbatimText: r.answerText,
+          tags: [setLabel, dimension],
+          dismissedAt: null,
+          capturedAt: r.updatedAt || r.createdAt || new Date(),
+          displayId: `humanpohc_${r.id}`,
+          _source: "human_inputs",
+        });
+      }
+    } catch (err: any) {
+      console.warn("[qa-assistant] stage-6 human_input completion merge failed:", err?.message);
+    }
+  }
+
   // Routing state machine. Computed server-side per SERVER_CONTRACT in
   // qa-assistant.md — the agent reads these fields verbatim and never
   // re-derives them from pohcLog or openQuestions.
@@ -1374,8 +1444,14 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
   // refusals. The data stays in the DB — we just don't show it to the model
   // until the user is on a stage where it's actionable again.
   const scopeSet = new Set(routing.scope);
+  // Compound-aware scope membership. Stage-6 scope ids are compound
+  // (`Key Concept Set N_<dimension>`) but pohc_answer entries are tagged with
+  // the components separately (`["Key Concept Set N", "<dimension>"]`), so a
+  // plain set-membership check would filter every captured PoHC answer out of
+  // the model's context and break the assemble-all branch. tagsSatisfyScopeId
+  // matches both the direct case (stages 1–5) and the compound case (stage 6).
   const inScope = (tags: any) =>
-    Array.isArray(tags) && tags.some((t) => typeof t === "string" && scopeSet.has(t));
+    Array.isArray(tags) && routing.scope.some((id) => tagsSatisfyScopeId(tags, id));
   const filteredVisibleLog =
     scopeSet.size === 0
       ? visibleLog

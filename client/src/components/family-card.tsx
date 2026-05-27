@@ -210,7 +210,7 @@ export function FamilyCard({
               No Projects in this family yet. Click <span className="font-medium">Add Project</span> to create one.
             </div>
           ) : (
-            <ScrollArea className="max-h-[400px]">
+            <ScrollArea className="max-h-100">
               <div className="px-2 pb-2 space-y-1">
                 {members.map((p) => (
                   <FamilyMemberRow

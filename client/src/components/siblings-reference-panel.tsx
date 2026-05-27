@@ -100,7 +100,7 @@ export function SiblingsReferencePanel({ projectId }: Props) {
                 />
               </div>
             )}
-            <ScrollArea className="max-h-[460px] pr-2">
+            <ScrollArea className="max-h-115 pr-2">
               <div className="space-y-1.5">
                 {filtered.map((s) => (
                   <SiblingRow key={s.id} sibling={s} />

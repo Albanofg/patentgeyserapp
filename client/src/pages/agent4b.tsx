@@ -19,6 +19,8 @@ type KeyConceptItem = {
   variationId: string;
   text: string;
   number: number;
+  // 'independent' | 'dependent' — used to badge each key concept in the list.
+  type?: string;
 };
 
 export default function Agent4b() {
@@ -69,7 +71,7 @@ export default function Agent4b() {
   useEffect(() => {
     const agent4DataObj = agent4Data?.data as any;
     if (agent4DataObj?.selectedKeyConcepts && Array.isArray(agent4DataObj.selectedKeyConcepts)) {
-      const selectedIds = new Set<string>(agent4DataObj.selectedKeyConcepts.map((c: ClaimItem) => c.id));
+      const selectedIds = new Set<string>(agent4DataObj.selectedKeyConcepts.map((c: KeyConceptItem) => c.id));
       setSelectedClaimIds(selectedIds);
     }
     
@@ -305,6 +307,9 @@ export default function Agent4b() {
         ];
 
     return {
+      // Key Concepts Selection is prompt-phase 5 (the app packs it under
+      // URL stage 4b). Declared so the helper opens PHASE_5, not PHASE_4.
+      phase: 5,
       pageName: "Key Concepts Selection (Stage 4b)",
       route: `/project/${projectId}/agent/4b`,
       description: hasAnyVariations
@@ -340,7 +345,7 @@ export default function Agent4b() {
   // Group claims by variation for display
   type ClaimsByVariation = {
     variation: any;
-    claims: ClaimItem[];
+    claims: KeyConceptItem[];
   };
   
   const claimsByVariation: ClaimsByVariation[] = claimVariations.map((variation: any) => ({
@@ -431,7 +436,7 @@ export default function Agent4b() {
             <div className="space-y-4">
               {claimsByVariation.map(({ variation, claims }, index: number) => {
                 const isExpanded = expandedVariations.has(variation.id);
-                const variationClaimIds = claims.map((c: ClaimItem) => c.id);
+                const variationClaimIds = claims.map((c: KeyConceptItem) => c.id);
                 const selectedCount = variationClaimIds.filter((id: string) => selectedClaimIds.has(id)).length;
                 const allSelected = selectedCount === variationClaimIds.length;
 
@@ -478,7 +483,7 @@ export default function Agent4b() {
 
                     {isExpanded && (
                       <CardContent className="space-y-2 sm:space-y-3 pt-0 px-3 sm:px-6">
-                        {claims.map((claim: ClaimItem, claimIndex: number) => {
+                        {claims.map((claim: KeyConceptItem, claimIndex: number) => {
                           const isSelected = selectedClaimIds.has(claim.id);
                           return (
                             <div
