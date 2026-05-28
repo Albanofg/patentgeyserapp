@@ -24,6 +24,7 @@ import {
   patchOpenQuestion,
 } from "./modules/module0/qa-assistant";
 import { runDebate } from "./modules/module1/1a-debate/debate";
+import { runMechanic } from "./modules/module1/mechanic/mechanic";
 import { runReanalyze } from "./modules/module1/1b-reanalyze/reanalyze";
 import { runR3Fixes } from "./modules/module1/1c-mechanical-fixes/r3-fixes";
 import { runListCreator } from "./modules/module1/1d-list-creator/list-creator";
@@ -56,6 +57,7 @@ import {
   updateFamilyContextFileMetadata,
   validateUpload,
 } from "./lib/family-context-files";
+import { requireEnvList } from "./lib/env";
 import { createCheckpointBackground } from "./lib/provenance/checkpoint";
 import { verifyChain } from "./lib/provenance/hash-chain";
 import { TSA_PROVIDERS } from "./lib/provenance/tsa-providers";
@@ -85,7 +87,7 @@ const registerRequestSchema = z.object({
 const AGENT_TIMEOUT = 900000; // 15 minutes in milliseconds
 
 // Webhook URLs for n8n agents — loaded from environment variables
-const N8N_MECHANIC_WEBHOOK = process.env.N8N_MECHANIC_WEBHOOK!;
+// N8N_MECHANIC_WEBHOOK — migrated to direct AI call (server/modules/module1/mechanic/mechanic.ts)
 const N8N_WHITESPACE_WEBHOOK = process.env.N8N_WHITESPACE_WEBHOOK!;
 const N8N_PROVISIONAL_WEBHOOK = process.env.N8N_PROVISIONAL_WEBHOOK!;
 const N8N_DIAGRAMS_WEBHOOK = process.env.N8N_DIAGRAMS_WEBHOOK!;
@@ -95,7 +97,7 @@ const N8N_PANNU_AI_SUGGESTION_WEBHOOK = process.env.N8N_PANNU_AI_SUGGESTION_WEBH
 const N8N_PRACTITIONER_MATCH_WEBHOOK = process.env.N8N_PRACTITIONER_MATCH_WEBHOOK!;
 const N8N_QUICK_PRIOR_ART_WEBHOOK = process.env.N8N_QUICK_PRIOR_ART_WEBHOOK!;
 const N8N_MULTI_CONCEPT_SEARCH_WEBHOOK = process.env.N8N_MULTI_CONCEPT_SEARCH_WEBHOOK!;
-const N8N_DRAFT_PROVISIONAL_WEBHOOK = process.env.N8N_DRAFT_PROVISIONAL_WEBHOOK!;
+// N8N_DRAFT_PROVISIONAL_WEBHOOK — migrated to direct AI call (server/modules/module2/2a-draft/draft.ts via /api/projects/:id/agent/2/draft); legacy /agent/2/submit endpoint deleted
 const N8N_CLAIMS_WEBHOOK = process.env.N8N_CLAIMS_WEBHOOK!;
 const N8N_BROADER_CLAIMS_WEBHOOK = process.env.N8N_BROADER_CLAIMS_WEBHOOK!;
 // N8N_QA_ASSISTANT_WEBHOOK — migrated to direct AI call (server/modules/qa/qa-assistant.ts)
@@ -350,11 +352,14 @@ function sessionOwnsProject(
   return kind === "paid" ? project.inventorsUserId === sid : project.userId === sid;
 }
 
-const ADMIN_EMAILS = new Set([
-  (process.env.ADMIN_EMAIL || "albano@bookingboostpro.com").toLowerCase().trim(),
-  "tim.bratton@gmail.com",
-  "tim@personallifemedia.com",
-]);
+// Admin access is sourced from the ADMIN_EMAILS env var (comma-separated).
+// Required at boot — no source-code fallback, no silent grant if unset. To add
+// or rotate an admin, edit the env var only. requireEnvList throws at module
+// load if ADMIN_EMAILS is missing or empty, so a misconfigured deploy refuses
+// to start instead of silently running with the wrong access set.
+const ADMIN_EMAILS = new Set(
+  requireEnvList("ADMIN_EMAILS").map((e) => e.toLowerCase().trim()),
+);
 
 const isAdmin = async (req: Request, res: Response, next: NextFunction) => {
   const userId = (req.session as any)?.userId;
@@ -380,38 +385,6 @@ const isActiveSubscriber = (req: Request, res: Response, next: NextFunction) => 
   }
   return next();
 };
-
-// Real n8n webhook call using native https module (bypasses fetch 5-min headers timeout)
-async function callN8nWebhook(url: string, data: any) {
-  try {
-    console.log(`Calling n8n webhook: ${url}`);
-    
-    // Use sendWebhook which uses native https module with proper timeout handling
-    const result = await sendWebhook(url, data, AGENT_TIMEOUT);
-    
-    console.log(`n8n webhook parsed response:`, result);
-    
-    return {
-      success: true,
-      data: result,
-    };
-  } catch (error: any) {
-    console.error(`n8n webhook error:`, error);
-    // Return graceful fallback on error
-    const errorMessage = error.message?.includes('timeout') 
-      ? "AI service timed out. Please try again."
-      : error.message || "Webhook call failed";
-    return {
-      success: false,
-      error: errorMessage,
-      data: {
-        ...data,
-        processed: false,
-        fallback: true,
-      },
-    };
-  }
-}
 
 // Helper function to clear downstream agent data when earlier stages are re-run
 // This ensures users always see fresh data when they redo any part of the process
@@ -3219,7 +3192,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const isMechanicRequest = rounds.length > 0 && hasBaseSnapshot && !forceReview && 
         (forceMechanic || intent.isMechanic);
 
-      let n8nResponse;
+      // `any` matches the legacy callN8nWebhook return shape. The two agents
+      // it can hold now (runDebate / runMechanic) carry disjoint `data` payloads,
+      // and the read-sites below are guarded by `isMechanicRequest` — narrowing
+      // by hand here would be noisier than the original code without buying
+      // safety the runtime checks already provide.
+      let n8nResponse: any;
       let roundType: 'brainstorm' | 'mechanic' = 'brainstorm';
 
       if (isMechanicRequest) {
@@ -3227,9 +3205,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         roundType = 'mechanic';
         console.log(`[Agent 1B - Mechanic] Processing command: ${intent.command}`);
         
-        n8nResponse = await callN8nWebhook(N8N_MECHANIC_WEBHOOK, {
+        n8nResponse = await runMechanic({
           projectId: req.params.id,
-          currentIdea: currentIdea, // The idea after Advocate/Examiner debate
+          currentIdea, // The idea after Advocate/Examiner debate
           userRequest: message, // User's refinement request (e.g., "add encryption")
           sessionId,
         });
@@ -4725,74 +4703,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("Substage proceed error:", error);
       res.status(500).json({ message: error.message || "Failed to proceed to next substage" });
-    }
-  });
-
-  // Submit agent 2 - Advance to Agent 3 (LEGACY - keeping for backward compatibility)
-  app.post("/api/projects/:id/agent/2/submit", isAuthenticated, async (req, res) => {
-    try {
-      // Get Agent 1 data
-      const agent1Data = await storage.getAgentData(req.params.id, 1);
-      if (!agent1Data?.data) {
-        return res.status(400).json({ message: "Agent 1 data not found" });
-      }
-
-      const { ideaSummary, rounds } = agent1Data.data as any;
-
-      // Extract Advocate and Examiner analyses from all rounds
-      const advocateMessages: string[] = [];
-      const examinerMessages: string[] = [];
-
-      if (rounds && Array.isArray(rounds)) {
-        rounds.forEach((round: any) => {
-          if (round.agentsDebate && Array.isArray(round.agentsDebate)) {
-            round.agentsDebate.forEach((msg: any) => {
-              if (msg.speaker === "Advocate") {
-                advocateMessages.push(msg.message);
-              } else if (msg.speaker === "Examiner") {
-                examinerMessages.push(msg.message);
-              }
-            });
-          }
-        });
-      }
-
-      const advocateAnalysis = advocateMessages.join("\n\n");
-      const examinerAnalysis = examinerMessages.join("\n\n");
-
-      // Prepare webhook payload
-      // Note: n8n webhooks still expect goodCop field names — do not rename until those agents are migrated
-      const webhookPayload = {
-        idea: ideaSummary,
-        goodCopAnalysis: advocateAnalysis, // Internal: advocateAnalysis
-        badCopAnalysis: examinerAnalysis, // Internal: examinerAnalysis
-      };
-
-      console.log("Calling Agent 2 webhook with payload:", webhookPayload);
-
-      // Call n8n webhook using production URL
-      const webhookData = await sendWebhook(N8N_DRAFT_PROVISIONAL_WEBHOOK, webhookPayload);
-      console.log("Agent 2 webhook response:", webhookData);
-
-      // Store webhook response in Agent 2 data
-      await storage.upsertAgentData({
-        projectId: req.params.id,
-        agentNumber: 2,
-        data: {
-          draftSpecification: webhookData.draftSpecification || webhookData.draft || "Processing...",
-          firstPassPriorArt: webhookData.firstPassPriorArt || webhookData.priorArt || [],
-          webhookResponse: webhookData,
-          processedAt: new Date().toISOString(),
-        },
-      });
-
-      // Update project stage
-      await storage.updateProject(req.params.id, { currentStage: 3 });
-      
-      res.json({ success: true, data: webhookData });
-    } catch (error: any) {
-      console.error("Submit agent 2 error:", error);
-      res.status(500).json({ message: error.message || "Failed to process submission" });
     }
   });
 
