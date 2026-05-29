@@ -60,6 +60,24 @@ import {
 import { requireEnv, requireEnvList } from "./lib/env";
 import { sendServerError } from "./lib/error-response";
 import { createZipArchive } from "./lib/archiver-loader";
+import {
+  SALT_ROUNDS,
+  getSession,
+  isAuthenticated,
+  loadAuthUser,
+  withAuthUser,
+  findUserByEmailAcrossTables,
+  findUserByIdAcrossTables,
+  update2FAByKind,
+  updatePasswordByKind,
+  sessionOwnsProject,
+  ADMIN_EMAILS,
+  isAdmin,
+  isActiveSubscriber,
+  type UserKind,
+  type AuthUser,
+  type AuthLookup,
+} from "./lib/auth-middleware";
 import { createCheckpointBackground } from "./lib/provenance/checkpoint";
 import { verifyChain } from "./lib/provenance/hash-chain";
 import { TSA_PROVIDERS } from "./lib/provenance/tsa-providers";
@@ -73,8 +91,6 @@ import { runPannuSuggestion } from "./modules/module4/4d-suggestion/suggestion";
 import { runDiagrams } from "./modules/module5/5b-diagrams/diagrams";
 import { runBroaderClaims } from "./modules/module5/5c-broader-key-concepts/broader-claims";
 import { runProvisional } from "./modules/module5/5a-provisional/provisional";
-
-const SALT_ROUNDS = 10;
 
 // RFC 4122 UUID v1–v5. Used to validate path params before DB lookups so
 // we don't pass arbitrary user input through query layers or log noise.
@@ -194,199 +210,12 @@ function sendWebhook(url: string, payload: any, timeout: number = AGENT_TIMEOUT)
   });
 }
 
-// Session configuration
-function getSession() {
-  const sessionTtl = 7 * 24 * 60 * 60 * 1000; // 1 week
-  const pgStore = connectPg(session);
-  const sessionStore = new pgStore({
-    pool: pool as any,
-    createTableIfMissing: true,
-    ttl: sessionTtl,
-  });
-  
-  return session({
-    secret: requireEnv("SESSION_SECRET"),
-    store: sessionStore,
-    resave: true, // Resave session on each request to keep it alive
-    rolling: true, // Reset maxAge on every request - keeps active users logged in
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      maxAge: sessionTtl,
-    },
-  });
-}
-
-// Authentication middleware. Also seeds the per-request usage-attribution
-// context so any AI call made during this request gets logged with the
-// correct user/project/request identifiers, regardless of how deep the
-// call stack runs. Email is best-effort (cached on the session after the
-// first lookup to keep the hot path cheap).
-const isAuthenticated = (req: Request, res: Response, next: NextFunction) => {
-  const sess = req.session as any;
-  if (!sess?.userId) {
-    return res.status(401).json({ message: "Unauthorized" });
-  }
-
-  const projectIdParam = (req.params?.id as string | undefined) ?? null;
-  const requestId = (req.headers["x-vercel-id"] as string | undefined) ?? null;
-
-  // Look up email at most once per session, then cache. Skip the lookup
-  // entirely if it's already on the session — most requests will hit
-  // this fast path.
-  const finish = (userEmail: string | null) => {
-    runWithUsageContext(
-      {
-        userId: sess.userId,
-        userEmail,
-        projectId: projectIdParam,
-        requestId,
-      },
-      () => next(),
-    );
-  };
-
-  if (sess.userEmail) {
-    return finish(sess.userEmail);
-  }
-  const kind = sess.userKind === "paid" ? "paid" : "legacy";
-  (kind === "paid"
-    ? storage.getInventorUser(sess.userId)
-    : storage.getUser(sess.userId)
-  )
-    .then((u: any) => {
-      if (u?.email) sess.userEmail = u.email;
-      finish(u?.email ?? null);
-    })
-    .catch(() => finish(null));
-};
-
-// Phase 1 paid-projects: session may carry a userKind discriminator.
-type UserKind = "legacy" | "paid";
-
-interface AuthUser {
-  id: string;
-  email: string;
-  kind: UserKind;
-}
-
-async function loadAuthUser(req: Request): Promise<AuthUser | null> {
-  const session = req.session as any;
-  const userId: string | undefined = session?.userId;
-  if (!userId) return null;
-  const kind: UserKind = session.userKind === "paid" ? "paid" : "legacy";
-  if (kind === "paid") {
-    const user = await storage.getInventorUser(userId);
-    if (!user) return null;
-    return { id: user.id, email: user.email, kind: "paid" };
-  }
-  const user = await storage.getUser(userId);
-  if (!user) return null;
-  return { id: user.id, email: user.email, kind: "legacy" };
-}
-
-const withAuthUser = async (req: Request, res: Response, next: NextFunction) => {
-  const user = await loadAuthUser(req);
-  if (!user) return res.status(401).json({ message: "Unauthorized" });
-  (req as any).authUser = user;
-  next();
-};
-
-// Phase 1 paid-projects: dual-table lookup helpers for auth/2FA/password flows.
-// Many endpoints originally only queried the legacy `users` table; we need them
-// to transparently work for inventor users in `inventors_users` as well.
-type AuthLookup =
-  | { kind: "paid"; record: import("@shared/schema").InventorUser }
-  | { kind: "legacy"; record: import("@shared/schema").User };
-
-async function findUserByEmailAcrossTables(email: string): Promise<AuthLookup | null> {
-  const inv = await storage.getInventorUserByEmail(email);
-  if (inv) return { kind: "paid", record: inv };
-  const leg = await storage.getUserByEmail(email);
-  if (leg) return { kind: "legacy", record: leg };
-  return null;
-}
-
-async function findUserByIdAcrossTables(
-  kind: UserKind,
-  userId: string,
-): Promise<AuthLookup | null> {
-  if (kind === "paid") {
-    const inv = await storage.getInventorUser(userId);
-    return inv ? { kind: "paid", record: inv } : null;
-  }
-  const leg = await storage.getUser(userId);
-  return leg ? { kind: "legacy", record: leg } : null;
-}
-
-async function update2FAByKind(
-  kind: UserKind,
-  userId: string,
-  data: import("./storage").Update2FAData,
-) {
-  return kind === "paid"
-    ? storage.updateInventorUser2FA(userId, data)
-    : storage.updateUser2FA(userId, data);
-}
-
-async function updatePasswordByKind(
-  kind: UserKind,
-  userId: string,
-  hashedPassword: string,
-) {
-  return kind === "paid"
-    ? storage.updateInventorUserPassword(userId, hashedPassword)
-    : storage.updateUserPassword(userId, hashedPassword);
-}
-
-// Checks that the current session owns the given project, whether they are a
-// legacy user (project.userId) or an inventor user (project.inventorsUserId).
-function sessionOwnsProject(
-  req: Request,
-  project: { userId: string | null; inventorsUserId: string | null }
-): boolean {
-  const session = req.session as any;
-  const sid: string | undefined = session?.userId;
-  if (!sid) return false;
-  const kind: UserKind = session.userKind === "paid" ? "paid" : "legacy";
-  return kind === "paid" ? project.inventorsUserId === sid : project.userId === sid;
-}
-
-// Admin access is sourced from the ADMIN_EMAILS env var (comma-separated).
-// Required at boot — no source-code fallback, no silent grant if unset. To add
-// or rotate an admin, edit the env var only. requireEnvList throws at module
-// load if ADMIN_EMAILS is missing or empty, so a misconfigured deploy refuses
-// to start instead of silently running with the wrong access set.
-const ADMIN_EMAILS = new Set(
-  requireEnvList("ADMIN_EMAILS").map((e) => e.toLowerCase().trim()),
-);
-
-const isAdmin = async (req: Request, res: Response, next: NextFunction) => {
-  const userId = (req.session as any)?.userId;
-  const userKind = (req.session as any)?.userKind;
-  if (!userId) return res.status(401).json({ message: "Unauthorized" });
-  const user = userKind === "paid"
-    ? await storage.getInventorUser(userId)
-    : await storage.getUser(userId);
-  if (!user || !ADMIN_EMAILS.has(user.email.toLowerCase().trim())) {
-    return res.status(403).json({ message: "Forbidden" });
-  }
-  return next();
-};
-
-// Block AI/n8n actions for read-only (lapsed) subscribers
-const isActiveSubscriber = (req: Request, res: Response, next: NextFunction) => {
-  const status = (req.session as any)?.whitelistStatus;
-  if (status === "read_only") {
-    return res.status(403).json({
-      message: "Your subscription has lapsed. Please renew to continue building. You can still view your existing projects.",
-      code: "SUBSCRIPTION_LAPSED",
-    });
-  }
-  return next();
-};
+// Auth middleware (getSession, isAuthenticated, loadAuthUser, withAuthUser,
+// find*AcrossTables, update*ByKind, sessionOwnsProject, ADMIN_EMAILS, isAdmin,
+// isActiveSubscriber) and types (UserKind, AuthUser, AuthLookup) plus the
+// bcrypt SALT_ROUNDS constant now live in ./lib/auth-middleware so each route
+// domain can import a single canonical copy. See the import block at the top
+// of this file.
 
 // Helper function to clear downstream agent data when earlier stages are re-run
 // This ensures users always see fresh data when they redo any part of the process

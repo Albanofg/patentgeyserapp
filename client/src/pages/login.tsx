@@ -51,6 +51,11 @@ export default function Login() {
           title: "Welcome back!",
           description: "You've successfully logged in.",
         });
+        // Trip the once-per-login-session marketing alert (read+cleared by
+        // ChallengeAlertDialog on first render inside AuthenticatedShell).
+        // Set ONLY when login is fully complete; the 2FA path sets its own
+        // flag from authenticated-shell's onSuccess after the second factor.
+        sessionStorage.setItem("show-challenge-alert", "1");
       }
       await queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
       await queryClient.refetchQueries({ queryKey: ["/api/auth/user"] });

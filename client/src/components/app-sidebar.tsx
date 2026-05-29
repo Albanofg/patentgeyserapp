@@ -21,7 +21,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { CurrentIdeaModal } from "@/components/current-idea-modal";
-import { Home, LogOut, Sparkles, Wrench, Search, TrendingUp, Image, Lightbulb, Code, FileSearch, Settings } from "lucide-react";
+import { Home, LogOut, Sparkles, Wrench, Search, TrendingUp, Image, Lightbulb, Code, BookOpen, Video, Settings } from "lucide-react";
 import { CodeModal } from "@/components/code-modal";
 import type { Project, User } from "@shared/schema";
 import geyserLogo from "@/assets/geyser-logo.png";
@@ -214,16 +214,42 @@ export function AppSidebar({ projectId, onOpenAIHelper, helperOpen }: AppSidebar
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <SidebarMenuButton
-                      onClick={() => setLocation("/prior-art-check")}
-                      isActive={location === "/prior-art-check"}
-                      data-testid="nav-prior-art-check"
+                      asChild
+                      data-testid="nav-guide-for-inventors"
                       className="group-data-[collapsible=icon]:justify-center"
                     >
-                      <FileSearch className="h-4 w-4" />
-                      <span className="group-data-[collapsible=icon]:hidden">Quick Prior Art Check</span>
+                      <a
+                        href="https://docs.google.com/document/d/1BqbpidPBZUMc9K22aRK6l4IvYMeDxyYburUs-BAmZO0/edit?tab=t.0#heading=h.ivv3zcxspd41"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <BookOpen className="h-4 w-4" />
+                        <span className="group-data-[collapsible=icon]:hidden">Guide for Inventors</span>
+                      </a>
                     </SidebarMenuButton>
                   </TooltipTrigger>
-                  {!open && <TooltipContent side="right">Quick Prior Art Check</TooltipContent>}
+                  {!open && <TooltipContent side="right">Guide for Inventors</TooltipContent>}
+                </Tooltip>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    {/* Span wrapper so the tooltip still fires on hover even
+                        though aria-disabled blocks pointer events on the
+                        button itself. Flip aria-disabled off + add an href
+                        once the meeting link goes live on Monday. */}
+                    <span className="block cursor-not-allowed">
+                      <SidebarMenuButton
+                        aria-disabled="true"
+                        data-testid="nav-meeting-link"
+                        className="group-data-[collapsible=icon]:justify-center"
+                      >
+                        <Video className="h-4 w-4" />
+                        <span className="group-data-[collapsible=icon]:hidden">Meeting link</span>
+                      </SidebarMenuButton>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="right">Activates Monday</TooltipContent>
                 </Tooltip>
               </SidebarMenuItem>
             </SidebarMenu>
