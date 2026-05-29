@@ -9,12 +9,15 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
-// Marketing nudge shown once per login session. The flag is written to
-// sessionStorage by every "login-just-completed" code path (login.tsx onSuccess
-// when no 2FA is required, plus authenticated-shell's 2FA onSuccess for users
-// with 2FA enabled). We read+clear it on mount here, so the dialog never
-// re-shows on a page refresh and naturally pops up again on the next login.
-const SHOW_FLAG_KEY = "show-challenge-alert";
+// Marketing nudge shown to authenticated users on a time-based cadence rather
+// than only at login — once-per-login left users who keep a tab open for days
+// never seeing it. The component stamps the localStorage timestamp whenever
+// it opens the dialog, then short-circuits subsequent checks within the
+// SHOW_INTERVAL_MS window. The check runs on first mount AND every time the
+// tab regains focus (visibilitychange), so a user who comes back from lunch
+// gets a fresh nudge if 12 hours have passed since the last one.
+const STORAGE_KEY = "challenge-alert-last-shown";
+const SHOW_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours → ≤ 2× / day, ≥ 1× / day for active users
 
 const CHALLENGE_TITLE = "🔔 5-Day Filing Challenge";
 const CHALLENGE_DESCRIPTION =
@@ -25,10 +28,30 @@ export function ChallengeAlertDialog() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (window.sessionStorage.getItem(SHOW_FLAG_KEY) === "1") {
-      window.sessionStorage.removeItem(SHOW_FLAG_KEY);
-      setOpen(true);
-    }
+
+    const checkAndMaybeShow = () => {
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      const lastShown = raw ? Number(raw) : 0;
+      const now = Date.now();
+      // Guard against future-dated timestamps (clock skew / manual edits) by
+      // treating any NaN-or-future value as "never shown" so the user still
+      // sees the alert instead of being permanently silenced.
+      const validLast = Number.isFinite(lastShown) && lastShown <= now ? lastShown : 0;
+      if (now - validLast >= SHOW_INTERVAL_MS) {
+        window.localStorage.setItem(STORAGE_KEY, String(now));
+        setOpen(true);
+      }
+    };
+
+    checkAndMaybeShow();
+
+    // Re-check when the tab regains focus — handles the "left the tab open
+    // for hours" case so the user gets re-nudged after a long idle.
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") checkAndMaybeShow();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, []);
 
   return (

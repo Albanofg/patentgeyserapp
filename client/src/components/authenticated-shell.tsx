@@ -202,10 +202,6 @@ export function AuthenticatedShell() {
           email={user.email}
           onSuccess={() => {
             setTwoFactorComplete(true);
-            // 2FA login fully completed — trip the once-per-session marketing
-            // alert here (the no-2FA path sets the same flag from login.tsx).
-            // Read+cleared by ChallengeAlertDialog on its first render below.
-            sessionStorage.setItem("show-challenge-alert", "1");
             refetch();
           }}
         />
