@@ -57,7 +57,9 @@ import {
   updateFamilyContextFileMetadata,
   validateUpload,
 } from "./lib/family-context-files";
-import { requireEnvList } from "./lib/env";
+import { requireEnv, requireEnvList } from "./lib/env";
+import { sendServerError } from "./lib/error-response";
+import { createZipArchive } from "./lib/archiver-loader";
 import { createCheckpointBackground } from "./lib/provenance/checkpoint";
 import { verifyChain } from "./lib/provenance/hash-chain";
 import { TSA_PROVIDERS } from "./lib/provenance/tsa-providers";
@@ -86,21 +88,21 @@ const registerRequestSchema = z.object({
 // Agent processing timeout - 15 minutes for complex AI operations
 const AGENT_TIMEOUT = 900000; // 15 minutes in milliseconds
 
-// Webhook URLs for n8n agents — loaded from environment variables
-// N8N_MECHANIC_WEBHOOK — migrated to direct AI call (server/modules/module1/mechanic/mechanic.ts)
-const N8N_WHITESPACE_WEBHOOK = process.env.N8N_WHITESPACE_WEBHOOK!;
-const N8N_PROVISIONAL_WEBHOOK = process.env.N8N_PROVISIONAL_WEBHOOK!;
-const N8N_DIAGRAMS_WEBHOOK = process.env.N8N_DIAGRAMS_WEBHOOK!;
-const N8N_PANNU_QUESTIONS_WEBHOOK = process.env.N8N_PANNU_QUESTIONS_WEBHOOK!;
-const N8N_PANNU_VALIDATE_WEBHOOK = process.env.N8N_PANNU_VALIDATE_WEBHOOK!;
-const N8N_PANNU_AI_SUGGESTION_WEBHOOK = process.env.N8N_PANNU_AI_SUGGESTION_WEBHOOK!;
-const N8N_PRACTITIONER_MATCH_WEBHOOK = process.env.N8N_PRACTITIONER_MATCH_WEBHOOK!;
-const N8N_QUICK_PRIOR_ART_WEBHOOK = process.env.N8N_QUICK_PRIOR_ART_WEBHOOK!;
-const N8N_MULTI_CONCEPT_SEARCH_WEBHOOK = process.env.N8N_MULTI_CONCEPT_SEARCH_WEBHOOK!;
-// N8N_DRAFT_PROVISIONAL_WEBHOOK — migrated to direct AI call (server/modules/module2/2a-draft/draft.ts via /api/projects/:id/agent/2/draft); legacy /agent/2/submit endpoint deleted
-const N8N_CLAIMS_WEBHOOK = process.env.N8N_CLAIMS_WEBHOOK!;
-const N8N_BROADER_CLAIMS_WEBHOOK = process.env.N8N_BROADER_CLAIMS_WEBHOOK!;
-// N8N_QA_ASSISTANT_WEBHOOK — migrated to direct AI call (server/modules/qa/qa-assistant.ts)
+// Webhook URLs for the remaining n8n agents (prior-art + practitioner-match
+// are the last two endpoints not yet migrated to direct AI calls).
+//
+// Migrated → live in server/modules/:
+//   N8N_MECHANIC_WEBHOOK          → module1/mechanic/mechanic.ts
+//   N8N_DRAFT_PROVISIONAL_WEBHOOK → module2/2a-draft/draft.ts (via /agent/2/draft)
+//   N8N_QA_ASSISTANT_WEBHOOK      → module0/qa-assistant.ts
+//
+// Deleted (declared here historically but never read from routes.ts after
+// migration): WHITESPACE, PROVISIONAL, DIAGRAMS, PANNU_QUESTIONS,
+// PANNU_VALIDATE, PANNU_AI_SUGGESTION, CLAIMS, BROADER_CLAIMS. Remove the
+// matching env vars from .env and Vercel.
+const N8N_PRACTITIONER_MATCH_WEBHOOK = requireEnv("N8N_PRACTITIONER_MATCH_WEBHOOK");
+const N8N_QUICK_PRIOR_ART_WEBHOOK = requireEnv("N8N_QUICK_PRIOR_ART_WEBHOOK");
+const N8N_MULTI_CONCEPT_SEARCH_WEBHOOK = requireEnv("N8N_MULTI_CONCEPT_SEARCH_WEBHOOK");
 
 // Intent detection patterns for routing messages to Mechanic (1B) vs Brainstorm (1A)
 const MECHANIC_INTENT_PATTERNS = [
@@ -203,7 +205,7 @@ function getSession() {
   });
   
   return session({
-    secret: process.env.SESSION_SECRET!,
+    secret: requireEnv("SESSION_SECRET"),
     store: sessionStore,
     resave: true, // Resave session on each request to keep it alive
     rolling: true, // Reset maxAge on every request - keeps active users logged in
@@ -619,7 +621,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ id: newId, email, kind });
     } catch (error: any) {
       console.error("Registration error:", error);
-      res.status(400).json({ message: error.message || "Registration failed" });
+      sendServerError(res, error, "Registration failed", 400);
     }
   });
 
@@ -892,7 +894,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("[admin/usage] query failed:", error);
-      res.status(500).json({ message: error?.message ?? "Failed to fetch usage" });
+      sendServerError(res, error, "Failed to fetch usage");
     }
   });
 
@@ -930,7 +932,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.send(lines.join("\n"));
     } catch (error: any) {
       console.error("[admin/usage/export] failed:", error);
-      res.status(500).json({ message: error?.message ?? "Failed to export usage" });
+      sendServerError(res, error, "Failed to export usage");
     }
   });
 
@@ -2116,7 +2118,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("Prior art check error:", error);
-      res.status(500).json({ message: error.message || "Failed to run prior art check" });
+      sendServerError(res, error, "Failed to run prior art check");
     }
   });
 
@@ -2209,7 +2211,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(project);
     } catch (error: any) {
       console.error("Create project error:", error);
-      res.status(400).json({ message: error.message || "Failed to create project" });
+      sendServerError(res, error, "Failed to create project", 400);
     }
   });
 
@@ -2246,7 +2248,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(family);
     } catch (err: any) {
       console.error("Create family error:", err);
-      res.status(500).json({ message: err?.message ?? "Failed to create family" });
+      sendServerError(res, err, "Failed to create family");
     }
   });
 
@@ -2258,7 +2260,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const families = await listFamiliesByOwner({ kind: owner.kind, ownerId: owner.id });
       res.json(families);
     } catch (err: any) {
-      res.status(500).json({ message: err?.message ?? "Failed to list families" });
+      sendServerError(res, err, "Failed to list families");
     }
   });
 
@@ -2270,7 +2272,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const members = await listProjectsInFamily(fam.id);
       res.json({ ...fam, members });
     } catch (err: any) {
-      res.status(500).json({ message: err?.message ?? "Failed to load family" });
+      sendServerError(res, err, "Failed to load family");
     }
   });
 
@@ -2286,7 +2288,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
       res.json(updated);
     } catch (err: any) {
-      res.status(500).json({ message: err?.message ?? "Failed to update family" });
+      sendServerError(res, err, "Failed to update family");
     }
   });
 
@@ -2298,7 +2300,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await softDeleteFamily(fam.id);
       res.json({ ok: true });
     } catch (err: any) {
-      res.status(500).json({ message: err?.message ?? "Failed to delete family" });
+      sendServerError(res, err, "Failed to delete family");
     }
   });
 
@@ -2329,7 +2331,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ attached: result.ok, failed: result.failed, skipped });
     } catch (err: any) {
       console.error("Bulk attach error:", err);
-      res.status(500).json({ message: err?.message ?? "Failed to attach projects" });
+      sendServerError(res, err, "Failed to attach projects");
     }
   });
 
@@ -2351,7 +2353,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await attachProjectToFamily(project.id, fam.id);
       res.json({ ok: true, familyId: fam.id });
     } catch (err: any) {
-      res.status(500).json({ message: err?.message ?? "Failed to attach project" });
+      sendServerError(res, err, "Failed to attach project");
     }
   });
 
@@ -2365,7 +2367,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await detachProjectFromFamily(project.id);
       res.json({ ok: true });
     } catch (err: any) {
-      res.status(500).json({ message: err?.message ?? "Failed to detach project" });
+      sendServerError(res, err, "Failed to detach project");
     }
   });
 
@@ -2381,7 +2383,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const siblings = await getSiblingsReference(project.id);
       res.json(siblings);
     } catch (err: any) {
-      res.status(500).json({ message: err?.message ?? "Failed to load siblings" });
+      sendServerError(res, err, "Failed to load siblings");
     }
   });
 
@@ -2420,7 +2422,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(uploaded);
     } catch (err: any) {
       console.error("Upload context file error:", err);
-      res.status(500).json({ message: err?.message ?? "Failed to upload file" });
+      sendServerError(res, err, "Failed to upload file");
     }
   });
 
@@ -2433,7 +2435,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const files = await listFamilyContextFiles(fam.id);
       res.json(files);
     } catch (err: any) {
-      res.status(500).json({ message: err?.message ?? "Failed to list files" });
+      sendServerError(res, err, "Failed to list files");
     }
   });
 
@@ -2448,7 +2450,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!row || row.familyId !== fam.id) return res.status(404).json({ message: "File not found" });
       res.json({ originalFilename: row.originalFilename, extractedText: row.extractedText ?? "" });
     } catch (err: any) {
-      res.status(500).json({ message: err?.message ?? "Failed to fetch file" });
+      sendServerError(res, err, "Failed to fetch file");
     }
   });
 
@@ -2465,7 +2467,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(row.originalFilename)}"`);
       res.send(buf);
     } catch (err: any) {
-      res.status(500).json({ message: err?.message ?? "Failed to download file" });
+      sendServerError(res, err, "Failed to download file");
     }
   });
 
@@ -2497,7 +2499,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const updated = await updateFamilyContextFileMetadata(req.params.fileId, parsed.data);
       res.json(updated);
     } catch (err: any) {
-      res.status(500).json({ message: err?.message ?? "Failed to update file" });
+      sendServerError(res, err, "Failed to update file");
     }
   });
 
@@ -2511,7 +2513,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await softDeleteFamilyContextFile(req.params.fileId);
       res.json({ ok: true });
     } catch (err: any) {
-      res.status(500).json({ message: err?.message ?? "Failed to delete file" });
+      sendServerError(res, err, "Failed to delete file");
     }
   });
 
@@ -2533,7 +2535,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const hits = await findOverlapsInFamily(project.id, safe as any);
       res.json({ hits });
     } catch (err: any) {
-      res.status(500).json({ message: err?.message ?? "Failed to run overlap check" });
+      sendServerError(res, err, "Failed to run overlap check");
     }
   });
 
@@ -3491,7 +3493,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("Finalize agent 1 error:", error);
-      res.status(500).json({ message: error.message || "Failed to finalize brainstorming session" });
+      sendServerError(res, error, "Failed to finalize brainstorming session");
     }
   });
 
@@ -4478,7 +4480,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("Extract ideas error:", error);
-      res.status(500).json({ message: error.message || "Failed to extract ideas. Please try again." });
+      sendServerError(res, error, "Failed to extract ideas. Please try again.");
     }
   });
 
@@ -4525,7 +4527,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("Add custom idea error:", error);
-      res.status(500).json({ message: error.message || "Failed to add idea" });
+      sendServerError(res, error, "Failed to add idea");
     }
   });
 
@@ -4640,7 +4642,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("Proceed to Agent 3 error:", error);
-      res.status(500).json({ message: error.message || "Failed to proceed to prior art research" });
+      sendServerError(res, error, "Failed to proceed to prior art research");
     }
   });
 
@@ -4702,7 +4704,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, substage });
     } catch (error: any) {
       console.error("Substage proceed error:", error);
-      res.status(500).json({ message: error.message || "Failed to proceed to next substage" });
+      sendServerError(res, error, "Failed to proceed to next substage");
     }
   });
 
@@ -4840,7 +4842,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("Prior art search error:", error);
-      res.status(500).json({ message: error.message || "Failed to search prior art. Please try again." });
+      sendServerError(res, error, "Failed to search prior art. Please try again.");
     }
   });
 
@@ -4961,7 +4963,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, results: webhookResponse });
     } catch (error: any) {
       console.error("White space analysis error:", error);
-      res.status(500).json({ message: error.message || "Failed to complete white space analysis. Please try again." });
+      sendServerError(res, error, "Failed to complete white space analysis. Please try again.");
     }
   });
 
@@ -5213,7 +5215,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("Claims generation error:", error);
-      res.status(500).json({ message: error.message || "Failed to generate claims. Please try again." });
+      sendServerError(res, error, "Failed to generate claims. Please try again.");
     }
   });
 
@@ -5282,7 +5284,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, selectedKeyConceptsCount: selectedKeyConcepts.length });
     } catch (error: any) {
       console.error("Select claims error:", error);
-      res.status(500).json({ message: error.message || "Failed to save selected claims" });
+      sendServerError(res, error, "Failed to save selected claims");
     }
   });
 
@@ -5405,7 +5407,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("Regenerate draft error:", error);
-      res.status(500).json({ message: error.message || "Failed to regenerate draft. Please try again." });
+      sendServerError(res, error, "Failed to regenerate draft. Please try again.");
     }
   });
 
@@ -5555,7 +5557,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("Generate broader claims error:", error);
-      res.status(500).json({ message: error.message || "Failed to generate broader claims." });
+      sendServerError(res, error, "Failed to generate broader claims.");
     }
   });
 
@@ -5595,7 +5597,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("Select claim type error:", error);
-      res.status(500).json({ message: error.message || "Failed to update claim type." });
+      sendServerError(res, error, "Failed to update claim type.");
     }
   });
 
@@ -5664,7 +5666,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, results: matches, count: Array.isArray(matches) ? matches.length : 0 });
     } catch (error: any) {
       console.error("Practitioner match error:", error);
-      res.status(500).json({ message: error.message || "Failed to find practitioners. Please try again." });
+      sendServerError(res, error, "Failed to find practitioners. Please try again.");
     }
   });
 
@@ -5785,7 +5787,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("Finalize provisional error:", error);
-      res.status(500).json({ message: error.message || "Failed to generate provisional patent. Please try again." });
+      sendServerError(res, error, "Failed to generate provisional patent. Please try again.");
     }
   });
 
@@ -5867,7 +5869,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: result.success, diagram: result.diagram });
     } catch (error: any) {
       console.error("[regenerate-diagram] error:", error);
-      res.status(500).json({ message: error?.message || "Failed to regenerate diagram" });
+      sendServerError(res, error, "Failed to regenerate diagram");
     }
   });
 
@@ -6076,7 +6078,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("Generate showcase error:", error);
-      res.status(500).json({ message: error.message || "Failed to generate showcase. Please try again." });
+      sendServerError(res, error, "Failed to generate showcase. Please try again.");
     }
   });
 
@@ -6259,7 +6261,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, diagrams });
     } catch (error: any) {
       console.error("Diagram generation error:", error);
-      res.status(500).json({ message: error.message || "Failed to generate diagrams. Please try again." });
+      sendServerError(res, error, "Failed to generate diagrams. Please try again.");
     }
   });
 
@@ -6497,7 +6499,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     } catch (error: any) {
       console.error("[genus-species] start error:", error);
-      res.status(500).json({ message: error.message || "Failed to start expansion" });
+      sendServerError(res, error, "Failed to start expansion");
     }
   });
 
@@ -6587,7 +6589,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     } catch (error: any) {
       console.error("[genus-species] approve-species error:", error);
-      res.status(500).json({ message: error.message || "Failed to process species approval" });
+      sendServerError(res, error, "Failed to process species approval");
     }
   });
 
@@ -6759,7 +6761,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, status: "complete", finalSpec });
     } catch (error: any) {
       console.error("[genus-species] finalize error:", error);
-      res.status(500).json({ message: error.message || "Failed to finalize expansion" });
+      sendServerError(res, error, "Failed to finalize expansion");
     }
   });
 
@@ -6799,7 +6801,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json(gs);
     } catch (error: any) {
-      res.status(500).json({ message: error.message || "Failed to get status" });
+      sendServerError(res, error, "Failed to get status");
     }
   });
 
@@ -6901,7 +6903,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, appliedToDraft: true });
     } catch (error: any) {
       console.error("[genus-species] apply-to-draft error:", error);
-      res.status(500).json({ message: error.message || "Failed to apply to draft" });
+      sendServerError(res, error, "Failed to apply to draft");
     }
   });
 
@@ -6984,7 +6986,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, artifactId });
     } catch (error: any) {
       console.error("[genus-species] regenerate-artifact error:", error);
-      res.status(500).json({ message: error.message || "Failed to regenerate artifact" });
+      sendServerError(res, error, "Failed to regenerate artifact");
     }
   });
 
@@ -6996,7 +6998,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...a5, genusSpecies: { status: "idle" } } });
       res.json({ success: true });
     } catch (error: any) {
-      res.status(500).json({ message: error.message || "Failed to reset" });
+      sendServerError(res, error, "Failed to reset");
     }
   });
 
@@ -7042,7 +7044,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, input: row });
     } catch (error: any) {
       console.error("Human-input upsert error:", error);
-      res.status(500).json({ message: error.message || "Failed to record human input" });
+      sendServerError(res, error, "Failed to record human input");
     }
   });
 
@@ -7055,7 +7057,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ inputs: rows });
     } catch (error: any) {
       console.error("Human-input list error:", error);
-      res.status(500).json({ message: error.message || "Failed to load human inputs" });
+      sendServerError(res, error, "Failed to load human inputs");
     }
   });
 
@@ -7110,7 +7112,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(prefill);
     } catch (error: any) {
       console.error("Pannu pre-fill error:", error);
-      res.status(500).json({ message: error.message || "Failed to build Pannu pre-fill" });
+      sendServerError(res, error, "Failed to build Pannu pre-fill");
     }
   });
 
@@ -7216,7 +7218,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("Generate Pannu questions error:", error);
-      res.status(500).json({ message: error.message || "Failed to generate Pannu questions" });
+      sendServerError(res, error, "Failed to generate Pannu questions");
     }
   });
 
@@ -7282,7 +7284,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("Validate Pannu answers error:", error);
-      res.status(500).json({ message: error.message || "Failed to validate Pannu answers" });
+      sendServerError(res, error, "Failed to validate Pannu answers");
     }
   });
 
@@ -7312,7 +7314,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("Pannu AI suggestion error:", error);
-      res.status(500).json({ message: error.message || "Failed to generate AI suggestion" });
+      sendServerError(res, error, "Failed to generate AI suggestion");
     }
   });
 
@@ -7463,16 +7465,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
           if (ev.type === "done" || (ev.type === "error" && !ev.data?.recoverable)) break;
         }
       } catch (streamErr: any) {
-        console.error("Q&A Assistant stream error:", streamErr);
-        send("error", { message: streamErr?.message ?? "Stream error", recoverable: false });
+        const errorId = crypto.randomBytes(4).toString("hex");
+        console.error(`[ERROR ${errorId}] Q&A Assistant stream error:`, streamErr);
+        send("error", { message: "Stream error", errorId, recoverable: false });
       }
       res.end();
     } catch (error: any) {
       console.error("Q&A Assistant error:", error);
       if (!res.headersSent) {
-        res.status(500).json({ message: error.message || "Failed to get response from Q&A Assistant" });
+        sendServerError(res, error, "Failed to get response from Q&A Assistant");
       } else {
-        res.write(`event: error\ndata: ${JSON.stringify({ message: error?.message ?? "Internal error", recoverable: false })}\n\n`);
+        const errorId = crypto.randomBytes(4).toString("hex");
+        console.error(`[ERROR ${errorId}] Q&A Assistant SSE error (after headers sent):`, error);
+        res.write(`event: error\ndata: ${JSON.stringify({ message: "Internal error", errorId, recoverable: false })}\n\n`);
         res.end();
       }
     }
@@ -7484,7 +7489,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const limit = Math.min(parseInt((req.query.limit as string) ?? "50", 10) || 50, 200);
       res.json(await getQAMessages(req.params.id, limit));
     } catch (err: any) {
-      res.status(500).json({ message: err?.message });
+      sendServerError(res, err, "Failed to load Q&A messages");
     }
   });
 
@@ -7494,7 +7499,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const includeDismissed = (req.query.includeDismissed as string) === "true";
       res.json(await getQALog(req.params.id, includeDismissed));
     } catch (err: any) {
-      res.status(500).json({ message: err?.message });
+      sendServerError(res, err, "Failed to load Q&A log");
     }
   });
 
@@ -7504,7 +7509,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const includeAnswered = (req.query.includeAnswered as string) === "true";
       res.json(await getQAOpenQuestions(req.params.id, includeAnswered));
     } catch (err: any) {
-      res.status(500).json({ message: err?.message });
+      sendServerError(res, err, "Failed to load open questions");
     }
   });
 
@@ -7522,7 +7527,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       res.json(await addManualLogEntry(req.params.id, entryType, verbatimText, tags));
     } catch (err: any) {
-      res.status(500).json({ message: err?.message });
+      sendServerError(res, err, "Failed to record log entry");
     }
   });
 
@@ -7533,7 +7538,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!row) return res.status(404).json({ message: "Not found" });
       res.json(row);
     } catch (err: any) {
-      res.status(500).json({ message: err?.message });
+      sendServerError(res, err, "Failed to update log entry");
     }
   });
 
@@ -7569,7 +7574,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, rollbackStage });
     } catch (err: any) {
       console.error("[force-reset] failed:", err);
-      res.status(500).json({ message: err?.message ?? "force reset failed" });
+      sendServerError(res, err, "force reset failed");
     }
   });
 
@@ -7580,7 +7585,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!row) return res.status(404).json({ message: "Not found" });
       res.json(row);
     } catch (err: any) {
-      res.status(500).json({ message: err?.message });
+      sendServerError(res, err, "Failed to update open question");
     }
   });
 
@@ -8353,7 +8358,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("[export-pohc-docx] error:", error);
-      res.status(500).json({ message: error?.message || "Failed to export PoHC" });
+      sendServerError(res, error, "Failed to export PoHC");
     }
   });
 
@@ -8403,7 +8408,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ ok: true, ...result });
     } catch (error: any) {
       console.error("[cron/provenance-anchor] error:", error);
-      res.status(500).json({ message: error?.message || "Anchor run failed" });
+      sendServerError(res, error, "Anchor run failed");
     }
   });
 
@@ -8477,7 +8482,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error: any) {
       console.error("[provenance/verify] error:", error);
-      res.status(500).json({ message: error?.message || "Verification failed" });
+      sendServerError(res, error, "Verification failed");
     }
   });
 
@@ -8523,7 +8528,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("[provenance/proof-package latest] error:", error);
       if (!res.headersSent) {
-        res.status(500).json({ message: error?.message || "Failed to locate proof package" });
+        sendServerError(res, error, "Failed to locate proof package");
       }
     }
   });
@@ -8543,7 +8548,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("[provenance/proof-package] error:", error);
       if (!res.headersSent) {
-        res.status(500).json({ message: error?.message || "Failed to build proof package" });
+        sendServerError(res, error, "Failed to build proof package");
       }
     }
   });
@@ -8576,12 +8581,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .where(drizzleEq(provenanceEvents.projectId, projectId))
         .orderBy(drizzleAsc(provenanceEvents.createdAt));
 
-      const archiver = (await import("archiver")).default;
       const filename = `patentgeyser-proof-${projectId}-${event.id}.zip`;
       res.setHeader("Content-Type", "application/zip");
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
 
-      const archive = archiver("zip", { zlib: { level: 9 } });
+      const archive = await createZipArchive({ zlib: { level: 9 } });
       archive.on("error", (err) => {
         console.error("[proof-package] archive error:", err);
         try { res.status(500).end(); } catch {}

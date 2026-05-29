@@ -34,6 +34,7 @@ import { recordUsage, extractGeminiUsage, extractOpenAIUsage } from "../../ai/us
 import { computeRouting, renderRouting, tagsSatisfyScopeId, type RoutingFields } from "./routing";
 import { getSiblingsReference, getRelevantFamilyArtifacts, type SiblingReference, type RetrievedArtifact } from "../../lib/families";
 import { listFamilyContextFilesForPrompt } from "../../lib/family-context-files";
+import { requireEnv } from "../../lib/env";
 
 // ─── Module-owned table declarations ────────────────────────────────────────
 // These point at physical tables already created in the inventor_geyser schema
@@ -104,14 +105,14 @@ interface QAConfig {
 const CONFIG: QAConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
 const SYSTEM_PROMPT = fs.readFileSync(PROMPT_PATH, "utf-8");
 
-const gemini = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+const gemini = new GoogleGenAI({ apiKey: requireEnv("GEMINI_API_KEY") });
 // Secondary key (separate GCP project = separate quota bucket). Used as a
 // failover when the primary throws — keeps the AI Helper alive through
 // rate-limit hiccups without falling back to gpt-4o.
 const geminiSecondary = process.env.GEMINI_API_SECOND_KEY
   ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_SECOND_KEY })
   : null;
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+const openai = new OpenAI({ apiKey: requireEnv("OPENAI_API_KEY") });
 
 const GEMINI_SAFETY_OFF = [
   { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },

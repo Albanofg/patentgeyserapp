@@ -20,6 +20,7 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import { GoogleGenAI } from "@google/genai";
 import { projectFamilyContextFiles, type ProjectFamilyContextFile } from "@shared/schema";
 import { db } from "../db";
+import { requireEnv } from "./env";
 
 const MAX_FILE_BYTES = 15 * 1024 * 1024; // 15 MB
 
@@ -31,7 +32,7 @@ const ACCEPTED_MIME_TYPES = new Set([
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ]);
 
-const gemini = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+const gemini = new GoogleGenAI({ apiKey: requireEnv("GEMINI_API_KEY") });
 const EXTRACT_MODEL = "gemini-2.5-flash";
 
 export interface UploadInput {

@@ -9,14 +9,15 @@ import {
   type UsageStatus,
 } from "./usage-log";
 import { getUsageContext } from "./request-context";
+import { requireEnv } from "../lib/env";
 
-const gemini = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+const gemini = new GoogleGenAI({ apiKey: requireEnv("GEMINI_API_KEY") });
 // Optional secondary Gemini client backed by a key from a different GCP project
 // so we get a separate quota bucket to fail over to when the primary throws.
 const geminiSecondary = process.env.GEMINI_API_SECOND_KEY
   ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_SECOND_KEY })
   : null;
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+const openai = new OpenAI({ apiKey: requireEnv("OPENAI_API_KEY") });
 
 export interface AgentConfig {
   model: string;

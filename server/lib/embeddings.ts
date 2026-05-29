@@ -13,8 +13,9 @@
 // hash detection still works.
 
 import OpenAI from "openai";
+import { requireEnv } from "./env";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+const openai = new OpenAI({ apiKey: requireEnv("OPENAI_API_KEY") });
 
 const MODEL = "text-embedding-3-small";
 export const EMBEDDING_DIMS = 1536;

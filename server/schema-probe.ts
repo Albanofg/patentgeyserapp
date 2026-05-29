@@ -29,6 +29,17 @@ const REQUIRED_TABLES: RequiredTable[] = [
   { schema: "inventor_geyser", table: "project_families", migrationHint: "psql $DATABASE_URL -f migrations/0004_project_families.sql" },
   { schema: "inventor_geyser", table: "project_family_artifacts", migrationHint: "psql $DATABASE_URL -f migrations/0004_project_families.sql" },
   { schema: "inventor_geyser", table: "project_family_context_files", migrationHint: "psql $DATABASE_URL -f migrations/0005_family_context_files.sql" },
+  // Provenance tables: the cryptographic proof system (events + stamps + anchors).
+  // These were missing from the probe historically — recordEventBackground swallowed
+  // every "relation does not exist" as a console.warn, so the proof-package download
+  // silently produced zero data for months until a user tried to use it. Adding them
+  // here is the cheap insurance that catches that class of bug on day 1.
+  { schema: "inventor_geyser", table: "provenance_events", migrationHint: "psql $DATABASE_URL -f migrations/0002_provenance.sql && psql $DATABASE_URL -f migrations/0003_provenance_canonical.sql" },
+  { schema: "inventor_geyser", table: "provenance_stamps", migrationHint: "psql $DATABASE_URL -f migrations/0002_provenance.sql" },
+  { schema: "inventor_geyser", table: "provenance_anchors", migrationHint: "psql $DATABASE_URL -f migrations/0002_provenance.sql" },
+  // Email whitelist gates new-user signups; defined in shared/schema.ts only
+  // (no dedicated .sql migration), so the hint points at drizzle-kit push.
+  { schema: "inventor_geyser", table: "email_whitelist", migrationHint: "npx drizzle-kit push  (or create manually from shared/schema.ts emailWhitelist definition)" },
 ];
 
 export async function probeSchema(): Promise<void> {
