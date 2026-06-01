@@ -17,11 +17,11 @@ import {
 // tab regains focus (visibilitychange), so a user who comes back from lunch
 // gets a fresh nudge if 12 hours have passed since the last one.
 const STORAGE_KEY = "challenge-alert-last-shown";
-const SHOW_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours → ≤ 2× / day, ≥ 1× / day for active users
+const SHOW_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours — aggressive nudge while the challenge week is live; widen back to 12h after
 
-const CHALLENGE_TITLE = "🔔 5-Day Filing Challenge";
+const CHALLENGE_TITLE = "🔔 Join us for the Patent Geyser Challenge";
 const CHALLENGE_DESCRIPTION =
-  "Starts Monday at noon PT! Bring an idea, file by Friday. Your join link is on your dashboard.";
+  "Starts today at noon PDT! Bring an idea, file by Friday. Use the Challenge meeting link in the sidebar to join.";
 
 export function ChallengeAlertDialog() {
   const [open, setOpen] = useState(false);

@@ -234,23 +234,29 @@ export function AppSidebar({ projectId, onOpenAIHelper, helperOpen }: AppSidebar
               <SidebarMenuItem>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    {/* Span wrapper so the tooltip still fires on hover even
-                        though aria-disabled blocks pointer events on the
-                        button itself. Flip aria-disabled off + add an href
-                        once the meeting link goes live on Monday. */}
-                    <span className="block cursor-not-allowed">
-                      <SidebarMenuButton
-                        aria-disabled="true"
-                        data-testid="nav-meeting-link"
-                        className="group-data-[collapsible=icon]:justify-center"
+                    <SidebarMenuButton
+                      asChild
+                      data-testid="nav-meeting-link"
+                      className="group-data-[collapsible=icon]:justify-center"
+                    >
+                      <a
+                        href="https://meet.google.com/wjp-devj-ary"
+                        target="_blank"
+                        rel="noopener noreferrer"
                       >
                         <Video className="h-4 w-4" />
-                        <span className="group-data-[collapsible=icon]:hidden">Meeting link</span>
-                      </SidebarMenuButton>
-                    </span>
+                        <span className="group-data-[collapsible=icon]:hidden">Challenge meeting link</span>
+                      </a>
+                    </SidebarMenuButton>
                   </TooltipTrigger>
-                  <TooltipContent side="right">Activates Monday</TooltipContent>
+                  {!open && <TooltipContent side="right">Challenge meeting link</TooltipContent>}
                 </Tooltip>
+                {/* Schedule caption below the button so users see the time
+                    without opening the meeting. Hidden in icon-collapsed mode
+                    where there's no horizontal room. */}
+                <div className="pl-8 pr-2 pb-1 text-[11px] leading-tight text-muted-foreground group-data-[collapsible=icon]:hidden">
+                  Starts noon PDT, 2pm CST and 3pm EDT
+                </div>
               </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
