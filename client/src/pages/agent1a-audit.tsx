@@ -345,9 +345,15 @@ export default function Agent1aAudit() {
       <div className="border-t p-4 bg-background flex-shrink-0">
         <div className="max-w-4xl mx-auto">
           <div className="flex items-center justify-end gap-3 flex-wrap">
+            {/* Original spatial order (Inspect on left, Continue on right) is
+                preserved so returning users find each button where they
+                remember it. The variants are inverted vs the old layout —
+                Inspect & Refine is now the blue/primary CTA because it's the
+                step inventors should run, and the Continue label is prefixed
+                with "Skip &" so users who do click it know they're choosing
+                to bypass the important step. */}
             <Button
               type="button"
-              variant="outline"
               onClick={() => inspectAndRefineMutation.mutate()}
               disabled={inspectAndRefineMutation.isPending || continueToAgent2Mutation.isPending || !hasAuditResults}
               data-testid="button-inspect-refine"
@@ -360,12 +366,13 @@ export default function Agent1aAudit() {
               ) : (
                 <>
                   <Search className="mr-2 h-4 w-4" />
-                  Inspect & Refine
+                  Inspect & Refine Ideas
                 </>
               )}
             </Button>
             <Button
               type="button"
+              variant="outline"
               onClick={() => continueToAgent2Mutation.mutate()}
               disabled={continueToAgent2Mutation.isPending || inspectAndRefineMutation.isPending || !hasAuditResults}
               data-testid="button-continue"
@@ -377,7 +384,7 @@ export default function Agent1aAudit() {
                 </>
               ) : (
                 <>
-                  Continue to Stage 2
+                  Skip & Continue to Stage 2
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </>
               )}

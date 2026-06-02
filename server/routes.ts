@@ -3811,8 +3811,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ideas: unifiedIdeas,
       });
     } catch (error: any) {
-      console.error("Extract ideas error:", error);
-      res.status(500).json({ message: "Failed to extract ideas" });
+      // sendServerError already gates on !res.headersSent — extract-ideas can
+      // partially write a response on long AI paths, and re-sending after that
+      // triggered ERR_HTTP_HEADERS_SENT crashes during the live webinar.
+      sendServerError(res, error, "Failed to extract ideas");
     } finally {
       // Always release the lock when done
       extractIdeasInProgress.delete(projectId);

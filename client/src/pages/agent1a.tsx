@@ -512,8 +512,16 @@ export default function Agent1a() {
         <div className="max-w-4xl mx-auto">
           {/* Mobile: Stack buttons vertically */}
           <div className="flex flex-col gap-3 sm:hidden">
+            {/* Mobile vertical stack — original spatial order (Continue top,
+                Inspect bottom) preserved so returning users find each button
+                where they remember it. Variants are inverted: Inspect & Refine
+                is the blue/primary CTA because it's the step inventors should
+                run, and the Continue label is prefixed with "Skip &" so users
+                who do click it know they're choosing to bypass the important
+                step. */}
             <Button
               type="button"
+              variant="outline"
               onClick={() => continueToAgent2Mutation.mutate()}
               disabled={continueToAgent2Mutation.isPending || inspectAndRefineMutation.isPending || !hasDebateResults}
               data-testid="button-continue"
@@ -526,14 +534,13 @@ export default function Agent1a() {
                 </>
               ) : (
                 <>
-                  Continue to Stage 2
+                  Skip & Continue to Stage 2
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </>
               )}
             </Button>
             <Button
               type="button"
-              variant="outline"
               onClick={() => inspectAndRefineMutation.mutate()}
               disabled={inspectAndRefineMutation.isPending || continueToAgent2Mutation.isPending || !hasDebateResults}
               data-testid="button-inspect-refine"
@@ -547,16 +554,22 @@ export default function Agent1a() {
               ) : (
                 <>
                   <Search className="mr-2 h-4 w-4" />
-                  Inspect & Refine
+                  Inspect & Refine Ideas
                 </>
               )}
             </Button>
           </div>
           {/* Desktop: Horizontal layout */}
           <div className="hidden sm:flex items-center justify-end gap-3">
+            {/* Desktop horizontal — original spatial order (Inspect on left,
+                Continue on right) preserved so returning users find each
+                button where they remember it. Variants are inverted: Inspect
+                & Refine is the blue/primary CTA because it's the step
+                inventors should run, and the Continue label is prefixed with
+                "Skip &" so users who do click it know they're choosing to
+                bypass the important step. */}
             <Button
               type="button"
-              variant="outline"
               onClick={() => inspectAndRefineMutation.mutate()}
               disabled={inspectAndRefineMutation.isPending || continueToAgent2Mutation.isPending || !hasDebateResults}
               data-testid="button-inspect-refine-desktop"
@@ -569,12 +582,13 @@ export default function Agent1a() {
               ) : (
                 <>
                   <Search className="mr-2 h-4 w-4" />
-                  Inspect & Refine
+                  Inspect & Refine Ideas
                 </>
               )}
             </Button>
             <Button
               type="button"
+              variant="outline"
               onClick={() => continueToAgent2Mutation.mutate()}
               disabled={continueToAgent2Mutation.isPending || inspectAndRefineMutation.isPending || !hasDebateResults}
               data-testid="button-continue-desktop"
@@ -586,7 +600,7 @@ export default function Agent1a() {
                 </>
               ) : (
                 <>
-                  Continue to Stage 2
+                  Skip & Continue to Stage 2
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </>
               )}
