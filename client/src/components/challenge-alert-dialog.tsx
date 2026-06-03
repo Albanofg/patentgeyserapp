@@ -21,7 +21,7 @@ const SHOW_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours — aggressive nudge whi
 
 const CHALLENGE_TITLE = "🔔 Join us for the Patent Geyser Challenge";
 const CHALLENGE_DESCRIPTION =
-  "Day 3 starts Wed June 3 at noon PDT. Use the Challenge meeting link in the sidebar to join.";
+  "Day 4 starts Thu June 4 at noon PDT. Use the Challenge meeting link in the sidebar to join.";
 
 export function ChallengeAlertDialog() {
   const [open, setOpen] = useState(false);
