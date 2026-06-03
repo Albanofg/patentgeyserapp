@@ -31,4 +31,53 @@ pool.on('error', (err: Error & { code?: string }) => {
   // Don't throw - the pool will create new connections as needed
 });
 
+// ─── Retry-once on transient Neon connect timeouts ──────────────────────────
+// The @neondatabase/serverless driver throws "timeout exceeded when trying to
+// connect" when connection establishment exceeds connectionTimeoutMillis (10s
+// above). In production we've seen this fire in cascades when:
+//   - Neon compute auto-suspends and a wake-up cold-start hits the 10s window
+//   - Brief Neon network blip / pgbouncer churn / maintenance
+//   - Concurrent function spike with long-running AI calls holding connections
+//
+// One automatic retry after a small backoff makes these self-heal: the
+// triggering attempt wakes the compute; the retry lands on a warm connection.
+// We ONLY retry on this specific connect-timeout phrase — SQL-level errors
+// (syntax, missing relation, FK violation, etc.) propagate unmodified so we
+// never paper over an actual bug.
+//
+// Wraps pool.connect and pool.query so every drizzle path inherits it without
+// any call-site changes. If this ever needs to be turned off, comment out the
+// monkey-patch lines below; nothing else depends on them.
+const TRANSIENT_CONNECT_PHRASE = "timeout exceeded when trying to connect";
+
+function isTransientConnectError(err: unknown): boolean {
+  if (!err) return false;
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes(TRANSIENT_CONNECT_PHRASE);
+}
+
+async function retryOnceOnTransientConnect<T>(op: () => Promise<T>, label: string): Promise<T> {
+  try {
+    return await op();
+  } catch (err) {
+    if (!isTransientConnectError(err)) throw err;
+    console.warn(`[db] retrying ${label} after transient connect error`);
+    // 300ms gives a waking Neon compute a moment to come online before the
+    // second attempt. Empirically Neon cold-starts complete well under 1s
+    // once the wake signal lands.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return await op();
+  }
+}
+
+// Cast the bound originals to a permissive shape — the real Pool.connect /
+// Pool.query are overloaded (multiple call signatures) and TS refuses to
+// `...spread` into overloaded methods. We pass the args through unchanged.
+const originalPoolConnect = pool.connect.bind(pool) as (...args: any[]) => Promise<any>;
+const originalPoolQuery = pool.query.bind(pool) as (...args: any[]) => Promise<any>;
+(pool as any).connect = (...args: any[]) =>
+  retryOnceOnTransientConnect(() => originalPoolConnect(...args), "pool.connect");
+(pool as any).query = (...args: any[]) =>
+  retryOnceOnTransientConnect(() => originalPoolQuery(...args), "pool.query");
+
 export const db = drizzle({ client: pool, schema });
