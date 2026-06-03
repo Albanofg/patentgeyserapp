@@ -4285,7 +4285,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         text,
       }));
 
-      console.log(`Extracted ${ideas.length} patentable concepts`);
+      // ─── Capture filtered ideas (refiner-rejected) for inventor review ───
+      // The refiner culls 85–95% of extractor candidates by design (default
+      // to rejection per LAW_2). Previously the rejected items vanished
+      // with no record. Persist them alongside `extractedIdeas` so the UI
+      // can render a "removed during refinement" tray with Restore buttons,
+      // giving the inventor visibility into what was dropped and the ability
+      // to override the refiner's judgment when they disagree.
+      const filteredIdeasRaw = (extractResult as { filteredIdeas?: string[] }).filteredIdeas ?? [];
+      const filteredIdeas = filteredIdeasRaw.map((text, index) => ({
+        id: `filtered-${index + 1}-${Date.now()}`,
+        text,
+      }));
+
+      console.log(`Extracted ${ideas.length} patentable concepts (${filteredIdeas.length} filtered out)`);
 
       // Store extracted ideas
       await storage.upsertAgentData({
@@ -4294,6 +4307,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         data: {
           ...(agent2Data.data as any),
           extractedIdeas: ideas,
+          filteredIdeas,
           status: 'ideas_extracted',
           ideasExtractedAt: new Date().toISOString(),
         },
@@ -4352,13 +4366,73 @@ export async function registerRoutes(app: Express): Promise<Server> {
         },
       });
 
-      res.json({ 
+      res.json({
         success: true,
         idea: customIdea
       });
     } catch (error: any) {
       console.error("Add custom idea error:", error);
       sendServerError(res, error, "Failed to add idea");
+    }
+  });
+
+  // Module 2b: Restore an idea that was filtered out by the refiner.
+  // The refiner aggressively culls extractor candidates (85–95% rejection
+  // rate by design). When the inventor disagrees with a specific rejection,
+  // this endpoint moves the item from `filteredIdeas` back into
+  // `extractedIdeas` so it participates in the rest of the workflow. The
+  // restore is also logged to the human-input ledger as proof-of-conception
+  // material — the act of restoring a specific concept is a strong signal
+  // that the inventor considers it part of their invention.
+  app.post("/api/projects/:id/agent/2/restore-filtered-idea", isAuthenticated, async (req, res) => {
+    try {
+      const { id: filteredId } = req.body ?? {};
+      if (!filteredId || typeof filteredId !== "string") {
+        return res.status(400).json({ message: "Filtered idea id is required" });
+      }
+
+      const agent2Data = await storage.getAgentData(req.params.id, 2);
+      if (!agent2Data?.data) {
+        return res.status(400).json({ message: "Agent 2 data not found. Please extract ideas first." });
+      }
+
+      const extractedIdeas = (agent2Data.data as any).extractedIdeas || [];
+      const filteredIdeas = (agent2Data.data as any).filteredIdeas || [];
+
+      const target = filteredIdeas.find((f: any) => f.id === filteredId);
+      if (!target) {
+        return res.status(404).json({ message: "Filtered idea not found" });
+      }
+
+      // Mint a fresh id for the restored idea so it doesn't collide with the
+      // filtered-list id namespace, and tag it `restoredFromFilter` so the
+      // UI can mark it visually if desired.
+      const restoredIdea = {
+        id: `restored-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        text: target.text,
+        restoredFromFilter: true,
+      };
+
+      const updatedExtracted = [...extractedIdeas, restoredIdea];
+      const updatedFiltered = filteredIdeas.filter((f: any) => f.id !== filteredId);
+
+      await storage.upsertAgentData({
+        projectId: req.params.id,
+        agentNumber: 2,
+        data: {
+          ...(agent2Data.data as any),
+          extractedIdeas: updatedExtracted,
+          filteredIdeas: updatedFiltered,
+        },
+      });
+
+      res.json({
+        success: true,
+        idea: restoredIdea,
+      });
+    } catch (error: any) {
+      console.error("Restore filtered idea error:", error);
+      sendServerError(res, error, "Failed to restore idea");
     }
   });
 

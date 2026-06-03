@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import { AgentHeader } from "@/components/agent-header";
-import { Loader2, Lightbulb, Plus, ChevronRight, RefreshCw, CheckCircle, XCircle } from "lucide-react";
+import { Loader2, Lightbulb, Plus, ChevronRight, ChevronDown, ChevronUp, RefreshCw, CheckCircle, XCircle, Undo2 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -24,11 +24,24 @@ interface ExtractedIdea {
   // Legacy support for old data format
   title?: string;
   description?: string;
+  // True when this idea was originally rejected by the refiner and the
+  // inventor restored it via the filtered-out tray. Reserved for future
+  // styling — not currently used to change the card's appearance.
+  restoredFromFilter?: boolean;
+}
+
+interface FilteredIdea {
+  id: string;
+  text: string;
 }
 
 interface Agent2Data {
   provisionalDraft?: string;
   extractedIdeas?: ExtractedIdea[];
+  // Concepts produced by the extractor but rejected by the refiner. Surfaced
+  // in a collapsible "removed during refinement" tray below the surviving
+  // list so the inventor can restore any item they disagree with.
+  filteredIdeas?: FilteredIdea[];
   status?: string;
 }
 
@@ -40,6 +53,9 @@ export default function Agent2b() {
   const [selectedIdeas, setSelectedIdeas] = useState<Set<string>>(new Set());
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [customIdeaText, setCustomIdeaText] = useState("");
+  // Whether the "removed during refinement" tray is expanded. Collapsed by
+  // default so it doesn't compete with the primary surviving-concepts list.
+  const [showFilteredTray, setShowFilteredTray] = useState(false);
 
   const { data: project, isLoading: projectLoading } = useQuery<Project>({
     queryKey: ["/api/projects", projectId],
@@ -108,6 +124,10 @@ export default function Agent2b() {
   const extractedIdeas = useMemo(() => {
     return agent2Data?.data?.extractedIdeas || [];
   }, [agent2Data?.data?.extractedIdeas]);
+
+  const filteredIdeas = useMemo<FilteredIdea[]>(() => {
+    return agent2Data?.data?.filteredIdeas || [];
+  }, [agent2Data?.data?.filteredIdeas]);
 
   // Initialize selections from saved data
   useEffect(() => {
@@ -257,6 +277,48 @@ export default function Agent2b() {
         title: "Failed to add idea",
         description: error.message,
         // Softer UX - no red banner
+      });
+    },
+  });
+
+  // Restore an idea that was originally rejected by the refiner. Moves the
+  // item from `filteredIdeas` back to `extractedIdeas` on the server, then
+  // refetches so the surviving list re-renders with the restored item. Also
+  // writes to the human-input ledger — the inventor explicitly disagreeing
+  // with the refiner is strong proof-of-conception material.
+  const restoreFilteredMutation = useMutation({
+    mutationFn: async (filteredId: string) => {
+      return await apiRequest("POST", `/api/projects/${projectId}/agent/2/restore-filtered-idea`, {
+        id: filteredId,
+      });
+    },
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 2] });
+      toast({
+        title: "Idea restored",
+        description: "Added back to your patentable concepts.",
+      });
+      if (data?.idea?.id && data?.idea?.text) {
+        // Ledger: the inventor explicitly chose to override the refiner's
+        // rejection. Tag as conception-relevant so it shows up correctly in
+        // downstream proof-of-conception flows.
+        void recordHumanInput({
+          projectId,
+          source: "module2/restored-filtered-idea",
+          sourceRefId: data.idea.id,
+          promptText: "Inventor restored a concept that was filtered out during refinement",
+          answerText: data.idea.text,
+          tags: ["conception_mechanism", "implementation_detail"],
+        });
+        // Auto-select the restored idea so it's included by default when
+        // proceeding to prior art.
+        setSelectedIdeas((prev) => new Set(prev).add(data.idea.id));
+      }
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to restore idea",
+        description: error.message,
       });
     },
   });
@@ -532,6 +594,81 @@ export default function Agent2b() {
                     );
                   })}
                 </div>
+
+                {/*
+                  Removed-during-refinement tray. The refiner culls 85–95% of
+                  extractor candidates by design — historically those dropped
+                  items disappeared silently and the inventor had no way to
+                  recover one if they disagreed with the rejection. The tray
+                  surfaces the dropped list and lets the inventor restore any
+                  item with a single click. Collapsed by default to keep the
+                  primary surviving-concepts list visually dominant; the
+                  header line shows the count so the inventor knows the
+                  option is there.
+                */}
+                {filteredIdeas.length > 0 && (
+                  <Card data-testid="filtered-ideas-tray">
+                    <CardHeader
+                      className="cursor-pointer hover-elevate py-3"
+                      onClick={() => setShowFilteredTray((v) => !v)}
+                      data-testid="filtered-ideas-toggle"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
+                            <XCircle className="h-4 w-4 text-muted-foreground" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium leading-tight">
+                              {filteredIdeas.length} candidate{filteredIdeas.length === 1 ? "" : "s"} filtered out during refinement
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              Reviewed as too generic, redundant, or derivative. Restore any you want to keep.
+                            </p>
+                          </div>
+                        </div>
+                        {showFilteredTray
+                          ? <ChevronUp className="h-4 w-4 text-muted-foreground shrink-0" />
+                          : <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
+                        }
+                      </div>
+                    </CardHeader>
+                    {showFilteredTray && (
+                      <CardContent className="pt-0 pb-4">
+                        <div className="space-y-2">
+                          {filteredIdeas.map((idea) => (
+                            <div
+                              key={idea.id}
+                              className="flex items-start gap-3 rounded-md border border-border/50 bg-muted/30 px-3 py-2"
+                              data-testid={`filtered-idea-${idea.id}`}
+                            >
+                              <p className="flex-1 text-sm text-muted-foreground leading-relaxed">
+                                {idea.text}
+                              </p>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="shrink-0 h-7"
+                                onClick={() => restoreFilteredMutation.mutate(idea.id)}
+                                disabled={restoreFilteredMutation.isPending}
+                                data-testid={`button-restore-${idea.id}`}
+                              >
+                                {restoreFilteredMutation.isPending && restoreFilteredMutation.variables === idea.id ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <>
+                                    <Undo2 className="h-3.5 w-3.5 mr-1.5" />
+                                    Restore
+                                  </>
+                                )}
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      </CardContent>
+                    )}
+                  </Card>
+                )}
 
                 <Card>
                   <CardContent className="pt-6">

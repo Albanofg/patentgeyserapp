@@ -65,9 +65,41 @@ export async function runExtractConcepts(payload: ExtractConceptsPayload) {
 
     const finalIdeas = refined.length > 0 ? refined : extracted;
 
+    // ─── Compute the filtered set (extractor output minus surviving) ────────
+    // The refiner's contract (default-to-rejection + skepticism) routinely
+    // culls 85–95% of extractor candidates. Historically the dropped items
+    // disappeared with no trace, so an inventor who disagreed with the
+    // refiner's judgment on a specific concept had to retype it manually as
+    // a "custom idea." Now we return the filtered list alongside the
+    // surviving list so the UI can surface it as a "removed during
+    // refinement" tray with per-item Restore buttons.
+    //
+    // Matching is normalized — the refiner's LAW_6_NO_REPHRASING_FOR_STRENGTH
+    // allows "minor grammatical normalization … when the original wording is
+    // malformed." That means a surviving item may have whitespace or
+    // punctuation differences vs. the extractor original. We match on
+    // lowercased + whitespace-collapsed text so those benign edits don't
+    // falsely mark a surviving idea as filtered. When the refiner returned
+    // nothing (and we fell back to `extracted`), the filtered list is
+    // empty by definition.
+    const normalizeForMatch = (s: string): string =>
+      s.toLowerCase().replace(/\s+/g, " ").trim();
+    const survivingKeys = new Set(finalIdeas.map(normalizeForMatch));
+    const filteredIdeas =
+      refined.length > 0
+        ? extracted.filter((idea) => !survivingKeys.has(normalizeForMatch(idea)))
+        : [];
+
+    if (filteredIdeas.length > 0) {
+      console.log(
+        `>>> [M2-2b EXTRACT-CONCEPTS] <<< ${filteredIdeas.length} concept(s) filtered out, available for inventor restore`,
+      );
+    }
+
     return {
       success: true as const,
       ideas: finalIdeas,
+      filteredIdeas,
       totalConcepts: finalIdeas.length,
     };
   } catch (error: any) {
