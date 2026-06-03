@@ -5,6 +5,7 @@ import { SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sid
 import { AppSidebar } from "@/components/app-sidebar";
 import { QAAssistantPanel } from "@/components/qa-assistant-modal";
 import { ChallengeAlertDialog } from "@/components/challenge-alert-dialog";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { Loader2, Menu, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -121,7 +122,7 @@ function Agent4Redirect() {
 }
 
 export function AuthenticatedShell() {
-  const [, setLocation] = useLocation();
+  const [location, setLocation] = useLocation();
   const [twoFactorComplete, setTwoFactorComplete] = useState(false);
 
   // Check authentication
@@ -237,37 +238,49 @@ export function AuthenticatedShell() {
           </div>
         )}
           <main className="flex-1 overflow-y-auto">
-            <Suspense fallback={<RouteLoader />}>
-            <Switch>
-            <Route path="/" component={Dashboard} />
-            <Route path="/dashboard" component={Dashboard} />
-            <Route path="/prior-art-check" component={PriorArtCheck} />
-            <Route path="/settings" component={UserSettings} />
-            <Route path="/admin/whitelist" component={AdminWhitelist} />
-            <Route path="/admin/users" component={AdminUsers} />
-            <Route path="/admin/credits" component={AdminCredits} />
-            <Route path="/admin/usage" component={AdminUsage} />
-            <Route path="/admin" component={AdminMenu} />
-            <Route path="/project/:id/agent/1" component={Agent1} />
-            <Route path="/project/:id/agent/1a" component={Agent1a} />
-            <Route path="/project/:id/agent/1a-audit" component={Agent1aAudit} />
-            <Route path="/project/:id/agent/1b" component={Agent1Inspect} />
-            <Route path="/project/:id/agent/2a" component={Agent2a} />
-            <Route path="/project/:id/agent/2b" component={Agent2b} />
-            <Route path="/project/:id/agent/2c" component={Agent2cRedirect} />
-            <Route path="/project/:id/agent/2" component={Agent2} />
-            <Route path="/project/:id/agent/3" component={Agent3} />
-            <Route path="/project/:id/agent/4a" component={Agent4} />
-            <Route path="/project/:id/agent/4b" component={Agent4b} />
-            <Route path="/project/:id/agent/4-conception-intro" component={Agent4PannuIntro} />
-            <Route path="/project/:id/agent/4-conception" component={Agent4Pannu} />
-            <Route path="/project/:id/agent/4c" component={Agent4c} />
-            <Route path="/project/:id/agent/4" component={Agent4Redirect} />
-            <Route path="/project/:id/agent/5" component={Agent5} />
-            <Route path="/project/:id/agent/5-practitioner" component={Agent5Practitioner} />
-            <Route component={NotFound} />
-            </Switch>
-            </Suspense>
+            {/* Per-route error boundary. The key={location} forces a fresh
+                boundary instance on every navigation — so if the user crashes
+                Stage 4, they can navigate to the dashboard and the new route
+                mounts cleanly. The sidebar + helper panel stay rendered above
+                the <main> wrapper, so they keep working even when this
+                boundary catches.
+
+                The "Try again" button in the fallback calls reset() locally;
+                "Back to Dashboard" does a full navigation (window.location =
+                "/") which also drops whatever state caused the crash. */}
+            <ErrorBoundary key={location}>
+              <Suspense fallback={<RouteLoader />}>
+              <Switch>
+              <Route path="/" component={Dashboard} />
+              <Route path="/dashboard" component={Dashboard} />
+              <Route path="/prior-art-check" component={PriorArtCheck} />
+              <Route path="/settings" component={UserSettings} />
+              <Route path="/admin/whitelist" component={AdminWhitelist} />
+              <Route path="/admin/users" component={AdminUsers} />
+              <Route path="/admin/credits" component={AdminCredits} />
+              <Route path="/admin/usage" component={AdminUsage} />
+              <Route path="/admin" component={AdminMenu} />
+              <Route path="/project/:id/agent/1" component={Agent1} />
+              <Route path="/project/:id/agent/1a" component={Agent1a} />
+              <Route path="/project/:id/agent/1a-audit" component={Agent1aAudit} />
+              <Route path="/project/:id/agent/1b" component={Agent1Inspect} />
+              <Route path="/project/:id/agent/2a" component={Agent2a} />
+              <Route path="/project/:id/agent/2b" component={Agent2b} />
+              <Route path="/project/:id/agent/2c" component={Agent2cRedirect} />
+              <Route path="/project/:id/agent/2" component={Agent2} />
+              <Route path="/project/:id/agent/3" component={Agent3} />
+              <Route path="/project/:id/agent/4a" component={Agent4} />
+              <Route path="/project/:id/agent/4b" component={Agent4b} />
+              <Route path="/project/:id/agent/4-conception-intro" component={Agent4PannuIntro} />
+              <Route path="/project/:id/agent/4-conception" component={Agent4Pannu} />
+              <Route path="/project/:id/agent/4c" component={Agent4c} />
+              <Route path="/project/:id/agent/4" component={Agent4Redirect} />
+              <Route path="/project/:id/agent/5" component={Agent5} />
+              <Route path="/project/:id/agent/5-practitioner" component={Agent5Practitioner} />
+              <Route component={NotFound} />
+              </Switch>
+              </Suspense>
+            </ErrorBoundary>
           </main>
       </ShellWithHelperPanel>
     </SidebarProvider>

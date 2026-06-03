@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/components/theme-provider";
 import { AuthenticatedShell } from "@/components/authenticated-shell";
 import { CopySelectionButton } from "@/components/copy-selection-button";
+import { ErrorBoundary } from "@/components/error-boundary";
 import Login from "@/pages/login";
 import Register from "@/pages/register";
 import ForgotPassword from "@/pages/forgot-password";
@@ -62,7 +63,14 @@ function App() {
         <TooltipProvider>
           <Toaster />
           <DraftingSelectionHelper />
-          <Router />
+          {/* Root-level error boundary — the last-resort catch. If anything
+              escapes the per-route boundary inside AuthenticatedShell (or
+              throws in a public-facing page like login / register / buy),
+              this renders the fallback UI with an errorId rather than leaving
+              the user staring at a blank white page. */}
+          <ErrorBoundary>
+            <Router />
+          </ErrorBoundary>
         </TooltipProvider>
       </ThemeProvider>
     </QueryClientProvider>

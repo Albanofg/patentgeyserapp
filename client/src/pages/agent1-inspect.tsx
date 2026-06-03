@@ -409,6 +409,12 @@ const handleApplyAiSuggestion = (id: string) => {
   });
 
   usePageSnapshot({
+    // Prompt-phase mapping: PHASE_1_INSPECT_AND_REFINE_IDEAS — the inventor is
+    // reviewing per-concept verdicts on extracted ideas. Declared explicitly
+    // so the AI Helper runs the right rulebook even when the user has
+    // navigated back from a later stage (in which case dbStage would
+    // otherwise lag and confuse the helper).
+    phase: 1,
     pageName: "Inspect & Refine Ideas (Stage 1b)",
     route: typeof window !== "undefined" ? window.location.pathname : "",
     description:

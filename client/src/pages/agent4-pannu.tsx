@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { AgentHeader } from "@/components/agent-header";
+import { LongCallProgress } from "@/components/long-call-progress";
 import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 import { Loader2, Shield, CheckCircle, CheckCircle2, Circle, AlertCircle, HelpCircle, ArrowRight, ChevronDown, ChevronUp, Sparkles, SkipForward, FileText } from "lucide-react";
 import {
@@ -1261,9 +1262,17 @@ export default function Agent4Pannu() {
 
                         {/* Validating State */}
                         {state.status === 'validating' && (
-                          <div className="flex items-center justify-center py-8">
-                            <Loader2 className="h-6 w-6 animate-spin text-primary mr-2" />
-                            <span className="text-muted-foreground">Validating your inventorship...</span>
+                          <div className="py-4">
+                            <LongCallProgress
+                              title="Validating your inventorship…"
+                              expectedDuration="This usually takes 30–60 seconds. We're checking your contribution against the Pannu factors."
+                              messages={[
+                                "Reading your answers against the inventorship criteria…",
+                                "Checking the significance of your contribution…",
+                                "Comparing to the final conception of the invention…",
+                                "Drafting the certification text…",
+                              ]}
+                            />
                           </div>
                         )}
 

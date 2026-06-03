@@ -231,6 +231,10 @@ export default function Agent1a() {
     }
 
     return {
+      // Prompt-phase mapping: PHASE_1_INSPECT_AND_REFINE_IDEAS — both the
+      // describe-invention and Advocate/Examiner debate surfaces are part of
+      // Stage 1's idea-refinement loop in the prompt's mental model.
+      phase: 1,
       pageName: hasStartedLocal
         ? "Advocate / Examiner Debate (Stage 1a)"
         : "Describe Your Invention (Stage 1a)",

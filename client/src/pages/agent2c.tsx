@@ -173,6 +173,9 @@ export default function Agent2c() {
   // ── Page snapshot for the AI Helper ─────────────────────────────────────
   // 2c is a select-extracted-ideas page (read-only items, checkbox state).
   const snapshot = useMemo<PageSnapshot>(() => ({
+    // Prompt-phase mapping: PHASE_3_EXTRACT_AND_SELECT_IDEAS — same as 2b,
+    // selecting which concepts to research for prior art.
+    phase: 3,
     pageName: "Select Patentable Ideas (Stage 2c)",
     route: `/project/${projectId}/agent/2c`,
     description:

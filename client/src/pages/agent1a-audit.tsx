@@ -128,6 +128,9 @@ export default function Agent1aAudit() {
     }
 
     return {
+      // Prompt-phase mapping: PHASE_1_INSPECT_AND_REFINE_IDEAS — the audit
+      // surface is still part of the Stage 1 refinement loop.
+      phase: 1,
       pageName: "Round 2 Audit (Stage 1a)",
       route: `/project/${projectId}/agent/1a-audit`,
       description: hasAudit

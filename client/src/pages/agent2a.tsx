@@ -252,6 +252,9 @@ export default function Agent2a() {
     }
 
     return {
+      // Prompt-phase mapping: PHASE_2_CONCEPT_REFINEMENT_AND_EXPANSION — the
+      // provisional draft expansion and refinement-feedback loop.
+      phase: 2,
       pageName: "Concept Expansion (Stage 2a)",
       route: `/project/${projectId}/agent/2a`,
       description: hasDraftLocal

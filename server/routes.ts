@@ -7207,7 +7207,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         pageSnapshot && typeof pageSnapshot === "object" && typeof (pageSnapshot as any).phase === "number"
           ? (pageSnapshot as any).phase as number
           : null;
-      const effectiveStage = declaredPhase ?? Math.max(dbStage, urlStage);
+      // Fallback when no page-declared phase: trust the URL the user is on.
+      // We deliberately do NOT take Math.max(dbStage, urlStage) here. The DB
+      // stage is "the farthest forward the user has been"; the URL is "where
+      // the user is right now." When the inventor navigates BACK from a later
+      // stage (because they didn't like the result and rolled back), dbStage
+      // is stale and higher than urlStage, and max() would tell the helper
+      // they're still at the page they came from — so the helper keeps
+      // referencing concepts and buttons from a page the user has already
+      // left. The URL is the ground truth for the user's current location;
+      // dbStage is only useful when there's no URL signal at all (dashboard,
+      // admin pages, fallback scrapes).
+      const effectiveStage = declaredPhase ?? (urlStage > 0 ? urlStage : dbStage);
 
       const projectContext = {
         projectId: req.params.id,

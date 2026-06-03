@@ -354,6 +354,10 @@ export default function Agent2b() {
   }
 
   usePageSnapshot({
+    // Prompt-phase mapping: PHASE_3_EXTRACT_AND_SELECT_IDEAS — selecting
+    // which concepts to research for prior art is the canonical phase-3
+    // activity in the prompt.
+    phase: 3,
     pageName: "Select Patentable Ideas (Stage 2b)",
     route: `/project/${projectId}/agent/2b`,
     description:

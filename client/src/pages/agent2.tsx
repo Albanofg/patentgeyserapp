@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { AgentHeader } from "@/components/agent-header";
+import { LongCallProgress } from "@/components/long-call-progress";
 import { Loader2, Lightbulb, Sparkles, Edit, CheckCircle, XCircle, Plus, ChevronRight } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { Project } from "@shared/schema";
@@ -223,6 +224,12 @@ export default function Agent2() {
   // that names the situation so the helper doesn't try to "advise" on a
   // page that is mid-redirect.
   const snapshot = useMemo<PageSnapshot>(() => ({
+    // Prompt-phase mapping: PHASE_3_EXTRACT_AND_SELECT_IDEAS — when this
+    // route actually renders content (not redirecting), the user is on the
+    // extract + select-for-prior-art surface, which the prompt frames as
+    // phase 3. Declaring it here keeps the helper anchored even during the
+    // brief redirect spinner.
+    phase: 3,
     pageName: "Stage 2 (redirecting)",
     route: `/project/${projectId}/agent/2`,
     description: "Stage 2 entry point — auto-redirects to the active substage (2a or 2b).",
@@ -507,6 +514,18 @@ export default function Agent2() {
                           )}
                         </Button>
                       </div>
+                      {extractIdeasMutation.isPending && (
+                        <LongCallProgress
+                          title="Extracting patentable ideas from your draft…"
+                          expectedDuration="This usually takes 15–30 seconds while the model reads the full provisional draft."
+                          messages={[
+                            "Reading the comprehensive summary…",
+                            "Identifying novel mechanisms and combinations…",
+                            "Separating each idea into a standalone candidate…",
+                            "Drafting concise titles and descriptions…",
+                          ]}
+                        />
+                      )}
                     </div>
                   </CardContent>
                 </Card>

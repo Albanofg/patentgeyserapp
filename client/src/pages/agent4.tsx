@@ -240,6 +240,11 @@ export default function Agent4() {
       : [];
 
     return {
+      // Prompt-phase mapping: PHASE_4_WHITE_SPACE_STRATEGY — the inventor
+      // is reviewing per-concept white-space analysis after prior-art
+      // results landed. The next stage (Key Concepts Selection on /agent/4b)
+      // moves into phase 5.
+      phase: 4,
       pageName: "White Space Strategy (Stage 4a)",
       route: `/project/${projectId}/agent/4a`,
       description: hasAnalysis

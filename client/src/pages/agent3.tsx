@@ -17,6 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { AgentHeader } from "@/components/agent-header";
+import { LongCallProgress } from "@/components/long-call-progress";
 import { Loader2, Search, ExternalLink, ChevronRight, RefreshCw } from "lucide-react";
 import type { Project } from "@shared/schema";
 
@@ -206,6 +207,14 @@ export default function Agent3() {
         ];
 
     return {
+      // Prompt-phase mapping: PHASE_3_EXTRACT_AND_SELECT_IDEAS — the prompt
+      // treats the prior-art search itself as a transit step within phase 3
+      // (its turn-close directive says "run prior art research and return
+      // when on the White Space Strategy page" = phase 4). So this page
+      // stays under phase 3 whether the search is pre-run, in-flight, or
+      // showing results — phase 4 takes over only once the user moves to
+      // /agent/4a.
+      phase: 3,
       pageName: "Prior Art Research (Stage 3)",
       route: `/project/${projectId}/agent/3`,
       description: hasResults
@@ -280,6 +289,19 @@ export default function Agent3() {
                       )}
                     </Button>
                   </div>
+                  {searchMutation.isPending && (
+                    <LongCallProgress
+                      title="Searching prior art databases…"
+                      expectedDuration="This usually takes 30–60 seconds across multiple patent and publication sources."
+                      messages={[
+                        "Reading your project's key concepts…",
+                        "Querying patent databases for related art…",
+                        "Searching scientific publications…",
+                        "Scoring relevance and filtering noise…",
+                        "Compiling the results into per-concept findings…",
+                      ]}
+                    />
+                  )}
                 </div>
               </CardContent>
             </Card>
