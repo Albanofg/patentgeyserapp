@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Send, User, Loader2, X, Copy, Check, Brain } from "lucide-react";
+import { Send, User, Loader2, PanelRight, Copy, Check, Brain } from "lucide-react";
 import aiHelperAvatar from "@/assets/ai-helper-avatar.png";
 import { getCurrentPageSnapshot } from "@/lib/page-snapshot";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -283,14 +283,14 @@ export function QAAssistantPanel({
             onClick={onClose}
             data-testid="button-close-ai-helper"
           >
-            <X className="h-4 w-4" />
+            <PanelRight className="h-4 w-4" />
           </Button>
         </div>
       </div>
 
       {/* "What I know" — modal so the trigger button can sit next to the
-          panel's X-close without accidental closures while the user is
-          exploring memory state. */}
+          panel's collapse button without accidental closures while the user
+          is exploring memory state. */}
       <Dialog open={memoryOpen} onOpenChange={setMemoryOpen}>
         <DialogContent className="max-w-md" data-testid="memory-panel">
           <DialogHeader>

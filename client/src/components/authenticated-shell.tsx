@@ -312,6 +312,21 @@ function ShellWithHelperPanel({
   const [helperInitialText, setHelperInitialText] = useState<string | undefined>(undefined);
   const sidebarWasOpenWhenHelperOpenedRef = useRef(false);
 
+  // Lags `helperOpen` on close so the inner panel stays mounted during the
+  // exit transition (300ms). Inner panel fires tanstack queries on mount —
+  // keeping it gated behind this state means closed-helper users don't pay
+  // for those network requests.
+  const HELPER_TRANSITION_MS = 300;
+  const [helperMounted, setHelperMounted] = useState(false);
+  useEffect(() => {
+    if (helperOpen) {
+      setHelperMounted(true);
+      return;
+    }
+    const t = setTimeout(() => setHelperMounted(false), HELPER_TRANSITION_MS);
+    return () => clearTimeout(t);
+  }, [helperOpen]);
+
   // User-resizable panel width (persisted across sessions).
   const [panelWidth, setPanelWidth] = useState<number>(() => {
     if (typeof window === "undefined") return HELPER_PANEL_DEFAULT_WIDTH;
@@ -330,6 +345,21 @@ function ShellWithHelperPanel({
     if (typeof window === "undefined") return;
     const mq = window.matchMedia("(min-width: 1024px)");
     const handler = (e: MediaQueryListEvent) => setIsDesktop(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  // Wide-screen threshold: at 1080p+ (≥1920px wide) the sidebar (22rem ≈
+  // 352px) + helper default (520px) still leaves ≥1048px for main content,
+  // so both panels can coexist. Below 1920px, opening the helper auto-
+  // collapses the sidebar so the patent column stays readable.
+  const [hasRoomForBoth, setHasRoomForBoth] = useState<boolean>(() =>
+    typeof window === "undefined" ? false : window.matchMedia("(min-width: 1920px)").matches,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(min-width: 1920px)");
+    const handler = (e: MediaQueryListEvent) => setHasRoomForBoth(e.matches);
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
   }, []);
@@ -365,9 +395,10 @@ function ShellWithHelperPanel({
     document.body.style.userSelect = "none";
   };
 
-  // Opening the helper collapses the left sidebar.
+  // Opening the helper collapses the left sidebar — only on screens too
+  // narrow to comfortably show both at once. At ≥1920px (1080p+), both stay open.
   useEffect(() => {
-    if (helperOpen) {
+    if (helperOpen && !hasRoomForBoth) {
       sidebarWasOpenWhenHelperOpenedRef.current = sidebarOpen;
       if (sidebarOpen) setSidebarOpen(false);
     }
@@ -376,9 +407,9 @@ function ShellWithHelperPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [helperOpen]);
 
-  // Re-expanding the left sidebar closes the helper.
+  // Re-expanding the left sidebar closes the helper — same threshold.
   useEffect(() => {
-    if (sidebarOpen && helperOpen) setHelperOpen(false);
+    if (sidebarOpen && helperOpen && !hasRoomForBoth) setHelperOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sidebarOpen]);
 
@@ -396,37 +427,44 @@ function ShellWithHelperPanel({
     <div className="flex h-screen w-full">
       <AppSidebar projectId={projectId} onOpenAIHelper={openHelper} helperOpen={helperOpen} />
       <div className="flex-1 flex flex-col overflow-hidden">{children}</div>
-      {helperOpen && projectId && (
+      {projectId && (
         <aside
-          className="border-l bg-background shrink-0 fixed lg:static inset-0 z-40 lg:z-auto flex flex-row w-full lg:w-auto"
-          style={{
-            // Tailwind handles mobile full-width; on lg+ we apply the pixel width.
-            // CSS variable approach so a parent can override later if needed.
-          }}
+          data-state={helperOpen ? "open" : "closed"}
+          aria-hidden={!helperOpen}
+          className={`border-l bg-background shrink-0 fixed lg:static inset-0 z-40 lg:z-auto flex flex-row w-full overflow-hidden transition-[width,transform] duration-300 ease-in-out ${
+            helperOpen
+              ? "translate-x-0 pointer-events-auto"
+              : "translate-x-full lg:translate-x-0 pointer-events-none"
+          }`}
+          style={isDesktop ? { width: helperOpen ? `${panelWidth + 6}px` : 0 } : undefined}
           data-testid="ai-helper-aside"
         >
-          {/* Drag handle (desktop only). 6px wide hit area with a 1px visual stripe on hover/active. */}
-          <div
-            onMouseDown={startResize}
-            className={`hidden lg:block w-1.5 cursor-col-resize select-none group ${
-              isResizing ? "bg-primary/40" : "hover:bg-primary/20"
-            }`}
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize AI Helper panel"
-            data-testid="ai-helper-resize-handle"
-          />
-          <div
-            className="flex flex-col flex-1 min-w-0 lg:flex-none"
-            style={isDesktop ? { width: `${panelWidth}px` } : undefined}
-          >
-            <QAAssistantPanel
-              projectId={projectId}
-              onClose={closeHelper}
-              initialText={helperInitialText}
-              onInitialTextConsumed={() => setHelperInitialText(undefined)}
-            />
-          </div>
+          {helperMounted && (
+            <>
+              {/* Drag handle (desktop only). 6px wide hit area with a 1px visual stripe on hover/active. */}
+              <div
+                onMouseDown={startResize}
+                className={`hidden lg:block w-1.5 shrink-0 cursor-col-resize select-none group ${
+                  isResizing ? "bg-primary/40" : "hover:bg-primary/20"
+                }`}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize AI Helper panel"
+                data-testid="ai-helper-resize-handle"
+              />
+              <div
+                className="flex flex-col flex-1 min-w-0 lg:flex-none"
+                style={isDesktop ? { width: `${panelWidth}px` } : undefined}
+              >
+                <QAAssistantPanel
+                  projectId={projectId}
+                  onClose={closeHelper}
+                  initialText={helperInitialText}
+                  onInitialTextConsumed={() => setHelperInitialText(undefined)}
+                />
+              </div>
+            </>
+          )}
         </aside>
       )}
     </div>
