@@ -19,9 +19,9 @@ import {
 const STORAGE_KEY = "challenge-alert-last-shown";
 const SHOW_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours — aggressive nudge while the challenge week is live; widen back to 12h after
 
-const CHALLENGE_TITLE = "🔔 Join us for the Patent Geyser Challenge";
+const CHALLENGE_TITLE = "🔔 Last day of the Patent Geyser Challenge";
 const CHALLENGE_DESCRIPTION =
-  "Day 4 starts Thu June 4 at noon PDT. Use the Challenge meeting link in the sidebar to join.";
+  "The final session is Fri June 5 at noon PDT. Use the Challenge meeting link in the sidebar to join.";
 
 export function ChallengeAlertDialog() {
   const [open, setOpen] = useState(false);
