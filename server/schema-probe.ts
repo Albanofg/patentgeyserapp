@@ -40,6 +40,10 @@ const REQUIRED_TABLES: RequiredTable[] = [
   // Email whitelist gates new-user signups; defined in shared/schema.ts only
   // (no dedicated .sql migration), so the hint points at drizzle-kit push.
   { schema: "inventor_geyser", table: "email_whitelist", migrationHint: "npx drizzle-kit push  (or create manually from shared/schema.ts emailWhitelist definition)" },
+  // Concept gaps ledger (Gate 1 of the gap-ledger rebuild). Currently
+  // unread/unwritten — checking it here ensures the table exists before
+  // Gate 2 wires the 2a draft module to write rows to it.
+  { schema: "inventor_geyser", table: "concept_gaps", migrationHint: "psql $DATABASE_URL -f migrations/0007_concept_gaps.sql" },
 ];
 
 export async function probeSchema(): Promise<void> {
