@@ -1048,9 +1048,9 @@ export default function Agent5() {
             <div className="inline-flex items-center justify-center w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-primary/10 mb-2 sm:mb-4">
               <CheckCircle2 className="h-8 w-8 sm:h-10 sm:w-10 text-primary" />
             </div>
-            <h2 className="text-2xl sm:text-3xl font-bold">Technical Disclosure Final Steps</h2>
+            <h2 className="text-2xl sm:text-3xl font-bold">Invention Concept Blueprint Final Steps</h2>
             <p className="text-muted-foreground text-sm sm:text-base max-w-2xl mx-auto px-2">
-              Complete the last part of the process and download your Technical Disclosure.
+              Complete the last part of the process and download your Invention Concept Blueprint.
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 pt-4 px-2 max-w-3xl mx-auto">
               <Button
@@ -1133,7 +1133,7 @@ export default function Agent5() {
                           ) : (
                             <>
                               <Download className="h-5 w-5 mr-2" />
-                              Download completed Technical Disclosure
+                              Download the Invention Concept Blueprint
                             </>
                           )}
                         </Button>
