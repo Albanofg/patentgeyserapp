@@ -7294,34 +7294,99 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // admin pages, fallback scrapes).
       const effectiveStage = declaredPhase ?? (urlStage > 0 ? urlStage : dbStage);
 
-      const projectContext = {
-        projectId: req.params.id,
-        projectTitle: project.title,
-        currentStage: effectiveStage,
-        currentSubstage: urlSubstage,
-        ideaSummary: agent1Obj?.ideaSummary || agent1Obj?.currentIdea || '',
-        advocatePoints: agent1Obj?.advocatePoints || [],
-        examinerPoints: agent1Obj?.examinerPoints || [],
-        extractedIdeas: agent1Obj?.extractedIdeas || agent1Obj?.unifiedIdeas || [],
-        approvedIdeas: agent1Obj?.approvedIdeas || [],
-        expandedConcepts: agent2Obj?.expandedConcepts || [],
-        // Stage 4 scope source — concepts that survived prior-art selection and
-        // entered whitespace analysis. New shape is conceptAnalyses; legacy is
-        // nuggetAnalyses. Either one's array indices define the Concept N ids
-        // routing.ts uses for the leap protocol.
-        conceptAnalyses: agent4Obj?.conceptAnalyses || agent4Obj?.nuggetAnalyses || [],
-        priorArtResults: agent3Obj?.priorArtResults ? 'Prior art research completed' : 'Not yet completed',
-        whiteSpaceAnalysis: agent4Obj?.nuggetAnalyses ? 'White space analysis completed' : 'Not yet completed',
-        // Stage 5 scope source — Key Concept Sets selected after 4b.
-        selectedKeyConcepts: agent4Obj?.selectedKeyConcepts || [],
-        claimsGenerated: agent4Obj?.selectedKeyConcepts?.length || 0,
-        provisionalDraftStatus: agent4Obj?.provisionalDraft ? 'Draft generated' : 'Not yet generated',
-        hasProvisionalDraft: !!agent5Obj?.provisionalDraft,
-        specificKeyConcepts: agent5Obj?.specificKeyConcepts || [],
-        broaderClaims: agent5Obj?.broaderClaims || [],
-        hasDiagrams: !!(agent5Obj?.diagrams?.length > 0),
-        diagramCount: agent5Obj?.diagrams?.length || 0,
-      };
+      // Polish mode = the inventor is on the Showcase page running the final
+      // audit (prompt-phase 8). The helper here must audit ONLY the saved
+      // final draft — any injection of the raw idea, earlier-stage concepts,
+      // or prior chat history lets the model quote phrases that were never
+      // carried into the draft (the "upon a user clicking" class of false
+      // positives). Freshness checkpoint is the per-tab Save button on the
+      // showcase; we read `agent_data.provisionalDraft` fresh on every turn.
+      const isPolishMode = effectiveStage === 8;
+
+      const polishDraftRaw = isPolishMode
+        ? (agent5Obj?.provisionalDraft ?? agent4Obj?.provisionalDraft ?? null)
+        : null;
+
+      // Diagram + download gate derivation for polish mode.
+      // Source of truth is `agent_data.data.diagrams` on agent_stage=5: an
+      // array whose presence means generation completed. There is no DB
+      // "in_progress" record — that state is purely client-side (React Query
+      // mutation pending). The showcase exposes the pending state via
+      // pageSnapshot.actions where the `generate-diagrams` action is present
+      // but enabled=false. We honor that signal when diagrams are still empty,
+      // so the helper can land on SUB-STATE B ("awaiting diagrams") and avoid
+      // sending the inventor to click a button that's already in flight.
+      const diagramsArrForPolish = isPolishMode
+        ? (Array.isArray(agent5Obj?.diagrams) ? agent5Obj.diagrams : [])
+        : [];
+      const diagramsCompleteForPolish = diagramsArrForPolish.length > 0;
+      const generateDiagramsActionPending = (() => {
+        if (!isPolishMode) return false;
+        const actions = (pageSnapshot && typeof pageSnapshot === "object" && Array.isArray((pageSnapshot as any).actions))
+          ? (pageSnapshot as any).actions
+          : null;
+        if (!actions) return false;
+        const a = actions.find((x: any) => x && x.id === "generate-diagrams");
+        // Action present + explicitly disabled = mutation in flight. Absent
+        // (the showcase usually hides the button once diagrams exist) does
+        // NOT imply pending.
+        return !!(a && a.enabled === false);
+      })();
+      const diagramGenerationStatusForPolish: "not_started" | "in_progress" | "complete" =
+        diagramsCompleteForPolish
+          ? "complete"
+          : (generateDiagramsActionPending ? "in_progress" : "not_started");
+      const draftDownloadAvailableForPolish =
+        diagramsCompleteForPolish && !!polishDraftRaw;
+
+      const projectContext = isPolishMode
+        ? {
+            // Slim polish-mode shape. The helper sees identity + the freshly
+            // parsed final draft + the two substate gate fields, and nothing
+            // else. All other project state is deliberately omitted so the
+            // model physically cannot cite text that isn't in the audit
+            // target.
+            projectId: req.params.id,
+            projectTitle: project.title,
+            currentStage: effectiveStage,
+            currentSubstage: urlSubstage,
+            isPolishMode: true,
+            hasProvisionalDraft: !!polishDraftRaw,
+            provisionalDraft: polishDraftRaw ? parseProvisionalDraft(polishDraftRaw) : null,
+            // PHASE_8 substate gates — drive the closing forward directive.
+            // See LAW_POLISH_FINAL_DOC_ONLY and PHASE_8 SUB-STATE A/B/C.
+            diagramGenerationStatus: diagramGenerationStatusForPolish,
+            draftDownloadAvailable: draftDownloadAvailableForPolish,
+          }
+        : {
+            projectId: req.params.id,
+            projectTitle: project.title,
+            currentStage: effectiveStage,
+            currentSubstage: urlSubstage,
+            isPolishMode: false,
+            ideaSummary: agent1Obj?.ideaSummary || agent1Obj?.currentIdea || '',
+            advocatePoints: agent1Obj?.advocatePoints || [],
+            examinerPoints: agent1Obj?.examinerPoints || [],
+            extractedIdeas: agent1Obj?.extractedIdeas || agent1Obj?.unifiedIdeas || [],
+            approvedIdeas: agent1Obj?.approvedIdeas || [],
+            expandedConcepts: agent2Obj?.expandedConcepts || [],
+            // Stage 4 scope source — concepts that survived prior-art selection and
+            // entered whitespace analysis. New shape is conceptAnalyses; legacy is
+            // nuggetAnalyses. Either one's array indices define the Concept N ids
+            // routing.ts uses for the leap protocol.
+            conceptAnalyses: agent4Obj?.conceptAnalyses || agent4Obj?.nuggetAnalyses || [],
+            priorArtResults: agent3Obj?.priorArtResults ? 'Prior art research completed' : 'Not yet completed',
+            whiteSpaceAnalysis: agent4Obj?.nuggetAnalyses ? 'White space analysis completed' : 'Not yet completed',
+            // Stage 5 scope source — Key Concept Sets selected after 4b.
+            selectedKeyConcepts: agent4Obj?.selectedKeyConcepts || [],
+            claimsGenerated: agent4Obj?.selectedKeyConcepts?.length || 0,
+            provisionalDraftStatus: agent4Obj?.provisionalDraft ? 'Draft generated' : 'Not yet generated',
+            hasProvisionalDraft: !!agent5Obj?.provisionalDraft,
+            specificKeyConcepts: agent5Obj?.specificKeyConcepts || [],
+            broaderClaims: agent5Obj?.broaderClaims || [],
+            hasDiagrams: !!(agent5Obj?.diagrams?.length > 0),
+            diagramCount: agent5Obj?.diagrams?.length || 0,
+          };
 
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache, no-transform");

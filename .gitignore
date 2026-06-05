@@ -28,6 +28,11 @@ design_guidelines.md
 docs
 AGENT_MIGRATION.md
 
+# External prompt-authoring reference (LEAP design pattern from Nitwyt).
+# Kept alongside the app as authoring material for qa-assistant.md and the
+# other module prompts; not part of this codebase.
+leap-design-pattern/
+
 # Claude
 .claude
 .local

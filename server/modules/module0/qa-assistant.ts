@@ -356,6 +356,19 @@ interface QAPayload {
     broaderClaims?: any[];
     hasDiagrams?: boolean;
     diagramCount?: number;
+    // Polish-mode marker + freshly-parsed final draft. Set by the route
+    // handler when the inventor is on the Showcase (prompt-phase 8). When
+    // true, the helper audits ONLY `provisionalDraft` and all other fields
+    // above are intentionally absent.
+    isPolishMode?: boolean;
+    provisionalDraft?: any;
+    // PHASE_8 substate gates. Server-derived in polish mode: status is
+    // "complete" when `agent_data.diagrams.length > 0`, "in_progress" when
+    // the showcase's `generate-diagrams` action is disabled (mutation in
+    // flight per pageSnapshot.actions), else "not_started". Download is
+    // available only when status is "complete" AND a draft exists.
+    diagramGenerationStatus?: "not_started" | "in_progress" | "complete";
+    draftDownloadAvailable?: boolean;
   };
   currentLocation: string;
   sessionId?: string;
@@ -1223,6 +1236,12 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
   // ─── 2. Build the runtime context block ────────────────────────────────────
   const pc = payload.projectContext ?? {};
 
+  // Polish mode (set by the route handler when effectiveStage === 8 / Showcase).
+  // The audit must operate on the saved final draft ONLY — no raw idea, no
+  // earlier-stage concepts, no chat history that could contain candidate
+  // phrases. Skip the family/sibling/retrieval lookups entirely in this mode.
+  const isPolishMode = !!(pc as any).isPolishMode;
+
   // Pull the read-only sibling digests (idea summary preview, extracted-idea
   // titles, key-concept previews) from the family-artifact cache. One small
   // indexed SQL query; zero AI calls. Empty array when the project has no
@@ -1243,7 +1262,7 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     applicationNumber: string | null;
     notes: string | null;
   } | null = null;
-  if (persistent) {
+  if (persistent && !isPolishMode) {
     try {
       siblings = await getSiblingsReference(projectId!);
     } catch (err) {
@@ -1299,6 +1318,30 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     }
   }
 
+  // Renders the saved final draft as a flat, labeled block for polish-mode
+  // audits. The 7 sections come from parseProvisionalDraft() in routes.ts —
+  // same shape the Showcase page renders, same shape Save writes to.
+  function renderPolishDraft(draft: any): string {
+    if (!draft || typeof draft !== "object") {
+      return "(no final draft is saved yet — Module 4 hasn't produced one and no tab edits have been saved)";
+    }
+    const claimsValue = Array.isArray(draft.claims)
+      ? draft.claims.join("\n\n")
+      : (draft.claims ?? draft.keyConcepts ?? "");
+    const sections: Array<[string, string]> = [
+      ["TITLE", draft.title ?? ""],
+      ["BACKGROUND OF THE INVENTION", draft.background ?? ""],
+      ["SUMMARY OF THE INVENTION", draft.summary ?? ""],
+      ["DETAILED DESCRIPTION", draft.detailed_description ?? ""],
+      ["RAMIFICATIONS AND SCOPE", draft.ramifications_and_scope ?? ""],
+      ["ABSTRACT", draft.abstract ?? ""],
+      ["KEY CONCEPTS (CLAIMS)", typeof claimsValue === "string" ? claimsValue : String(claimsValue ?? "")],
+    ];
+    return sections
+      .map(([label, body]) => `### ${label}\n${(body || "").toString().trim() || "(empty)"}`)
+      .join("\n\n");
+  }
+
   // Build the full user message from fresh state. Used at start AND between
   // tool turns so the agent always reads the current TURN ROUTER STATE — not
   // the stale block from before the tool calls executed.
@@ -1307,6 +1350,38 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     openQRows: Array<any>,
     routingNow: RoutingFields,
   ): string {
+    // Polish-mode short-circuit. Emit ONLY meta + substate gates + the
+    // freshly-read final draft + the new user message. No log, articulation,
+    // open questions, routing state, family context, or agent-module dump —
+    // any of those can carry candidate phrases the model would misattribute
+    // to the draft.
+    if (isPolishMode) {
+      const polishParts: string[] = [];
+      const polishMeta: string[] = [];
+      if (pc.projectTitle) polishMeta.push(`Title: ${pc.projectTitle}`);
+      polishMeta.push(`currentLocation.stage: ${pc.currentStage ?? 8}`);
+      if (pc.currentSubstage) polishMeta.push(`currentLocation.substage: ${pc.currentSubstage}`);
+      if (payload.currentLocation) polishMeta.push(`Location label: ${payload.currentLocation}`);
+      polishMeta.push(`mode: POLISH (audit-only on the final draft text below)`);
+      // Substate gates drive the closing forward directive per PHASE_8
+      // SUB-STATE A/B/C. Always emitted so the prompt's routing can be
+      // deterministic instead of guessing from the draft's shape.
+      const hpd = !!(pc as any).hasProvisionalDraft;
+      const dgs = (pc as any).diagramGenerationStatus;
+      const dda = (pc as any).draftDownloadAvailable;
+      polishMeta.push(`hasProvisionalDraft: ${hpd ? "true" : "false"}`);
+      polishMeta.push(`diagramGenerationStatus: ${dgs ?? "unknown"}`);
+      polishMeta.push(`draftDownloadAvailable: ${dda === true ? "true" : "false"}`);
+      polishParts.push(`## PROJECT META\n${polishMeta.join("\n")}`);
+      polishParts.push(
+        `## CURRENT FINAL DRAFT — refreshed this turn (authoritative — audit only this text)\n${renderPolishDraft((pc as any).provisionalDraft)}`,
+      );
+      if (payload.pageSnapshot) {
+        polishParts.push(`## CURRENT PAGE\n${renderPageSnapshot(payload.pageSnapshot)}`);
+      }
+      return `${polishParts.join("\n\n")}\n\n## NEW USER MESSAGE\n${payload.message}`;
+    }
+
     const s: string[] = [];
     const meta: string[] = [];
     if (pc.projectTitle) meta.push(`Title: ${pc.projectTitle}`);
@@ -1543,7 +1618,14 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
   };
 
   // ─── 4. Streaming + tool-calling loop ──────────────────────────────────────
-  const geminiHistory = recentChrono.map((m) => ({
+  // Polish-mode history sanitization: assistant turns may contain candidate
+  // phrases the next turn would mis-attribute to the draft, so we strip them
+  // and keep at most the last 3 user turns for continuity ("now do the same
+  // for the summary"). All other modes pass the full chrono unchanged.
+  const chronoForHistory = isPolishMode
+    ? recentChrono.filter((m) => m.role !== "assistant").slice(-3)
+    : recentChrono;
+  const geminiHistory = chronoForHistory.map((m) => ({
     role: m.role === "assistant" ? "model" : "user",
     parts: [{ text: m.content }],
   }));
