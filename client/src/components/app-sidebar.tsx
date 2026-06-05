@@ -240,22 +240,22 @@ export function AppSidebar({ projectId, onOpenAIHelper, helperOpen }: AppSidebar
                       className="group-data-[collapsible=icon]:justify-center"
                     >
                       <a
-                        href="https://meet.google.com/wjp-devj-ary"
+                        href="https://drive.google.com/drive/folders/14zqtWdgUiL4-PHA0nQPtw32p9xMN12Va"
                         target="_blank"
                         rel="noopener noreferrer"
                       >
                         <Video className="h-4 w-4" />
-                        <span className="group-data-[collapsible=icon]:hidden">Challenge meeting link</span>
+                        <span className="group-data-[collapsible=icon]:hidden">Challenge recordings</span>
                       </a>
                     </SidebarMenuButton>
                   </TooltipTrigger>
-                  {!open && <TooltipContent side="right">Challenge meeting link</TooltipContent>}
+                  {!open && <TooltipContent side="right">Challenge recordings</TooltipContent>}
                 </Tooltip>
-                {/* Schedule caption below the button so users see the time
-                    without opening the meeting. Hidden in icon-collapsed mode
-                    where there's no horizontal room. */}
+                {/* Caption below the button pointing users to the recorded
+                    sessions now that the live challenge has ended. Hidden in
+                    icon-collapsed mode where there's no horizontal room. */}
                 <div className="pl-8 pr-2 pb-1 text-[11px] leading-tight text-muted-foreground group-data-[collapsible=icon]:hidden">
-                  Starts noon PDT, 2pm CST and 3pm EDT
+                  Watch the recordings from the challenge sessions
                 </div>
               </SidebarMenuItem>
             </SidebarMenu>

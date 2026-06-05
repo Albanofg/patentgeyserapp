@@ -4,7 +4,6 @@ import { useQuery } from "@tanstack/react-query";
 import { SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { QAAssistantPanel } from "@/components/qa-assistant-modal";
-import { ChallengeAlertDialog } from "@/components/challenge-alert-dialog";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { Loader2, Menu, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -220,11 +219,6 @@ export function AuthenticatedShell() {
   return (
     <SidebarProvider defaultOpen={true} style={style as React.CSSProperties}>
       <ShellWithHelperPanel projectId={projectId} isReadOnly={isReadOnly}>
-        {/* Mounted inside the normal-app branch only — never during 2FA
-            verification — so the alert doesn't pop over the second-factor
-            screen. The dialog is a Radix portal; placement in this tree
-            doesn't visually affect layout. */}
-        <ChallengeAlertDialog />
         <MobileHeader />
         {isReadOnly && (
           <div className="flex items-center gap-3 px-4 py-2.5 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800 text-sm text-amber-800 dark:text-amber-300 shrink-0" data-testid="banner-subscription-lapsed">
