@@ -463,7 +463,7 @@ function arrayFieldPrefix(field: string): string {
   if (f.includes("priorart")) return "Prior Art";
   if (f === "selectedkeyconcepts") return "Key Concept Set";
   if (f.includes("keyconcept")) return "Key Concept";
-  if (f.includes("broaderclaim")) return "Broader Claim";
+  if (f.includes("broaderclaim")) return "Broader Key Concept";
   if (f.includes("advocate")) return "Advocate Point";
   if (f.includes("examiner")) return "Examiner Point";
   if (f.includes("nugget")) return "Nugget";
@@ -1335,7 +1335,7 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
       ["DETAILED DESCRIPTION", draft.detailed_description ?? ""],
       ["RAMIFICATIONS AND SCOPE", draft.ramifications_and_scope ?? ""],
       ["ABSTRACT", draft.abstract ?? ""],
-      ["KEY CONCEPTS (CLAIMS)", typeof claimsValue === "string" ? claimsValue : String(claimsValue ?? "")],
+      ["KEY CONCEPTS", typeof claimsValue === "string" ? claimsValue : String(claimsValue ?? "")],
     ];
     return sections
       .map(([label, body]) => `### ${label}\n${(body || "").toString().trim() || "(empty)"}`)
