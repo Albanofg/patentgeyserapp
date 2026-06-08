@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo, lazy, Suspense } from "react";
+import { useEffect, useRef, useState, useMemo, type ReactNode } from "react";
 import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -19,11 +19,116 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { AgentHeader } from "@/components/agent-header";
-const MDEditor = lazy(() => import('@uiw/react-md-editor'));
-import { Loader2, Download, FileText, Image as ImageIcon, CheckCircle2, Save, RefreshCw, ExternalLink, Pencil, Users, ArrowRight, Sparkles } from "lucide-react";
+import { Loader2, Download, FileText, Image as ImageIcon, CheckCircle2, Save, RefreshCw, ExternalLink, Pencil, Users, ArrowRight, Sparkles, Search, X } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Project } from "@shared/schema";
 import { recordHumanInput } from "@/lib/human-inputs";
+
+// The seven Showcase draft sections, in display order. Shared by the tab list,
+// the mobile dropdown, and the draft search chips so labels never diverge.
+const SPEC_TABS = [
+  { key: 'title', label: '1. Title' },
+  { key: 'background', label: '2. Background' },
+  { key: 'summary', label: '3. Summary' },
+  { key: 'detailed_description', label: '4. Detailed Description' },
+  { key: 'ramifications_and_scope', label: '5. Ramifications & Scope' },
+  { key: 'abstract', label: '6. Abstract' },
+  { key: 'claims', label: '7. Key Concepts' },
+] as const;
+
+// Renders text with case-insensitive highlights for every occurrence of `query`.
+// Powers the Showcase draft search: an inventor pastes a phrase the Helper
+// flagged and sees exactly where it sits in the section text.
+function HighlightedDraftText({ text, query, activeIndex, overlay = false }: { text: string; query: string; activeIndex: number; overlay?: boolean }) {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return <>{text}</>;
+  const parts: ReactNode[] = [];
+  const lower = text.toLowerCase();
+  let from = 0;
+  let idx = lower.indexOf(needle, from);
+  let matchNo = 0;
+  let key = 0;
+  while (idx !== -1) {
+    if (idx > from) parts.push(text.slice(from, idx));
+    const isActive = matchNo === activeIndex;
+    // Overlay marks sit BEHIND an editable textarea, so they must add no
+    // horizontal padding (it would drift the highlight out of alignment) and no
+    // text color (the textarea draws the actual glyphs on top — the mark only
+    // provides the background colour).
+    const cls = overlay
+      ? (isActive ? 'bg-orange-400 rounded' : 'bg-yellow-300 rounded')
+      : `rounded px-0.5 text-black ${isActive ? 'bg-orange-400 ring-2 ring-orange-500' : 'bg-yellow-300'}`;
+    parts.push(
+      <mark key={key++} id={isActive ? 'spec-active-match' : undefined} className={cls}>
+        {text.slice(idx, idx + needle.length)}
+      </mark>
+    );
+    matchNo++;
+    from = idx + needle.length;
+    idx = lower.indexOf(needle, from);
+  }
+  parts.push(text.slice(from));
+  return <>{parts}</>;
+}
+
+// A plain text editor that shows search highlights. A backdrop layer renders the
+// same text with <mark> highlights directly behind a transparent-background
+// textarea, so matches are visibly highlighted (like the read view) while the
+// text stays fully editable. The two layers share identical text metrics so the
+// highlights line up exactly; the backdrop scroll follows the textarea, and the
+// active match is scrolled into view without moving the caret.
+function HighlightedTextarea({ value, onChange, query, activeIndex, height, spellCheck, dataTestid }: {
+  value: string;
+  onChange: (v: string) => void;
+  query: string;
+  activeIndex: number;
+  height: number;
+  spellCheck?: boolean;
+  dataTestid?: string;
+}) {
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const bdRef = useRef<HTMLDivElement>(null);
+  const syncScroll = () => {
+    const ta = taRef.current, bd = bdRef.current;
+    if (ta && bd) { bd.scrollTop = ta.scrollTop; bd.scrollLeft = ta.scrollLeft; }
+  };
+  // Scroll the active match into view when it (or the query) changes. Setting
+  // scrollTop never moves the caret, so this is safe to run while editing.
+  useEffect(() => {
+    if (!query.trim()) return;
+    const ta = taRef.current, bd = bdRef.current;
+    if (!ta || !bd) return;
+    const mark = bd.querySelector('#spec-active-match') as HTMLElement | null;
+    if (!mark) return;
+    ta.scrollTop = Math.max(0, mark.offsetTop - ta.clientHeight / 2 + mark.offsetHeight / 2);
+    syncScroll();
+    // Only on navigation (active match / query), NOT on every keystroke — we
+    // must not yank the scroll position away while the inventor is typing.
+  }, [activeIndex, query]);
+  const layerClass = "absolute inset-0 m-0 p-3 sm:p-4 text-xs sm:text-sm leading-relaxed whitespace-pre-wrap break-words";
+  return (
+    <div className="relative rounded-lg border border-input bg-background overflow-hidden focus-within:ring-2 focus-within:ring-primary/30" style={{ height }}>
+      <div
+        ref={bdRef}
+        aria-hidden
+        className={`${layerClass} overflow-y-auto pointer-events-none select-none text-transparent`}
+        style={{ scrollbarGutter: 'stable' }}
+      >
+        <HighlightedDraftText text={value} query={query} activeIndex={activeIndex} overlay />{'\n'}
+      </div>
+      <textarea
+        ref={taRef}
+        data-testid={dataTestid}
+        value={value}
+        spellCheck={spellCheck}
+        onChange={(e) => onChange(e.target.value)}
+        onScroll={syncScroll}
+        className={`${layerClass} overflow-y-auto bg-transparent text-foreground resize-none focus:outline-none`}
+        style={{ scrollbarGutter: 'stable' }}
+      />
+    </div>
+  );
+}
 
 export default function Agent5() {
   const [, params] = useRoute("/project/:id/agent/5");
@@ -34,6 +139,10 @@ export default function Agent5() {
   const [showDownloadWarning, setShowDownloadWarning] = useState(false);
   const [activeSpecSection, setActiveSpecSection] = useState('title');
   const [editingSection, setEditingSection] = useState<string | null>(null);
+  // Draft search — paste a phrase from the Helper to find it across sections.
+  const [specSearch, setSpecSearch] = useState('');
+  const [activeMatchIndex, setActiveMatchIndex] = useState(0);
+  const specContentRef = useRef<HTMLDivElement>(null);
   const [editContent, setEditContent] = useState('');
 
   // Genus & Species workflow inline state
@@ -65,6 +174,68 @@ export default function Agent5() {
     queryKey: ["/api/projects", projectId, "specification-sections"],
     enabled: !!projectId,
   });
+
+  // Per-section match counts for the draft search. Keyed by section key; only
+  // sections with at least one match appear. Recomputed when the query or the
+  // underlying section text changes.
+  const specMatchCounts = useMemo(() => {
+    const needle = specSearch.trim().toLowerCase();
+    const counts: Record<string, number> = {};
+    if (!needle) return counts;
+    for (const s of (specSections || [])) {
+      // Count against the live editor buffer for the section being edited so the
+      // chips and counter stay accurate while the inventor types.
+      const source = editingSection === s.key ? editContent : (s.content || '');
+      const hay = source.toLowerCase();
+      let n = 0;
+      let i = hay.indexOf(needle);
+      while (i !== -1) { n++; i = hay.indexOf(needle, i + needle.length); }
+      if (n > 0) counts[s.key] = n;
+    }
+    return counts;
+  }, [specSections, specSearch, editingSection, editContent]);
+
+  // The text currently shown for the active section — the live editor buffer
+  // when that section is being edited, otherwise the saved content. Search runs
+  // against whichever the inventor is actually looking at, so it works in edit
+  // mode as well as read mode.
+  const isEditingActiveSection = editingSection === activeSpecSection;
+  const activeSectionText = isEditingActiveSection
+    ? editContent
+    : (specSections?.find((s) => s.key === activeSpecSection)?.content || '');
+
+  // Offsets of every match in the active section's text — drives read-mode
+  // scroll and edit-mode textarea selection.
+  const activeMatchOffsets = useMemo(() => {
+    const needle = specSearch.trim().toLowerCase();
+    const offs: number[] = [];
+    if (!needle) return offs;
+    const hay = activeSectionText.toLowerCase();
+    let i = hay.indexOf(needle);
+    while (i !== -1) { offs.push(i); i = hay.indexOf(needle, i + needle.length); }
+    return offs;
+  }, [activeSectionText, specSearch]);
+  const activeSectionMatchCount = activeMatchOffsets.length;
+
+  // Move to the next/previous match (wraps). Only changes which match is active;
+  // the reveal effect below scrolls/selects it in whichever mode is showing.
+  const goToMatch = (dir: 1 | -1) => {
+    const n = activeSectionMatchCount;
+    if (n === 0) return;
+    setActiveMatchIndex((i) => (i + dir + n) % n);
+  };
+
+  // Reset to the first match whenever the query or the active section changes.
+  useEffect(() => { setActiveMatchIndex(0); }, [specSearch, activeSpecSection]);
+
+  // Read mode: scroll the active (emphasized) match into view. Edit mode does
+  // its own scroll-to-match inside HighlightedTextarea (it owns the textarea and
+  // its highlight backdrop), so this only runs in read mode.
+  useEffect(() => {
+    if (!specSearch.trim() || isEditingActiveSection) return;
+    const el = specContentRef.current?.querySelector('#spec-active-match');
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [specSearch, activeSpecSection, activeMatchIndex, isEditingActiveSection]);
 
   // Genus & Species workflow status.
   // Primary source: agent5Data (already fetched). When a stage is actively
@@ -173,6 +344,28 @@ export default function Agent5() {
     return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
   };
 
+  // Warn-before-overwrite: when finalize/apply-to-draft would replace a section
+  // the inventor hand-edited on the Showcase, the server returns 409 with the
+  // affected section keys. We surface a confirm dialog instead of silently
+  // losing edits; confirming re-invokes the same action with confirmOverwrite.
+  const SECTION_LABELS: Record<string, string> = {
+    title: "Title",
+    background: "Background",
+    summary: "Summary",
+    detailed_description: "Detailed Description",
+    ramifications_and_scope: "Ramifications & Scope",
+    abstract: "Abstract",
+    claims: "Key Concepts",
+  };
+  const [overwriteConflict, setOverwriteConflict] = useState<{ kind: "finalize" | "apply"; sections: string[] } | null>(null);
+  const confirmOverwriteAndRetry = () => {
+    if (!overwriteConflict) return;
+    const { kind } = overwriteConflict;
+    setOverwriteConflict(null);
+    if (kind === "finalize") gsFinalizeMutation.mutate({ confirmOverwrite: true });
+    else applyToDraftMutation.mutate({ confirmOverwrite: true });
+  };
+
   const gsStartMutation = useMutation({
     mutationFn: async () => apiRequest("POST", `/api/projects/${projectId}/genus-species/start`, {}),
     onMutate: () => { setGsRunInFlight(true); },
@@ -201,7 +394,7 @@ export default function Agent5() {
   });
 
   const gsFinalizeMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (opts?: { confirmOverwrite?: boolean }) => {
       const approvals: Record<string, string> = {};
       const edits: Record<string, string> = {};
       for (const [id, d] of Object.entries(gsGate2Decisions)) {
@@ -222,7 +415,7 @@ export default function Agent5() {
           tags: ["implementation_detail", "differentiation"],
         });
       }
-      return apiRequest("POST", `/api/projects/${projectId}/genus-species/finalize`, { approvals, edits });
+      return apiRequest("POST", `/api/projects/${projectId}/genus-species/finalize`, { approvals, edits, confirmOverwrite: opts?.confirmOverwrite });
     },
     onSuccess: () => {
       toast({ title: "Expansion finalized", description: "Your provisional draft has been broadened." });
@@ -230,7 +423,13 @@ export default function Agent5() {
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "specification-sections"] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "genus-species-status"] });
     },
-    onError: (e: Error) => toast({ title: "Finalization failed", description: e.message }),
+    onError: (e: any) => {
+      if (e?.status === 409 && e?.body?.needsConfirmation) {
+        setOverwriteConflict({ kind: "finalize", sections: e.body.editedSections || [] });
+        return;
+      }
+      toast({ title: "Finalization failed", description: e?.message });
+    },
   });
 
   // Per-artifact regeneration — surfaced as a "Regenerate" button on every
@@ -260,13 +459,19 @@ export default function Agent5() {
   });
 
   const applyToDraftMutation = useMutation({
-    mutationFn: () => apiRequest("POST", `/api/projects/${projectId}/genus-species/apply-to-draft`, {}),
+    mutationFn: (opts?: { confirmOverwrite?: boolean }) => apiRequest("POST", `/api/projects/${projectId}/genus-species/apply-to-draft`, { confirmOverwrite: opts?.confirmOverwrite }),
     onSuccess: () => {
       toast({ title: "Draft updated", description: "Your provisional draft has been updated with the expanded content." });
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 5] });
       queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "specification-sections"] });
     },
-    onError: (e: Error) => toast({ title: "Failed to apply to draft", description: e.message }),
+    onError: (e: any) => {
+      if (e?.status === 409 && e?.body?.needsConfirmation) {
+        setOverwriteConflict({ kind: "apply", sections: e.body.editedSections || [] });
+        return;
+      }
+      toast({ title: "Failed to apply to draft", description: e?.message });
+    },
   });
 
   const saveSpecSectionMutation = useMutation({
@@ -534,7 +739,10 @@ export default function Agent5() {
 
   const regenerateDraftMutation = useMutation({
     mutationFn: async () => {
-      await apiRequest("POST", `/api/projects/${projectId}/regenerate-draft`, {});
+      // This action has its own explicit "Re-generate the whole draft?" dialog
+      // (which already warns that hand edits are lost), so we pass the confirm
+      // flag directly. The server-side 409 gate remains as defense-in-depth.
+      await apiRequest("POST", `/api/projects/${projectId}/regenerate-draft`, { confirmOverwrite: true });
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 5] });
@@ -1472,7 +1680,7 @@ export default function Agent5() {
                               </div>
                             );
                           })}
-                          <Button size="sm" onClick={() => gsFinalizeMutation.mutate()} disabled={gsFinalizeMutation.isPending}>
+                          <Button size="sm" onClick={() => gsFinalizeMutation.mutate({})} disabled={gsFinalizeMutation.isPending}>
                             {gsFinalizeMutation.isPending ? <><Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin"/>Finalizing…</> : "Finalize Expansion"}
                           </Button>
                         </div>
@@ -1488,7 +1696,7 @@ export default function Agent5() {
                               {alreadyApplied ? "Expansion applied to your provisional draft." : "Expansion complete."}
                             </div>
                             <button
-                              onClick={() => applyToDraftMutation.mutate()}
+                              onClick={() => applyToDraftMutation.mutate({})}
                               disabled={applyToDraftMutation.isPending || alreadyApplied}
                               title={alreadyApplied ? "Already applied — applying again would duplicate the extensions" : undefined}
                               className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1564,6 +1772,70 @@ export default function Agent5() {
                         </div>
                       </div>
                       <div className="flex-1 min-w-0">
+                        {/* Draft search — paste a phrase the Helper flagged to locate it across sections */}
+                        <div className="mb-3">
+                          <div className="flex items-center gap-2">
+                            <div className="relative flex-1">
+                              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                              <input
+                                data-testid="input-spec-search"
+                                value={specSearch}
+                                onChange={(e) => setSpecSearch(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') { e.preventDefault(); goToMatch(e.shiftKey ? -1 : 1); }
+                                }}
+                                placeholder="Search the draft — paste a phrase the assistant flagged…"
+                                className="w-full h-9 rounded-md border border-input bg-background pl-8 pr-8 text-sm"
+                              />
+                              {specSearch && (
+                                <button
+                                  type="button"
+                                  data-testid="button-spec-search-clear"
+                                  onClick={() => setSpecSearch('')}
+                                  aria-label="Clear search"
+                                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                                >
+                                  <X className="h-4 w-4" />
+                                </button>
+                              )}
+                            </div>
+                            {specSearch.trim() && activeSectionMatchCount > 0 && (
+                              <span className="text-xs tabular-nums text-muted-foreground shrink-0 px-1" data-testid="text-spec-search-counter">
+                                {Math.min(activeMatchIndex, activeSectionMatchCount - 1) + 1}/{activeSectionMatchCount}
+                                {activeSectionMatchCount > 1 && <span className="ml-1 opacity-70">· Enter for next</span>}
+                              </span>
+                            )}
+                          </div>
+                          {specSearch.trim() && (
+                            <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs" data-testid="spec-search-results">
+                              {Object.keys(specMatchCounts).length === 0 ? (
+                                <span className="text-muted-foreground">No matches in any section.</span>
+                              ) : (
+                                <>
+                                  <span className="text-muted-foreground">Found in:</span>
+                                  {SPEC_TABS.filter((t) => specMatchCounts[t.key]).map((t) => (
+                                    <button
+                                      key={t.key}
+                                      type="button"
+                                      data-testid={`spec-search-jump-${t.key}`}
+                                      onClick={() => {
+                                        setActiveSpecSection(t.key);
+                                        if (editingSection && editingSection !== t.key) setEditingSection(null);
+                                      }}
+                                      className={`px-2 py-0.5 rounded border transition-colors ${
+                                        activeSpecSection === t.key
+                                          ? 'bg-primary text-primary-foreground border-primary'
+                                          : 'border-input hover-elevate'
+                                      }`}
+                                    >
+                                      {t.label} ({specMatchCounts[t.key]})
+                                    </button>
+                                  ))}
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
                         {(() => {
                           const currentSection = specSections?.find(s => s.key === activeSpecSection);
                           const sectionContent = currentSection?.content || '';
@@ -1615,20 +1887,25 @@ export default function Agent5() {
                                 )}
                               </div>
                               {isEditing ? (
-                                <div data-color-mode="auto">
-                                  <Suspense fallback={<div className="flex items-center justify-center h-75"><Loader2 className="h-6 w-6 animate-spin text-primary" /></div>}>
-                                    <MDEditor
-                                      value={editContent}
-                                      onChange={(val) => setEditContent(val || '')}
-                                      height={activeSpecSection === 'title' ? 200 : 300}
-                                      preview="edit"
-                                    />
-                                  </Suspense>
-                                </div>
+                                <HighlightedTextarea
+                                  value={editContent}
+                                  onChange={setEditContent}
+                                  query={specSearch}
+                                  activeIndex={activeMatchIndex}
+                                  height={activeSpecSection === 'title' ? 200 : 320}
+                                  spellCheck
+                                  dataTestid={`textarea-edit-${activeSpecSection}`}
+                                />
                               ) : (
-                                <div className="bg-muted p-3 sm:p-6 rounded-lg text-xs sm:text-sm leading-relaxed max-h-100 sm:max-h-150 overflow-y-auto prose prose-sm dark:prose-invert max-w-none">
+                                <div ref={specContentRef} className="bg-muted p-3 sm:p-6 rounded-lg text-xs sm:text-sm leading-relaxed max-h-100 sm:max-h-150 overflow-y-auto prose prose-sm dark:prose-invert max-w-none">
                                   {sectionContent ? (
-                                    <ReactMarkdown>{sectionContent}</ReactMarkdown>
+                                    specSearch.trim() ? (
+                                      <div className="whitespace-pre-wrap">
+                                        <HighlightedDraftText text={sectionContent} query={specSearch} activeIndex={activeMatchIndex} />
+                                      </div>
+                                    ) : (
+                                      <ReactMarkdown>{sectionContent}</ReactMarkdown>
+                                    )
                                   ) : (
                                     <p className="text-muted-foreground">No content for this section yet.</p>
                                   )}
@@ -1838,6 +2115,23 @@ export default function Agent5() {
           </div>
         </div>
       </main>
+
+      <AlertDialog open={!!overwriteConflict} onOpenChange={(o) => { if (!o) setOverwriteConflict(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>This will overwrite your edits</AlertDialogTitle>
+            <AlertDialogDescription>
+              You've made manual edits to{" "}
+              <strong>{(overwriteConflict?.sections ?? []).map((s) => SECTION_LABELS[s] ?? s).join(", ")}</strong>.{" "}
+              Continuing will replace {(overwriteConflict?.sections.length ?? 0) > 1 ? "those sections" : "that section"} with the newly generated text, and your edits there will be lost. Your other edits are not affected.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-overwrite-cancel" onClick={() => setOverwriteConflict(null)}>Cancel — keep my edits</AlertDialogCancel>
+            <AlertDialogAction data-testid="button-overwrite-confirm" onClick={confirmOverwriteAndRetry}>Replace my edits</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={showRegenerateDialog} onOpenChange={setShowRegenerateDialog}>
         <AlertDialogContent>

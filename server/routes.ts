@@ -5263,6 +5263,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         selectedKeyConcepts: formattedConcepts
       };
 
+      // Warn-before-overwrite: regenerate replaces the ENTIRE draft (all 7
+      // sections) from the upstream Agent 4 concepts, so any hand-edited section
+      // on the Showcase would be lost. Abort with 409 before the n8n webhook runs
+      // if there are hand-edits and the client hasn't confirmed.
+      const a5Pre = await storage.getAgentData(req.params.id, 5);
+      const a5PreEdits = ((a5Pre?.data as any)?.manualEdits ?? {}) as Record<string, any>;
+      const regenConflicts = ['title', 'background', 'summary', 'detailed_description', 'ramifications_and_scope', 'abstract', 'claims'].filter((s) => a5PreEdits[s]);
+      if (regenConflicts.length > 0 && req.body.confirmOverwrite !== true) {
+        return res.status(409).json({ needsConfirmation: true, editedSections: regenConflicts });
+      }
+
       console.log("Calling provisional patent writing webhook for regeneration...");
       const rawWebhookResponse: any = await runProvisional(webhookPayload);
       if (rawWebhookResponse && rawWebhookResponse.success === false) {
@@ -5301,6 +5312,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           data: {
             ...agent5DataObj,
             provisionalDraft, // Update the draft but keep diagrams
+            manualEdits: {}, // whole draft regenerated — all hand-edit markers are now stale
           },
         });
       }
@@ -6221,7 +6233,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         parsedDraft[section] = content;
       }
 
-      await storage.mergeAgentData(req.params.id, 5, { provisionalDraft: parsedDraft });
+      // Mark this section as hand-edited so the regeneration routes (finalize,
+      // apply-to-draft, regenerate-draft) can warn before overwriting it.
+      // mergeAgentData is a shallow jsonb `||` merge, so we read-modify-write
+      // the FULL manualEdits object — a nested partial would drop sibling markers.
+      const manualEdits = { ...((agent5Obj?.manualEdits as Record<string, any>) ?? {}) };
+      manualEdits[section] = { editedAt: new Date().toISOString() };
+
+      await storage.mergeAgentData(req.params.id, 5, { provisionalDraft: parsedDraft, manualEdits });
 
       // Provenance: each saved section is a new version of the disclosure.
       // The canonical payload is the whole merged draft so the proof
@@ -6578,6 +6597,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const finalSpec = finalizeApprovals(gsState, approvals, edits);
+
+      // Warn-before-overwrite gate. finalize REPLACES abstract (when the rewrite
+      // is non-empty) and the Key Concepts; background/summary/detailed_description
+      // are APPENDED, so they can't lose edits and never warn. If a section that
+      // will be replaced was hand-edited on the Showcase (tracked in
+      // a5.manualEdits) and the client hasn't confirmed, abort with 409 before any
+      // state is built or persisted.
+      const finalizeAbstractText = pluckText(finalSpec, "abstractText") || pluckText(finalSpec?.abstractText, "abstract_text") || (typeof finalSpec?.abstractText === "string" ? finalSpec.abstractText : "");
+      const finalizeConceptCount =
+        ((finalSpec?.keyConceptsBroadened || []).map((b: any) => pluckText(b, "broadened_concept_text")).filter(Boolean).length) +
+        ((finalSpec?.keyConceptsAppended || []).map((a: any) => pluckText(a, "key_concept_text")).filter(Boolean).length);
+      const finalizeWillReplace: string[] = [];
+      if (finalizeAbstractText) finalizeWillReplace.push("abstract");
+      if (finalizeConceptCount > 0) finalizeWillReplace.push("claims");
+      const finalizeConflicts = finalizeWillReplace.filter((s) => ((a5?.manualEdits as Record<string, any>) ?? {})[s]);
+      if (finalizeConflicts.length > 0 && req.body.confirmOverwrite !== true) {
+        return res.status(409).json({ needsConfirmation: true, editedSections: finalizeConflicts });
+      }
+
       // Finalize already writes the expansion into provisionalDraft below, so
       // mark it as applied to prevent the Apply-to-Draft button from being
       // active afterward (it would duplicate-append the extensions).
@@ -6652,6 +6690,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const mergePayload: any = { genusSpecies: completed };
       if (updatedDraft) mergePayload.provisionalDraft = updatedDraft;
+      // Clear hand-edit markers for the sections finalize actually replaced (the
+      // draft was written and the inventor confirmed, or had no edits there).
+      // Append-only sections keep their markers since their edits survive.
+      if (updatedDraft && finalizeWillReplace.length > 0) {
+        const nextManualEdits = { ...((a5?.manualEdits as Record<string, any>) ?? {}) };
+        for (const s of finalizeWillReplace) delete nextManualEdits[s];
+        mergePayload.manualEdits = nextManualEdits;
+      }
       await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...a5, ...mergePayload } });
 
       // Provenance: G&S finalize is a checkpoint.
@@ -6780,6 +6826,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         draft.keyConcepts_count = allConcepts.length;
       }
 
+      // Warn-before-overwrite gate. apply-to-draft REPLACES abstract (when the
+      // rewrite is non-empty) and the Key Concepts; the other sections are
+      // appended and can't lose edits. Nothing is persisted until the upsert
+      // below, so returning here leaves the draft untouched.
+      const applyWillReplace: string[] = [];
+      if (abstractText) applyWillReplace.push("abstract");
+      if (allConcepts.length > 0) applyWillReplace.push("claims");
+      const applyConflicts = applyWillReplace.filter((s) => ((a5?.manualEdits as Record<string, any>) ?? {})[s]);
+      if (applyConflicts.length > 0 && req.body.confirmOverwrite !== true) {
+        return res.status(409).json({ needsConfirmation: true, editedSections: applyConflicts });
+      }
+
       // Record that the expansion has been applied to the draft so the
       // frontend can permanently disable the "Apply to Provisional Draft"
       // button — applying twice would just duplicate-append the extensions.
@@ -6788,7 +6846,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         appliedToDraft: true,
         appliedToDraftAt: new Date().toISOString(),
       };
-      await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...a5, provisionalDraft: draft, genusSpecies: updatedGs } });
+      // Clear hand-edit markers for the sections we just replaced. Append-only
+      // sections keep theirs since their edits survive the append.
+      const applyManualEdits = { ...((a5?.manualEdits as Record<string, any>) ?? {}) };
+      for (const s of applyWillReplace) delete applyManualEdits[s];
+      await storage.upsertAgentData({ projectId: req.params.id, agentNumber: 5, data: { ...a5, provisionalDraft: draft, genusSpecies: updatedGs, manualEdits: applyManualEdits } });
 
       // Provenance: G&S expansion merged into the draft — this is a major
       // version of the disclosure (background, summary, detailed_description,
