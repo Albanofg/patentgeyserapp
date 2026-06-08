@@ -58,7 +58,21 @@ export async function runDraft(payload: DraftPayload) {
     // can no longer emit. The defensive sentinel detection below stays as
     // belt-and-suspenders in case the model ever returns a sentinel for a
     // reason we haven't anticipated.
-    const inventorFeedback = stringify(payload.refinementFeedback).trim();
+    // Merge BOTH inventor-direction fields into the one authoritative channel.
+    // "Additional Notes" (used on the initial Expand Idea pass) and "Refinement
+    // Feedback" (used on Regenerate) are two separate UI boxes. Previously only
+    // refinementFeedback reached the model and additionalNotes was silently
+    // dropped — so an inventor who pasted constraints into Additional Notes saw
+    // them vanish from the spec, and the engine re-asked for detail it had
+    // already been given. Both now flow into INVENTOR-CONFIRMED CANDIDATES,
+    // which LAW_11 of draft.md treats as binding, full-specificity inventor
+    // direction — so the inventor's intent is honored regardless of which box
+    // they used.
+    const inventorFeedback = [payload.refinementFeedback, payload.additionalNotes]
+      .map(stringify)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .join("\n\n");
     const userMessage =
       `IDEA SUMMARY:\n${stringify(payload.ideaSummary)}\n\n` +
       `GOOD COP ANALYSIS:\n${stringify(payload.goodCopInsights)}\n\n` +

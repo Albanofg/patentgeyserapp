@@ -151,6 +151,8 @@ export default function Agent4Pannu() {
     missing?: string[];
   }>>>({});
   const [loadingAiSuggestion, setLoadingAiSuggestion] = useState<string | null>(null);
+  // conceptId currently being chain-filled by the "all three" button, or null.
+  const [fillingAll, setFillingAll] = useState<string | null>(null);
   const [generationStep, setGenerationStep] = useState<GenerationStep>('idle');
   const [visibleSteps, setVisibleSteps] = useState(0);
   const [generationStart, setGenerationStart] = useState<number | null>(null);
@@ -640,6 +642,55 @@ export default function Agent4Pannu() {
     getAiSuggestionMutation.mutate({ claim, question, factor, userDraft });
   };
 
+  // Run "Use what I already wrote" for a single factor: call the summarizer
+  // prefill endpoint and drop the result into that factor's answer, falling
+  // back to the deterministic concat draft on failure. Returns false when the
+  // factor has nothing captured upstream (so the chain below can skip it).
+  const applyPrefillForFactor = async (claim: ClaimForValidation, factor: string): Promise<boolean> => {
+    const prefillDraft = (prefillMeta[claim.conceptId]?.[factor]?.draft || "").trim();
+    if (prefillDraft.length === 0) return false;
+    const busyKey = `${claim.conceptId}-${factor}-prefill`;
+    setLoadingAiSuggestion(busyKey);
+    try {
+      const res = await fetch(
+        `/api/projects/${projectId}/pannu/prefill?conceptId=${encodeURIComponent(claim.conceptId)}&summarize=true&factor=${encodeURIComponent(factor)}`,
+        { credentials: "include" },
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const f = data?.factors?.[factor];
+        const draft = typeof f?.draft === "string" ? f.draft.trim() : "";
+        if (draft.length > 0) {
+          updateAnswer(claim.conceptId, factor, draft);
+          return true;
+        }
+      }
+      updateAnswer(claim.conceptId, factor, prefillDraft);
+      return true;
+    } catch (e) {
+      console.warn("[pannu] summarize-on-click failed:", e);
+      updateAnswer(claim.conceptId, factor, prefillDraft);
+      return true;
+    } finally {
+      setLoadingAiSuggestion(null);
+    }
+  };
+
+  // Chain all factors for one concept: fill the first, then the next, then the
+  // next — one after another, in the order the questions are shown. Factors
+  // with no captured upstream input are skipped silently.
+  const useAllPrefills = async (claim: ClaimForValidation, factors: string[]) => {
+    if (fillingAll) return;
+    setFillingAll(claim.conceptId);
+    try {
+      for (const factor of factors) {
+        await applyPrefillForFactor(claim, factor);
+      }
+    } finally {
+      setFillingAll(null);
+    }
+  };
+
   // ── Page snapshot for the AI Helper ─────────────────────────────────────
   // Pannu validation page. Per concept: status (pending/answering/certified/
   // needs_clarification/rejected/skipped), generated questions, and three
@@ -1086,6 +1137,41 @@ export default function Agent4Pannu() {
                         {(state.status === 'answering' || state.status === 'needs_clarification') && Array.isArray(state.questions) && state.questions.length > 0 && (
                           <div className="space-y-4">
                             <h4 className="font-medium text-sm">Answer the following questions about your contribution:</h4>
+                            {(() => {
+                              const factors = state.questions.map((q) => q.factor);
+                              const anyPrefill = factors.some(
+                                (f) => (prefillMeta[claim.conceptId]?.[f]?.draft || "").trim().length > 0,
+                              );
+                              const busy = fillingAll === claim.conceptId;
+                              return (
+                                <div className="flex justify-end">
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={() => useAllPrefills(claim, factors)}
+                                    disabled={!anyPrefill || busy}
+                                    data-testid={`button-insert-prefill-all-${index}`}
+                                    title={
+                                      anyPrefill
+                                        ? "Fill all answers from what you already wrote across the app — one after another. Edit freely after."
+                                        : "Nothing captured upstream yet for these factors."
+                                    }
+                                  >
+                                    {busy ? (
+                                      <>
+                                        <Loader2 className="h-3 w-3 mr-2 animate-spin" />
+                                        Filling all…
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Sparkles className="h-3 w-3 mr-2" />
+                                        Use what I already wrote (all)
+                                      </>
+                                    )}
+                                  </Button>
+                                </div>
+                              );
+                            })()}
                             {state.questions.map((q, qIndex) => {
                               const suggestionKey = `${claim.conceptId}-${q.factor}`;
                               const isLoadingSuggestion = loadingAiSuggestion === suggestionKey;
@@ -1097,35 +1183,10 @@ export default function Agent4Pannu() {
                               const currentText = claimAnswers[q.factor] || '';
                               const prefillBusyKey = `${claim.conceptId}-${q.factor}-prefill`;
                               const isPrefillBusy = loadingAiSuggestion === prefillBusyKey;
-                              // Click → run the purpose-built summarizer for this single factor.
-                              // The summarizer prompt always produces a draft (no insufficient
-                              // branch). On network/parse failure, fall back to the clean
-                              // deterministic concat so the field is never empty.
-                              const insertPrefill = async () => {
-                                if (!hasPrefill || isPrefillBusy) return;
-                                setLoadingAiSuggestion(prefillBusyKey);
-                                try {
-                                  const res = await fetch(
-                                    `/api/projects/${projectId}/pannu/prefill?conceptId=${encodeURIComponent(claim.conceptId)}&summarize=true&factor=${encodeURIComponent(q.factor)}`,
-                                    { credentials: "include" },
-                                  );
-                                  if (res.ok) {
-                                    const data = await res.json();
-                                    const f = data?.factors?.[q.factor];
-                                    const draft = typeof f?.draft === "string" ? f.draft.trim() : "";
-                                    if (draft.length > 0) {
-                                      updateAnswer(claim.conceptId, q.factor, draft);
-                                      return;
-                                    }
-                                  }
-                                  updateAnswer(claim.conceptId, q.factor, prefillDraft);
-                                } catch (e) {
-                                  console.warn("[pannu] summarize-on-click failed:", e);
-                                  updateAnswer(claim.conceptId, q.factor, prefillDraft);
-                                } finally {
-                                  setLoadingAiSuggestion(null);
-                                }
-                              };
+                              // Click → run the purpose-built summarizer for this single
+                              // factor. Delegates to the shared per-factor prefill so this
+                              // button and the "all three" chain button behave identically.
+                              const insertPrefill = () => applyPrefillForFactor(claim, q.factor);
 
                               return (
                                 <div key={q.factor} className="space-y-2 border-l-2 border-muted pl-3">
@@ -1183,7 +1244,7 @@ export default function Agent4Pannu() {
                                       variant="outline"
                                       size="sm"
                                       onClick={insertPrefill}
-                                      disabled={!hasPrefill || isPrefillBusy}
+                                      disabled={!hasPrefill || isPrefillBusy || fillingAll === claim.conceptId}
                                       data-testid={`button-insert-prefill-${index}-${qIndex}`}
                                       title={
                                         hasPrefill

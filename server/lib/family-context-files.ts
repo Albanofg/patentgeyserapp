@@ -106,14 +106,100 @@ export function validateUpload(input: { mimeType: string; fileBytesB64: string }
   return null;
 }
 
-// Extract plain text and a one-line summary via a SINGLE Gemini call.
-// For text/plain and text/markdown we skip the model and base64-decode
-// directly — no AI cost at all.
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+// DOCX → plain text, locally. A .docx is a zip whose body text lives in
+// word/document.xml inside <w:t> runs (paragraphs marked by <w:p>). Gemini
+// rejects the Office MIME type when sent as inlineData, so a DOCX must be read
+// here rather than handed to the model. We reuse the jszip that ships
+// transitively with the `docx` dependency — no new package required.
+async function extractDocxText(fileBytesB64: string): Promise<string> {
+  const mod: any = await import("jszip");
+  const JSZip = mod.default ?? mod;
+  const zip = await JSZip.loadAsync(Buffer.from(fileBytesB64, "base64"));
+  const entry = zip.file("word/document.xml");
+  if (!entry) throw new Error("DOCX is missing word/document.xml — the file may be corrupt or not a real .docx.");
+  const xml: string = await entry.async("string");
+  return xml
+    .replace(/<w:tab\b[^>]*\/?>/g, "\t")
+    .replace(/<w:br\b[^>]*\/?>/g, "\n")
+    .replace(/<\/w:p>/g, "\n")
+    .replace(/<[^>]+>/g, "")        // strip remaining tags, keep the text nodes
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&")         // ampersand last so we don't double-decode
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// One-line summary of already-extracted plain text (used for DOCX, whose body
+// was read locally). Never throws — a summarization hiccup must not fail an
+// otherwise-successful extraction, so it falls back to a generic label.
+async function summarizeExtractedText(text: string, originalFilename: string): Promise<string> {
+  try {
+    const result = await gemini.models.generateContent({
+      model: EXTRACT_MODEL,
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: [
+                "You are summarizing a previously-filed patent or patent-related document",
+                "for use as context in a different patent project.",
+                'Return JSON: { "summary": ONE sentence, max 200 characters, plain language,',
+                "no legal vocabulary, describing what this document is about }.",
+                `Filename: ${originalFilename}`,
+                "",
+                "DOCUMENT TEXT:",
+                text.slice(0, 100_000),
+              ].join("\n"),
+            },
+          ],
+        },
+      ],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "object",
+          properties: { summary: { type: "string" } },
+          required: ["summary"],
+        },
+      },
+    });
+    const parsed = JSON.parse(result.text ?? "{}");
+    if (parsed?.summary) return String(parsed.summary).slice(0, 240);
+  } catch { /* fall through to default */ }
+  return "Reference patent document (summary unavailable).";
+}
+
+// Extract plain text and a one-line summary.
+//   - PDF: sent inline to Gemini, which extracts and summarizes in one call.
+//   - DOCX: read locally (Gemini cannot ingest the Office MIME type), then
+//     summarized from the extracted text.
 async function extractTextAndSummarize(args: {
   mimeType: string;
   fileBytesB64: string;
   originalFilename: string;
 }): Promise<{ ok: true; text: string; summary: string } | { ok: false; error: string }> {
+  if (args.mimeType === DOCX_MIME) {
+    let docText: string;
+    try {
+      docText = await extractDocxText(args.fileBytesB64);
+    } catch (err: any) {
+      return { ok: false, error: err?.message ?? "Failed to read the DOCX file." };
+    }
+    if (!docText.trim()) {
+      return { ok: false, error: "No readable text was found in the DOCX." };
+    }
+    const summary = await summarizeExtractedText(docText, args.originalFilename);
+    return { ok: true, text: docText, summary };
+  }
+
   try {
     const prompt = [
       "You are extracting reference content from a previously-filed patent or",
