@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo, type ReactNode } from "react";
 import { usePageSnapshot, type PageSnapshot } from "@/lib/page-snapshot";
+import { findDraftMatches } from "@shared/draft-match";
 import { useRoute, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -40,16 +41,13 @@ const SPEC_TABS = [
 // Powers the Showcase draft search: an inventor pastes a phrase the Helper
 // flagged and sees exactly where it sits in the section text.
 function HighlightedDraftText({ text, query, activeIndex, overlay = false }: { text: string; query: string; activeIndex: number; overlay?: boolean }) {
-  const needle = query.trim().toLowerCase();
-  if (!needle) return <>{text}</>;
+  const matches = findDraftMatches(text, query);
+  if (matches.length === 0) return <>{text}</>;
   const parts: ReactNode[] = [];
-  const lower = text.toLowerCase();
   let from = 0;
-  let idx = lower.indexOf(needle, from);
-  let matchNo = 0;
   let key = 0;
-  while (idx !== -1) {
-    if (idx > from) parts.push(text.slice(from, idx));
+  matches.forEach((m, matchNo) => {
+    if (m.start > from) parts.push(text.slice(from, m.start));
     const isActive = matchNo === activeIndex;
     // Overlay marks sit BEHIND an editable textarea, so they must add no
     // horizontal padding (it would drift the highlight out of alignment) and no
@@ -60,13 +58,11 @@ function HighlightedDraftText({ text, query, activeIndex, overlay = false }: { t
       : `rounded px-0.5 text-black ${isActive ? 'bg-orange-400 ring-2 ring-orange-500' : 'bg-yellow-300'}`;
     parts.push(
       <mark key={key++} id={isActive ? 'spec-active-match' : undefined} className={cls}>
-        {text.slice(idx, idx + needle.length)}
+        {text.slice(m.start, m.end)}
       </mark>
     );
-    matchNo++;
-    from = idx + needle.length;
-    idx = lower.indexOf(needle, from);
-  }
+    from = m.end;
+  });
   parts.push(text.slice(from));
   return <>{parts}</>;
 }
@@ -179,17 +175,13 @@ export default function Agent5() {
   // sections with at least one match appear. Recomputed when the query or the
   // underlying section text changes.
   const specMatchCounts = useMemo(() => {
-    const needle = specSearch.trim().toLowerCase();
     const counts: Record<string, number> = {};
-    if (!needle) return counts;
+    if (!specSearch.trim()) return counts;
     for (const s of (specSections || [])) {
       // Count against the live editor buffer for the section being edited so the
       // chips and counter stay accurate while the inventor types.
       const source = editingSection === s.key ? editContent : (s.content || '');
-      const hay = source.toLowerCase();
-      let n = 0;
-      let i = hay.indexOf(needle);
-      while (i !== -1) { n++; i = hay.indexOf(needle, i + needle.length); }
+      const n = findDraftMatches(source, specSearch).length;
       if (n > 0) counts[s.key] = n;
     }
     return counts;
@@ -204,18 +196,13 @@ export default function Agent5() {
     ? editContent
     : (specSections?.find((s) => s.key === activeSpecSection)?.content || '');
 
-  // Offsets of every match in the active section's text — drives read-mode
-  // scroll and edit-mode textarea selection.
-  const activeMatchOffsets = useMemo(() => {
-    const needle = specSearch.trim().toLowerCase();
-    const offs: number[] = [];
-    if (!needle) return offs;
-    const hay = activeSectionText.toLowerCase();
-    let i = hay.indexOf(needle);
-    while (i !== -1) { offs.push(i); i = hay.indexOf(needle, i + needle.length); }
-    return offs;
-  }, [activeSectionText, specSearch]);
-  const activeSectionMatchCount = activeMatchOffsets.length;
+  // Every match in the active section's text — drives the match counter and
+  // read-mode scroll (the highlight ranges themselves come from the renderer).
+  const activeMatches = useMemo(
+    () => findDraftMatches(activeSectionText, specSearch),
+    [activeSectionText, specSearch],
+  );
+  const activeSectionMatchCount = activeMatches.length;
 
   // Move to the next/previous match (wraps). Only changes which match is active;
   // the reveal effect below scrolls/selects it in whichever mode is showing.
@@ -817,7 +804,9 @@ export default function Agent5() {
       },
     });
 
-    // At Gate 1, list the species cards being reviewed
+    // At Gate 1, list the species cards being reviewed. The helper issues
+    // KEEP / EDIT verdicts on these, so it must see the actual generated
+    // text — not just a character count.
     if (gsStatusStr === "awaiting_gate1" && Array.isArray(gs?.species)) {
       gs.species.forEach((s: any, i: number) => {
         items.push({
@@ -827,13 +816,18 @@ export default function Agent5() {
           content: {
             species_type: s?.species_type,
             failed: !!s?.failed,
-            architectural_description_length: typeof s?.architectural_description === "string" ? s.architectural_description.length : 0,
+            architectural_description: typeof s?.architectural_description === "string" ? s.architectural_description : null,
           },
         });
       });
     }
 
-    // At Gate 2, list every artifact being reviewed (with which are empty)
+    // At Gate 2, list every artifact being reviewed. CRITICAL: the text shown
+    // on each card is the freshly GENERATED text (broadened_concept_text,
+    // key_concept_text, …) — that is what the helper must read and judge.
+    // The pre-expansion baseline is included only as clearly-labeled history;
+    // omitting the generated text (as this snapshot once did) made the helper
+    // quote stale commercial names that were no longer on the user's screen.
     if (gsStatusStr === "awaiting_gate2") {
       (gs?.broadenings || []).forEach((b: any, i: number) => {
         items.push({
@@ -842,9 +836,9 @@ export default function Agent5() {
           editable: false,
           content: {
             kind: "broadening",
-            original_key_concept: b?.original_key_concept ?? null,
+            current_text_on_card: b?.broadened_concept_text ?? null,
+            superseded_pre_expansion_baseline: b?.original_key_concept ?? null,
             empty: !b?.broadened_concept_text,
-            length: typeof b?.broadened_concept_text === "string" ? b.broadened_concept_text.length : 0,
           },
         });
       });
@@ -856,19 +850,21 @@ export default function Agent5() {
           content: {
             kind: "appending",
             concept_aspect: a?.concept_aspect,
+            current_text_on_card: a?.key_concept_text ?? null,
             empty: !a?.key_concept_text,
-            length: typeof a?.key_concept_text === "string" ? a.key_concept_text.length : 0,
           },
         });
       });
       if (gs?.backgroundExtension) {
-        items.push({ id: "Background Extension", type: "gs_artifact", editable: false, content: { kind: "background_extension", empty: !(gs.backgroundExtension.additional_paragraphs || (typeof gs.backgroundExtension === "string" && gs.backgroundExtension)) } });
+        const bgText = gs.backgroundExtension.additional_paragraphs || (typeof gs.backgroundExtension === "string" ? gs.backgroundExtension : null);
+        items.push({ id: "Background Extension", type: "gs_artifact", editable: false, content: { kind: "background_extension", current_text_on_card: bgText || null, empty: !bgText } });
       }
       if (gs?.summaryExtension) {
-        items.push({ id: "Summary Extension", type: "gs_artifact", editable: false, content: { kind: "summary_extension", empty: !(gs.summaryExtension.additional_paragraphs || (typeof gs.summaryExtension === "string" && gs.summaryExtension)) } });
+        const smText = gs.summaryExtension.additional_paragraphs || (typeof gs.summaryExtension === "string" ? gs.summaryExtension : null);
+        items.push({ id: "Summary Extension", type: "gs_artifact", editable: false, content: { kind: "summary_extension", current_text_on_card: smText || null, empty: !smText } });
       }
       if (gs?.abstractRewrite) {
-        items.push({ id: "Abstract Rewrite", type: "gs_artifact", editable: false, content: { kind: "abstract_rewrite", word_count: gs.abstractRewrite.word_count ?? null, empty: !gs.abstractRewrite.abstract_text } });
+        items.push({ id: "Abstract Rewrite", type: "gs_artifact", editable: false, content: { kind: "abstract_rewrite", current_text_on_card: gs.abstractRewrite.abstract_text ?? null, word_count: gs.abstractRewrite.word_count ?? null, empty: !gs.abstractRewrite.abstract_text } });
       }
     }
 
@@ -1781,6 +1777,18 @@ export default function Agent5() {
                                 data-testid="input-spec-search"
                                 value={specSearch}
                                 onChange={(e) => setSpecSearch(e.target.value)}
+                                onPaste={(e) => {
+                                  // Browsers disagree on how a multi-line paste lands in a
+                                  // single-line input (some join lines with a space, some with
+                                  // nothing). Normalize ourselves so a pasted phrase always
+                                  // searches as written, with line breaks treated as spaces.
+                                  e.preventDefault();
+                                  const pasted = e.clipboardData.getData('text').replace(/\s+/g, ' ');
+                                  const el = e.currentTarget;
+                                  const start = el.selectionStart ?? el.value.length;
+                                  const end = el.selectionEnd ?? el.value.length;
+                                  setSpecSearch(el.value.slice(0, start) + pasted + el.value.slice(end));
+                                }}
                                 onKeyDown={(e) => {
                                   if (e.key === 'Enter') { e.preventDefault(); goToMatch(e.shiftKey ? -1 : 1); }
                                 }}

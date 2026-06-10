@@ -8,6 +8,7 @@ import { insertProjectSchema, aiUsageLog, provenanceEvents, provenanceStamps, pr
 import { runWithUsageContext } from "./ai/request-context";
 import { and as drizzleAnd, gte as drizzleGte, lte as drizzleLte, eq as drizzleEq, asc as drizzleAsc, desc as drizzleDesc, sql as drizzleSql } from "drizzle-orm";
 import { TERMS_VERSION } from "@shared/terms";
+import { applyDraftEdit, findDraftMatches } from "@shared/draft-match";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 import session from "express-session";
@@ -6260,6 +6261,99 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error("Update specification section error:", error);
       res.status(500).json({ message: "Failed to update section" });
+    }
+  });
+
+  // Apply one AI-Helper-proposed edit to the saved final draft. Called by the
+  // diff cards the chat UI renders for proposeDraftEdits tool calls. The match
+  // is whitespace-tolerant and must be unique; `find: ""` replaces the whole
+  // section. Persistence mirrors /update-specification-section exactly
+  // (manualEdits marker + provenance checkpoint), so an applied edit is
+  // indistinguishable from a hand-saved one downstream.
+  app.post("/api/projects/:id/apply-draft-edit", isAuthenticated, async (req, res) => {
+    try {
+      const { section, find, replace } = req.body as { section?: string; find?: string; replace?: string };
+
+      const validSections = ['title', 'background', 'summary', 'detailed_description', 'ramifications_and_scope', 'abstract', 'claims'];
+      if (!section || !validSections.includes(section)) {
+        return res.status(400).json({ message: `Invalid section. Must be one of: ${validSections.join(', ')}` });
+      }
+      if (typeof replace !== "string" || replace.length === 0) {
+        return res.status(400).json({ message: "replace text is required" });
+      }
+      const findText = typeof find === "string" ? find : "";
+
+      const agent5Data = await storage.getAgentData(req.params.id, 5);
+      const agent5Obj = agent5Data?.data as any;
+      let provisionalDraft = agent5Obj?.provisionalDraft;
+      if (!provisionalDraft) {
+        const agent4Data = await storage.getAgentData(req.params.id, 4);
+        provisionalDraft = (agent4Data?.data as any)?.provisionalDraft;
+      }
+      if (!provisionalDraft) {
+        return res.status(400).json({ message: "No provisional draft found" });
+      }
+
+      const parsedDraft = parseProvisionalDraft(provisionalDraft);
+
+      // Current section text — the same extraction the AI Helper's polish
+      // payload and proposeDraftEdits validation read, so what the model
+      // anchored against is what we splice into.
+      const claimsValue = Array.isArray(parsedDraft.claims)
+        ? parsedDraft.claims.join("\n\n")
+        : (parsedDraft.claims ?? parsedDraft.keyConcepts ?? "");
+      const currentText = section === "claims"
+        ? (typeof claimsValue === "string" ? claimsValue : String(claimsValue ?? ""))
+        : String(parsedDraft[section] ?? "");
+
+      const applied = applyDraftEdit(currentText, findText, replace);
+      if (!applied.ok) {
+        // If the replacement text is already in the section, the inventor (or
+        // a prior click) already applied this edit — tell the card that
+        // instead of presenting a scary failure.
+        const alreadyApplied = findDraftMatches(currentText, replace).length > 0;
+        return res.status(409).json({
+          message: alreadyApplied
+            ? "This edit appears to be applied already."
+            : applied.status === "ambiguous"
+              ? `The text to replace appears ${applied.matchCount} times in the section — ask the AI Helper to re-propose with a longer, unique anchor.`
+              : "The text to replace was not found in the saved draft — it may have changed since the edit was proposed. Ask the AI Helper to re-check.",
+          status: applied.status,
+          matchCount: applied.matchCount,
+          alreadyApplied,
+        });
+      }
+
+      if (section === 'claims') {
+        const keyConceptsArray = applied.text.split(/\n\n+/).map((c: string) => c.trim()).filter((c: string) => c.length > 0);
+        parsedDraft.claims = keyConceptsArray;
+        parsedDraft.keyConcepts = keyConceptsArray;
+        parsedDraft.keyConcepts_count = keyConceptsArray.length;
+      } else {
+        parsedDraft[section] = applied.text;
+      }
+
+      const manualEdits = { ...((agent5Obj?.manualEdits as Record<string, any>) ?? {}) };
+      manualEdits[section] = { editedAt: new Date().toISOString() };
+
+      await storage.mergeAgentData(req.params.id, 5, { provisionalDraft: parsedDraft, manualEdits });
+
+      createCheckpointBackground({
+        projectId: req.params.id,
+        eventType: "update_spec_section",
+        refTable: "agent_data",
+        refId: null,
+        payload: {
+          section,
+          via: "ai_helper_apply_edit",
+          updatedDraft: parsedDraft,
+        },
+      });
+
+      res.json({ success: true, section });
+    } catch (error: any) {
+      console.error("Apply draft edit error:", error);
+      res.status(500).json({ message: "Failed to apply edit" });
     }
   });
 

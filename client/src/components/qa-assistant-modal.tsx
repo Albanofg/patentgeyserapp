@@ -12,8 +12,42 @@ interface CoachMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
-  toolCalls?: Array<{ name: string; result?: any }> | null;
+  toolCalls?: Array<{ name: string; args?: any; result?: any }> | null;
   createdAt: string;
+}
+
+// One validated edit from a proposeDraftEdits tool call. `status` comes from
+// the server-side anchor validation; only "ready" / "whole_section" edits get
+// an Apply button.
+interface ProposedDraftEdit {
+  section: string;
+  find: string;
+  replace: string;
+  rationale?: string;
+  status: "ready" | "whole_section" | "not_found" | "ambiguous";
+  matchCount?: number;
+}
+
+const SECTION_LABELS: Record<string, string> = {
+  title: "TITLE",
+  background: "BACKGROUND",
+  summary: "SUMMARY",
+  detailed_description: "DETAILED DESCRIPTION",
+  ramifications_and_scope: "RAMIFICATIONS & SCOPE",
+  abstract: "ABSTRACT",
+  claims: "KEY CONCEPTS",
+};
+
+// Pull the validated edit list out of a persisted toolCalls entry or a
+// streamed tool-result event. The executor echoes the validated edits in
+// result.edits; fall back to the raw args if an old message predates that.
+function extractProposedEdits(call: { name: string; args?: any; result?: any }): ProposedDraftEdit[] {
+  if (call.name !== "proposeDraftEdits") return [];
+  const fromResult = call.result?.result?.edits ?? call.result?.edits;
+  if (Array.isArray(fromResult)) return fromResult;
+  const fromArgs = call.args?.edits;
+  if (Array.isArray(fromArgs)) return fromArgs.map((e: any) => ({ ...e, status: e.find ? "ready" : "whole_section" }));
+  return [];
 }
 
 interface QAAssistantPanelProps {
@@ -83,6 +117,9 @@ export function QAAssistantPanel({
   const [input, setInput] = useState("");
   const [streamingText, setStreamingText] = useState("");
   const [streamingChips, setStreamingChips] = useState<Array<{ kind: string; label: string }>>([]);
+  // Edits from a proposeDraftEdits tool call that arrived mid-stream — shown
+  // as apply-able cards immediately, before the message is persisted.
+  const [streamingEdits, setStreamingEdits] = useState<ProposedDraftEdit[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [thinkingElapsedSec, setThinkingElapsedSec] = useState(0);
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -173,6 +210,7 @@ export function QAAssistantPanel({
     setIsSending(true);
     setStreamingText("");
     setStreamingChips([]);
+    setStreamingEdits([]);
 
     try {
       for await (const ev of streamQAAssistant(projectId, {
@@ -187,6 +225,12 @@ export function QAAssistantPanel({
           setStreamingText((prev) => prev + ev.data.delta);
         } else if (ev.type === "tool-result") {
           const r = ev.data;
+          if (r.name === "proposeDraftEdits") {
+            // Edits render as apply-able diff cards, not a chip.
+            const edits = extractProposedEdits({ name: r.name, result: r });
+            if (edits.length) setStreamingEdits((prev) => [...prev, ...edits]);
+            continue;
+          }
           const label =
             r.name === "recordEntry"
               ? `📝 logged ${r.result?.entryType ?? "entry"}`
@@ -207,6 +251,7 @@ export function QAAssistantPanel({
           await qc.invalidateQueries({ queryKey: ["/api/projects", projectId, "current-idea"] });
           setStreamingText("");
           setStreamingChips([]);
+          setStreamingEdits([]);
         } else if (ev.type === "error") {
           setStreamingText((prev) => prev + `\n\n⚠️ ${ev.data.message}`);
         }
@@ -394,7 +439,7 @@ export function QAAssistantPanel({
         ) : (
           <div className="space-y-4">
             {messages.map((m) => (
-              <MessageBubble key={m.id} m={m} />
+              <MessageBubble key={m.id} m={m} projectId={projectId} />
             ))}
             {streamingText && (
               <MessageBubble
@@ -405,7 +450,13 @@ export function QAAssistantPanel({
                   createdAt: "",
                   toolCalls: [],
                 }}
+                projectId={projectId}
               />
+            )}
+            {streamingEdits.length > 0 && (
+              <div className="pl-2">
+                <DraftEditCards projectId={projectId} edits={streamingEdits} />
+              </div>
             )}
             {streamingChips.map((c, i) => (
               <div key={i} className="text-xs text-muted-foreground pl-11">
@@ -476,9 +527,13 @@ function groupToolCalls(
   return out;
 }
 
-function MessageBubble({ m }: { m: CoachMessage }) {
+function MessageBubble({ m, projectId }: { m: CoachMessage; projectId: string }) {
   const isUser = m.role === "user";
   const label = isUser ? "You" : "AI Helper";
+  // Draft edits render as apply-able cards below the prose; every other tool
+  // call stays a compact chip.
+  const proposedEdits = (m.toolCalls ?? []).flatMap(extractProposedEdits);
+  const chipCalls = (m.toolCalls ?? []).filter((c) => c.name !== "proposeDraftEdits");
   return (
     <div
       className={`flex ${isUser ? "justify-end" : "justify-start"}`}
@@ -506,9 +561,14 @@ function MessageBubble({ m }: { m: CoachMessage }) {
             <ReactMarkdown components={{ pre: CopyablePre }}>{m.content}</ReactMarkdown>
           </div>
         )}
-        {m.toolCalls?.length ? (
+        {proposedEdits.length > 0 && (
+          <div className="mt-3">
+            <DraftEditCards projectId={projectId} edits={proposedEdits} />
+          </div>
+        )}
+        {chipCalls.length ? (
           <div className="mt-2 space-y-1">
-            {groupToolCalls(m.toolCalls).map((g, i) => (
+            {groupToolCalls(chipCalls).map((g, i) => (
               <div key={i} className="text-xs opacity-70">
                 ↳ {g.name}
                 {g.count > 1 ? ` × ${g.count}` : ""}
@@ -517,6 +577,111 @@ function MessageBubble({ m }: { m: CoachMessage }) {
           </div>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+// ─── Draft-edit cards ────────────────────────────────────────────────────────
+// Each proposeDraftEdits edit renders as a card: destination section, the
+// helper's rationale, the text being replaced, the replacement, and an Apply
+// button that writes the change to the saved draft server-side. No more
+// find / copy / paste round-trips for the inventor.
+
+function DraftEditCards({ projectId, edits }: { projectId: string; edits: ProposedDraftEdit[] }) {
+  return (
+    <div className="space-y-2" data-testid="draft-edit-cards">
+      {edits.map((e, i) => (
+        <DraftEditCard key={i} projectId={projectId} edit={e} index={i} />
+      ))}
+    </div>
+  );
+}
+
+function DraftEditCard({ projectId, edit, index }: { projectId: string; edit: ProposedDraftEdit; index: number }) {
+  const qc = useQueryClient();
+  const [state, setState] = useState<"idle" | "applying" | "applied" | "failed">("idle");
+  const [note, setNote] = useState<string>("");
+
+  const sectionLabel = SECTION_LABELS[edit.section] ?? edit.section.toUpperCase();
+  const isWholeSection = edit.status === "whole_section" || !edit.find?.trim();
+  const validationFailed = edit.status === "not_found" || edit.status === "ambiguous";
+
+  const apply = async () => {
+    setState("applying");
+    setNote("");
+    try {
+      const res = await fetch(`/api/projects/${projectId}/apply-draft-edit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ section: edit.section, find: edit.find ?? "", replace: edit.replace }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok || body?.alreadyApplied) {
+        setState("applied");
+        if (body?.alreadyApplied) setNote("This change was already in the draft.");
+        // Refresh the Showcase tabs + polish payload sources.
+        await qc.invalidateQueries({ queryKey: ["/api/projects", projectId, "specification-sections"] });
+        await qc.invalidateQueries({ queryKey: ["/api/projects", projectId, "agent", 5] });
+      } else {
+        setState("failed");
+        setNote(body?.message || "Couldn't apply the edit.");
+      }
+    } catch {
+      setState("failed");
+      setNote("Couldn't reach the server — try again.");
+    }
+  };
+
+  return (
+    <div
+      className="rounded-md border border-border bg-background text-foreground px-3 py-2.5"
+      data-testid={`draft-edit-card-${index}`}
+    >
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <span className="text-xs font-bold tracking-wide">{sectionLabel}</span>
+        {state === "applied" ? (
+          <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400 font-medium">
+            <Check className="h-3.5 w-3.5" /> Applied
+          </span>
+        ) : validationFailed ? (
+          <span className="text-xs text-amber-600 dark:text-amber-400">
+            {edit.status === "ambiguous" ? "Needs a more specific anchor" : "Text not found in saved draft"}
+          </span>
+        ) : (
+          <Button
+            size="sm"
+            className="h-7 px-3 text-xs"
+            disabled={state === "applying"}
+            onClick={apply}
+            data-testid={`button-apply-edit-${index}`}
+          >
+            {state === "applying" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Apply"}
+          </Button>
+        )}
+      </div>
+      {edit.rationale ? <p className="text-xs text-muted-foreground mb-2">{edit.rationale}</p> : null}
+      {isWholeSection ? (
+        <p className="text-xs mb-1 font-medium">Replaces the entire {sectionLabel} section with:</p>
+      ) : (
+        <div className="mb-2">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-0.5">Replaces</p>
+          <div className="text-xs font-mono whitespace-pre-wrap rounded bg-red-500/10 border border-red-500/20 px-2 py-1.5 max-h-24 overflow-y-auto">
+            {edit.find}
+          </div>
+        </div>
+      )}
+      <div>
+        {!isWholeSection && (
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-0.5">With</p>
+        )}
+        <div className="text-xs font-mono whitespace-pre-wrap rounded bg-green-500/10 border border-green-500/20 px-2 py-1.5 max-h-40 overflow-y-auto">
+          {edit.replace}
+        </div>
+      </div>
+      {note ? (
+        <p className={`text-xs mt-1.5 ${state === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{note}</p>
+      ) : null}
     </div>
   );
 }

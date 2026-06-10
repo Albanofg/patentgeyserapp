@@ -35,6 +35,7 @@ import { computeRouting, renderRouting, tagsSatisfyScopeId, type RoutingFields }
 import { getSiblingsReference, getRelevantFamilyArtifacts, type SiblingReference, type RetrievedArtifact } from "../../lib/families";
 import { listFamilyContextFilesForPrompt } from "../../lib/family-context-files";
 import { requireEnv } from "../../lib/env";
+import { classifyDraftEdit } from "@shared/draft-match";
 
 // ─── Module-owned table declarations ────────────────────────────────────────
 // These point at physical tables already created in the inventor_geyser schema
@@ -138,6 +139,29 @@ const updateArticulationArgs = z.object({ newArticulationText: z.string().min(1)
 const addOpenQuestionArgs = z.object({ questionText: z.string().min(1) });
 const closeOpenQuestionArgs = z.object({ questionId: z.string().min(1) });
 const flagScopeDriftArgs = z.object({ note: z.string().min(1) });
+// Polish-mode only. `find` is a short verbatim anchor from the CURRENT FINAL
+// DRAFT ("" = replace the whole section); `replace` is the full corrected text.
+const DRAFT_SECTION_KEYS = [
+  "title",
+  "background",
+  "summary",
+  "detailed_description",
+  "ramifications_and_scope",
+  "abstract",
+  "claims",
+] as const;
+const proposeDraftEditsArgs = z.object({
+  edits: z
+    .array(
+      z.object({
+        section: z.enum(DRAFT_SECTION_KEYS),
+        find: z.string().default(""),
+        replace: z.string().min(1),
+        rationale: z.string().default(""),
+      }),
+    )
+    .min(1),
+});
 
 const TOOL_DECLARATIONS = [
   {
@@ -194,6 +218,41 @@ const TOOL_DECLARATIONS = [
   },
 ];
 
+// Declared ONLY in polish mode (Showcase / phase 8). Findings travel through
+// this tool instead of LOCATE/REPLACE paste blocks: the app renders each edit
+// as a diff card with an Apply button, so the inventor never hand-copies text.
+const PROPOSE_DRAFT_EDITS_DECLARATION = {
+  name: "proposeDraftEdits",
+  description:
+    "Propose concrete fixes to the saved final draft. Each edit names a section, a `find` anchor (a SHORT verbatim snippet copied exactly from the CURRENT FINAL DRAFT text above — one sentence or less; or \"\" to replace the ENTIRE section), and `replace` (the full corrected text that overwrites the matched anchor). The server validates each anchor against the saved draft and returns a per-edit status; the inventor applies edits with one click in the UI. `rationale` carries the strategic framing (Vulnerability → Fix) shown on the edit card. Propose the COMPLETE set of fixes for the findings you have disclosed — do not hold edits back for later turns.",
+  parameters: {
+    type: "object",
+    properties: {
+      edits: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            section: {
+              type: "string",
+              enum: [...DRAFT_SECTION_KEYS],
+              description: "Which draft section the edit targets ('claims' = the Key Concepts tab).",
+            },
+            find: {
+              type: "string",
+              description: "Short verbatim anchor from the current draft to replace, or \"\" to replace the whole section.",
+            },
+            replace: { type: "string", description: "The full replacement text." },
+            rationale: { type: "string", description: "One-sentence Vulnerability → Fix framing shown to the inventor." },
+          },
+          required: ["section", "replace"],
+        },
+      },
+    },
+    required: ["edits"],
+  },
+};
+
 // ─── Tool executors ─────────────────────────────────────────────────────────
 
 type ToolCall = { name: string; args: any };
@@ -209,6 +268,11 @@ interface ToolContext {
   // (a) auto-tag completion entries when the agent omits the tag and
   // (b) keep open-question accumulation under control.
   currentLeapTarget: string | null;
+  // Polish mode only: the current draft's section texts, keyed by section key.
+  // proposeDraftEdits validates each edit's `find` anchor against these so the
+  // model gets immediate not_found/ambiguous feedback and can correct within
+  // the same turn. Null outside polish mode (the tool isn't declared there).
+  polishSections: Record<string, string> | null;
 }
 
 const COMPLETION_ENTRY_TYPES = new Set(["first_conceptual_leap", "pohc_answer"]);
@@ -321,6 +385,35 @@ async function executeTool(call: ToolCall, ctx: ToolContext): Promise<ToolResult
       case "flagScopeDrift": {
         const a = flagScopeDriftArgs.parse(call.args);
         return { name: call.name, ok: true, result: { note: a.note } };
+      }
+      case "proposeDraftEdits": {
+        const a = proposeDraftEditsArgs.parse(call.args);
+        if (!ctx.polishSections) {
+          return { name: call.name, ok: false, error: "proposeDraftEdits is only available in polish mode (Showcase final draft)" };
+        }
+        // Validate every anchor against the saved draft and echo the full
+        // edit set back. The model corrects not_found/ambiguous anchors in
+        // its next tool turn; the client renders the validated edits as
+        // apply-able diff cards straight from this result.
+        const validated = a.edits.map((e) => {
+          const sectionText = ctx.polishSections![e.section] ?? "";
+          const { status, matchCount } = classifyDraftEdit(sectionText, e.find);
+          return { ...e, status, matchCount };
+        });
+        const notReady = validated.filter((e) => e.status === "not_found" || e.status === "ambiguous");
+        return {
+          name: call.name,
+          ok: true,
+          result: {
+            edits: validated,
+            readyCount: validated.length - notReady.length,
+            problemCount: notReady.length,
+            note:
+              notReady.length === 0
+                ? "All edits validated against the saved draft. The inventor can now apply each one with a click — tell them to review and apply the cards, then Save is automatic."
+                : `${notReady.length} edit(s) have anchors that are not_found or ambiguous in the saved draft. Re-read the CURRENT FINAL DRAFT and re-propose ONLY those edits with corrected anchors (copy the anchor text exactly; extend it word by word until unique).`,
+          },
+        };
       }
       default:
         return { name: call.name, ok: false, error: `unknown tool: ${call.name}` };
@@ -1318,27 +1411,45 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     }
   }
 
-  // Renders the saved final draft as a flat, labeled block for polish-mode
-  // audits. The 7 sections come from parseProvisionalDraft() in routes.ts —
-  // same shape the Showcase page renders, same shape Save writes to.
-  function renderPolishDraft(draft: any): string {
-    if (!draft || typeof draft !== "object") {
-      return "(no final draft is saved yet — Module 4 hasn't produced one and no tab edits have been saved)";
-    }
+  // Section texts of the saved final draft, keyed by section key. Single
+  // extraction shared by the rendered polish block AND proposeDraftEdits
+  // validation, so the model's view and the validator always agree.
+  function polishSectionsFromDraft(draft: any): Record<string, string> | null {
+    if (!draft || typeof draft !== "object") return null;
     const claimsValue = Array.isArray(draft.claims)
       ? draft.claims.join("\n\n")
       : (draft.claims ?? draft.keyConcepts ?? "");
-    const sections: Array<[string, string]> = [
-      ["TITLE", draft.title ?? ""],
-      ["BACKGROUND OF THE INVENTION", draft.background ?? ""],
-      ["SUMMARY OF THE INVENTION", draft.summary ?? ""],
-      ["DETAILED DESCRIPTION", draft.detailed_description ?? ""],
-      ["RAMIFICATIONS AND SCOPE", draft.ramifications_and_scope ?? ""],
-      ["ABSTRACT", draft.abstract ?? ""],
-      ["KEY CONCEPTS", typeof claimsValue === "string" ? claimsValue : String(claimsValue ?? "")],
+    return {
+      title: String(draft.title ?? ""),
+      background: String(draft.background ?? ""),
+      summary: String(draft.summary ?? ""),
+      detailed_description: String(draft.detailed_description ?? ""),
+      ramifications_and_scope: String(draft.ramifications_and_scope ?? ""),
+      abstract: String(draft.abstract ?? ""),
+      claims: typeof claimsValue === "string" ? claimsValue : String(claimsValue ?? ""),
+    };
+  }
+
+  // Renders the saved final draft as a flat, labeled block for polish-mode
+  // audits. The 7 sections come from parseProvisionalDraft() in routes.ts —
+  // same shape the Showcase page renders, same shape Save writes to. Each
+  // heading carries the section key the proposeDraftEdits tool expects.
+  function renderPolishDraft(draft: any): string {
+    const secs = polishSectionsFromDraft(draft);
+    if (!secs) {
+      return "(no final draft is saved yet — Module 4 hasn't produced one and no tab edits have been saved)";
+    }
+    const sections: Array<[string, string, string]> = [
+      ["TITLE", "title", secs.title],
+      ["BACKGROUND OF THE INVENTION", "background", secs.background],
+      ["SUMMARY OF THE INVENTION", "summary", secs.summary],
+      ["DETAILED DESCRIPTION", "detailed_description", secs.detailed_description],
+      ["RAMIFICATIONS AND SCOPE", "ramifications_and_scope", secs.ramifications_and_scope],
+      ["ABSTRACT", "abstract", secs.abstract],
+      ["KEY CONCEPTS", "claims", secs.claims],
     ];
     return sections
-      .map(([label, body]) => `### ${label}\n${(body || "").toString().trim() || "(empty)"}`)
+      .map(([label, key, body]) => `### ${label} (section key: ${key})\n${(body || "").toString().trim() || "(empty)"}`)
       .join("\n\n");
   }
 
@@ -1615,16 +1726,25 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     assistantMessageId: assistantMessageId ?? "",
     questionIdMap: questionDisplayToUuid,
     currentLeapTarget: routing.currentLeapTarget,
+    polishSections: isPolishMode ? polishSectionsFromDraft((pc as any).provisionalDraft) : null,
   };
 
+  // Polish mode declares the proposeDraftEdits tool on top of the standing
+  // five — findings travel through it instead of paste blocks.
+  const toolDeclarations = isPolishMode
+    ? [...TOOL_DECLARATIONS, PROPOSE_DRAFT_EDITS_DECLARATION]
+    : TOOL_DECLARATIONS;
+
   // ─── 4. Streaming + tool-calling loop ──────────────────────────────────────
-  // Polish-mode history sanitization: assistant turns may contain candidate
-  // phrases the next turn would mis-attribute to the draft, so we strip them
-  // and keep at most the last 3 user turns for continuity ("now do the same
-  // for the summary"). All other modes pass the full chrono unchanged.
-  const chronoForHistory = isPolishMode
-    ? recentChrono.filter((m) => m.role !== "assistant").slice(-3)
-    : recentChrono;
+  // Polish-mode history: keep the last 8 turns of BOTH roles. The refreshed
+  // CURRENT FINAL DRAFT block remains the only audit target (the prompt
+  // forbids flagging text that isn't in it), but the model needs its own
+  // prior turns to honor TERMINOLOGY PRESERVATION (never re-flag wording the
+  // inventor already accepted) and to see that it already answered earlier
+  // questions. The previous user-turns-only sanitization caused both failure
+  // modes: settled terms were re-flagged every pass (the audit never
+  // converged) and stale questions were re-answered turn after turn.
+  const chronoForHistory = isPolishMode ? recentChrono.slice(-8) : recentChrono;
   const geminiHistory = chronoForHistory.map((m) => ({
     role: m.role === "assistant" ? "model" : "user",
     parts: [{ text: m.content }],
@@ -1694,7 +1814,7 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         maxOutputTokens: CONFIG.maxTokens,
         safetySettings: GEMINI_SAFETY_OFF,
         ...(CONFIG.toolsEnabled && !isLastTurn
-          ? { tools: [{ functionDeclarations: TOOL_DECLARATIONS as any }] }
+          ? { tools: [{ functionDeclarations: toolDeclarations as any }] }
           : {}),
       },
     };
