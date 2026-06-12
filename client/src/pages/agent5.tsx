@@ -1259,7 +1259,7 @@ export default function Agent5() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 pt-4 px-2 max-w-3xl mx-auto">
               <Button
                 size="lg"
-                className="w-full sm:w-auto text-base"
+                className="w-full text-base whitespace-normal min-h-16 px-4 leading-tight"
                 data-testid="button-broaden-coverage"
                 onClick={() => gsStartMutation.mutate()}
                 disabled={gsStartMutation.isPending || gsIsRunning}
@@ -1283,10 +1283,10 @@ export default function Agent5() {
                 return (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <span className="w-full sm:w-auto">
+                      <span className="w-full">
                         <Button
                           size="lg"
-                          className="w-full text-base"
+                          className="w-full text-base whitespace-normal min-h-16 px-4 leading-tight"
                           data-testid="button-generate-diagrams-header"
                           onClick={() => generateDiagramsMutation.mutate()}
                           disabled={diagramsDisabled}
@@ -1321,10 +1321,10 @@ export default function Agent5() {
                 return (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <span className="w-full sm:w-auto">
+                      <span className="w-full">
                         <Button
                           size="lg"
-                          className="w-full text-base"
+                          className="w-full text-base whitespace-normal min-h-16 px-4 leading-tight"
                           data-testid="button-download-draft"
                           onClick={() => exportDOCXMutation.mutate()}
                           disabled={downloadDisabled}
@@ -1362,11 +1362,11 @@ export default function Agent5() {
                 return (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <span className="w-full sm:w-auto">
+                      <span className="w-full">
                         <Button
                           size="lg"
                           variant="outline"
-                          className="w-full text-base"
+                          className="w-full text-base whitespace-normal min-h-16 px-4 leading-tight"
                           data-testid="button-download-pohc"
                           onClick={() => exportProofPackageMutation.mutate()}
                           disabled={pohcDisabled}
