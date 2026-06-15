@@ -84,6 +84,7 @@ export interface FamilyRow {
   id: string;
   title: string;
   description: string | null;
+  context: string | null;
   createdAt: string | null;
   updatedAt: string | null;
 }
@@ -188,7 +189,7 @@ export function FamilyCard({
                 onClick={() => { setMenuOpen(false); onRenameFamily(family); }}
                 data-testid={`family-rename-${family.id}`}
               >
-                <Edit className="h-4 w-4" /> Edit title
+                <Edit className="h-4 w-4" /> Edit family
               </button>
               <button
                 className="w-full text-left text-sm px-3 py-2 hover-elevate flex items-center gap-2 text-destructive"

@@ -715,6 +715,7 @@ function truncateAtSentenceBoundary(text: string, max: number): string {
 // verbatim so the activation gate ("siblings is non-empty") reads cleanly.
 function renderFamilyContext(input: {
   familyId: string | null;
+  familyContext: string | null;
   siblings: SiblingReference[];
   retrievedArtifacts: RetrievedArtifact[];
   contextFiles: Array<{ id: string; filename: string; summary: string | null; extractionStatus: "ready" | "failed" | "pending" }>;
@@ -801,6 +802,9 @@ function renderFamilyContext(input: {
 
   const payload = {
     familyId: input.familyId,
+    // Inventor-authored background for the whole family. Standing context that
+    // applies to every sibling; weigh it alongside the per-sibling content.
+    familyContext: input.familyContext,
     retrievalMode,
     siblings: siblingsOut,
     siblingsOverflow,
@@ -1349,6 +1353,9 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
   let retrievedArtifacts: RetrievedArtifact[] = [];
   let contextFiles: Array<{ id: string; filename: string; summary: string | null; extractionStatus: "ready" | "failed" | "pending" }> = [];
   let projectFamilyId: string | null = null;
+  // Free-text family background the inventor set on the family. Injected into
+  // FAMILY CONTEXT so every sibling is drafted with it in view.
+  let familyContext: string | null = null;
   let projectFiledStatus: {
     inventorNames: string[] | null;
     filedDate: string | null;
@@ -1370,12 +1377,19 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     // query so the prompt can carry filed date, status, jurisdiction, etc.
     try {
       const projRow = await db.execute(sql`
-        SELECT family_id,
-               inventor_names, filed_date, status, application_number, notes
-          FROM inventor_geyser.projects WHERE id = ${projectId} LIMIT 1
+        SELECT p.family_id,
+               p.inventor_names, p.filed_date, p.status, p.application_number, p.notes,
+               f.context AS family_context
+          FROM inventor_geyser.projects p
+          LEFT JOIN inventor_geyser.project_families f ON f.id = p.family_id
+         WHERE p.id = ${projectId} LIMIT 1
       `);
       const row: any = (projRow as any).rows?.[0] ?? null;
       projectFamilyId = (row?.family_id ?? null) as string | null;
+      {
+        const ctx = typeof row?.family_context === "string" ? row.family_context.trim() : "";
+        familyContext = ctx.length > 0 ? ctx : null;
+      }
       if (projectFamilyId) {
         contextFiles = await listFamilyContextFilesForPrompt(projectFamilyId);
       }
@@ -1536,6 +1550,7 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     s.push(`## TURN ROUTER STATE\n${renderRouting(routingNow)}`);
     s.push(`## FAMILY CONTEXT\n${renderFamilyContext({
       familyId: projectFamilyId,
+      familyContext,
       siblings,
       retrievedArtifacts,
       contextFiles,

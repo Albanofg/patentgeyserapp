@@ -48,6 +48,7 @@ export interface ContextFileSummary {
   id: string;
   familyId: string;
   originalFilename: string;
+  title: string | null;
   mimeType: string;
   byteSize: number;
   extractionStatus: string;
@@ -72,6 +73,7 @@ function toSummaryRow(row: ProjectFamilyContextFile): ContextFileSummary {
     id: row.id,
     familyId: row.familyId,
     originalFilename: row.originalFilename,
+    title: row.title ?? null,
     mimeType: row.mimeType,
     byteSize: row.byteSize,
     extractionStatus: row.extractionStatus,
@@ -310,6 +312,7 @@ export async function listFamilyContextFiles(familyId: string): Promise<ContextF
       id: projectFamilyContextFiles.id,
       familyId: projectFamilyContextFiles.familyId,
       originalFilename: projectFamilyContextFiles.originalFilename,
+      title: projectFamilyContextFiles.title,
       mimeType: projectFamilyContextFiles.mimeType,
       byteSize: projectFamilyContextFiles.byteSize,
       extractionStatus: projectFamilyContextFiles.extractionStatus,
@@ -334,6 +337,7 @@ export async function listFamilyContextFiles(familyId: string): Promise<ContextF
     id: r.id,
     familyId: r.familyId,
     originalFilename: r.originalFilename,
+    title: r.title ?? null,
     mimeType: r.mimeType,
     byteSize: r.byteSize,
     extractionStatus: r.extractionStatus,

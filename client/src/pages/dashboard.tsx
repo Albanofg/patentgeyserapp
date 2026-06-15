@@ -24,6 +24,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { FileText, Plus, Loader2, Trash2, Edit, FolderPlus, FolderOpen, MoreVertical } from "lucide-react";
@@ -65,8 +66,10 @@ export default function Dashboard() {
   const [showCreateFamilyDialog, setShowCreateFamilyDialog] = useState(false);
   const [newFamilyTitle, setNewFamilyTitle] = useState("");
   const [newFamilyDescription, setNewFamilyDescription] = useState("");
+  const [newFamilyContext, setNewFamilyContext] = useState("");
   const [renamingFamily, setRenamingFamily] = useState<FamilyApi | null>(null);
   const [renameFamilyTitle, setRenameFamilyTitle] = useState("");
+  const [renameFamilyContext, setRenameFamilyContext] = useState("");
   const [familyToDelete, setFamilyToDelete] = useState<FamilyApi | null>(null);
   // When set, the New Project dialog will attach the new project to this family
   const [createInFamilyId, setCreateInFamilyId] = useState<string | null>(null);
@@ -121,6 +124,7 @@ export default function Dashboard() {
       return await apiRequest<FamilyApi>("POST", "/api/families", {
         title,
         description: newFamilyDescription.trim() || null,
+        context: newFamilyContext.trim() || null,
       });
     },
     onSuccess: () => {
@@ -128,21 +132,23 @@ export default function Dashboard() {
       setShowCreateFamilyDialog(false);
       setNewFamilyTitle("");
       setNewFamilyDescription("");
+      setNewFamilyContext("");
       toast({ title: "Family created" });
     },
     onError: (err: Error) => toast({ title: "Failed to create family", description: err.message }),
   });
 
   const renameFamilyMutation = useMutation({
-    mutationFn: async ({ id, title }: { id: string; title: string }) => {
-      return await apiRequest("PATCH", `/api/families/${id}`, { title });
+    mutationFn: async ({ id, title, context }: { id: string; title: string; context: string | null }) => {
+      return await apiRequest("PATCH", `/api/families/${id}`, { title, context });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/families"] });
       setRenamingFamily(null);
-      toast({ title: "Family renamed" });
+      setRenameFamilyContext("");
+      toast({ title: "Family updated" });
     },
-    onError: (err: Error) => toast({ title: "Failed to rename family", description: err.message }),
+    onError: (err: Error) => toast({ title: "Failed to update family", description: err.message }),
   });
 
   const deleteFamilyMutation = useMutation({
@@ -209,7 +215,7 @@ export default function Dashboard() {
     mutationFn: async () => {
       const projectName = newProjectName.trim();
       if (!projectName) {
-        throw new Error("Project name is required");
+        throw new Error("Title is required");
       }
       return await apiRequest<Project>("POST", "/api/projects", {
         title: projectName,
@@ -406,7 +412,7 @@ export default function Dashboard() {
                     setBulkAddFilter("");
                   }}
                   onDetachProject={(p) => detachProjectMutation.mutate(p.id)}
-                  onRenameFamily={(f) => { setRenamingFamily(f); setRenameFamilyTitle(f.title); }}
+                  onRenameFamily={(f) => { setRenamingFamily(f); setRenameFamilyTitle(f.title); setRenameFamilyContext(f.context ?? ""); }}
                   onDeleteFamily={(f) => setFamilyToDelete(f)}
                   onEditProject={(p) => { setEditingProject(p); setEditedName(p.title); }}
                   onDeleteProject={(p) => setProjectToDelete(p)}
@@ -550,12 +556,12 @@ export default function Dashboard() {
             <DialogHeader>
               <DialogTitle>Create New Patent Project</DialogTitle>
               <DialogDescription>
-                Give your patent application a descriptive name to help you identify it later.
+                Give your patent application a descriptive title to help you identify it later.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <Label htmlFor="project-name">Project Name</Label>
+                <Label htmlFor="project-name">Title</Label>
                 <Input
                   id="project-name"
                   data-testid="input-project-name"
@@ -568,7 +574,7 @@ export default function Dashboard() {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !createProjectMutation.isPending) {
                       if (!newProjectName.trim()) {
-                        setCreateNameError("Project name is required");
+                        setCreateNameError("Title is required");
                         return;
                       }
                       createProjectMutation.mutate();
@@ -598,7 +604,7 @@ export default function Dashboard() {
               <Button
                 onClick={() => {
                   if (!newProjectName.trim()) {
-                    setCreateNameError("Project name is required");
+                    setCreateNameError("Title is required");
                     return;
                   }
                   createProjectMutation.mutate();
@@ -687,6 +693,20 @@ export default function Dashboard() {
                   onChange={(e) => setNewFamilyDescription(e.target.value)}
                 />
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="family-context">Context for the AI (optional)</Label>
+                <Textarea
+                  id="family-context"
+                  rows={4}
+                  placeholder="Background the AI helper should keep in mind for every Project in this family — the product, the architecture, prior decisions, terminology. The helper sees this while drafting each sibling."
+                  value={newFamilyContext}
+                  onChange={(e) => setNewFamilyContext(e.target.value)}
+                  data-testid="input-family-context"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Shared standing context for the whole family — separate from the short description above.
+                </p>
+              </div>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setShowCreateFamilyDialog(false)} disabled={createFamilyMutation.isPending}>Cancel</Button>
@@ -697,30 +717,47 @@ export default function Dashboard() {
           </DialogContent>
         </Dialog>
 
-        {/* Rename Family Dialog */}
+        {/* Edit Family Dialog */}
         <Dialog open={!!renamingFamily} onOpenChange={(open) => {
           if (!open && !renameFamilyMutation.isPending) {
             setRenamingFamily(null);
             setRenameFamilyTitle("");
+            setRenameFamilyContext("");
           }
         }}>
           <DialogContent data-testid="dialog-rename-family">
             <DialogHeader>
-              <DialogTitle>Rename Family</DialogTitle>
+              <DialogTitle>Edit Family</DialogTitle>
             </DialogHeader>
-            <div className="space-y-2 py-4">
-              <Label htmlFor="rename-family">Family name</Label>
-              <Input
-                id="rename-family"
-                value={renameFamilyTitle}
-                onChange={(e) => setRenameFamilyTitle(e.target.value)}
-              />
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="rename-family">Family name</Label>
+                <Input
+                  id="rename-family"
+                  value={renameFamilyTitle}
+                  onChange={(e) => setRenameFamilyTitle(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-family-context">Context for the AI (optional)</Label>
+                <Textarea
+                  id="edit-family-context"
+                  rows={4}
+                  placeholder="Background the AI helper should keep in mind for every Project in this family — the product, the architecture, prior decisions, terminology."
+                  value={renameFamilyContext}
+                  onChange={(e) => setRenameFamilyContext(e.target.value)}
+                  data-testid="input-edit-family-context"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Shared standing context for the whole family — the helper sees this while drafting each sibling.
+                </p>
+              </div>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setRenamingFamily(null)}>Cancel</Button>
               <Button
                 disabled={!renameFamilyTitle.trim() || renameFamilyMutation.isPending}
-                onClick={() => renamingFamily && renameFamilyMutation.mutate({ id: renamingFamily.id, title: renameFamilyTitle.trim() })}
+                onClick={() => renamingFamily && renameFamilyMutation.mutate({ id: renamingFamily.id, title: renameFamilyTitle.trim(), context: renameFamilyContext.trim() || null })}
               >
                 {renameFamilyMutation.isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving…</> : "Save"}
               </Button>

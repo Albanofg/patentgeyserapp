@@ -48,8 +48,9 @@ export type DetailsMode = "project" | "reference";
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  // Whether to show the Title field. Projects have a title that's also the
-  // dashboard card name; context files use their filename instead and hide it.
+  // Whether to show the Title field. Projects always show it (it's the
+  // dashboard card name). Reference files show it as an optional human-readable
+  // title that falls back to the filename when blank.
   showTitle: boolean;
   mode: DetailsMode;
   // Heading text — "Edit Project details" / "Edit details — <filename>".

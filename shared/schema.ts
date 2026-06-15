@@ -425,6 +425,10 @@ export const projectFamilies = pgTable("project_families", {
   inventorsUserId: varchar("inventors_user_id"),
   title: text("title").notNull(),
   description: text("description"),
+  // Free-text background the inventor can edit after creation. Distinct from
+  // `description` (a short label): `context` is injected into the AI helper's
+  // FAMILY CONTEXT block so every sibling is drafted with it in view.
+  context: text("context"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
   deletedAt: timestamp("deleted_at"),
@@ -477,6 +481,8 @@ export const projectFamilyContextFiles = pgTable("project_family_context_files",
   uploadedByUserId: varchar("uploaded_by_user_id"),
   uploadedByInventorsUserId: varchar("uploaded_by_inventors_user_id"),
   originalFilename: text("original_filename").notNull(),
+  // Optional human-readable title; falls back to originalFilename in the UI.
+  title: text("title"),
   mimeType: text("mime_type").notNull(),
   byteSize: integer("byte_size").notNull().default(0),
   fileBytesB64: text("file_bytes_b64").notNull(),

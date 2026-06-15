@@ -2065,7 +2065,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const owner = familyOwnerFromSession(req);
       if (!owner) return res.status(401).json({ message: "Unauthorized" });
-      const { title, description } = req.body || {};
+      const { title, description, context } = req.body || {};
       if (typeof title !== "string" || !title.trim()) {
         return res.status(400).json({ message: "title is required" });
       }
@@ -2074,6 +2074,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ownerId: owner.id,
         title: title.trim(),
         description: typeof description === "string" ? description : null,
+        context: typeof context === "string" ? context : null,
       });
       res.json(family);
     } catch (err: any) {
@@ -2111,10 +2112,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const fam = await getFamily(req.params.id);
       if (!fam || !sessionOwnsFamily(req, fam)) return res.status(404).json({ message: "Not found" });
-      const { title, description } = req.body || {};
+      const { title, description, context } = req.body || {};
       const updated = await updateFamily(fam.id, {
         title: typeof title === "string" ? title : undefined,
         description: description === undefined ? undefined : (typeof description === "string" ? description : null),
+        context: context === undefined ? undefined : (typeof context === "string" ? context : null),
       });
       res.json(updated);
     } catch (err: any) {
@@ -2311,6 +2313,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!existing || existing.familyId !== fam.id) return res.status(404).json({ message: "File not found" });
 
       const updateSchema = z.object({
+        title: z.string().optional().nullable(),
         inventorNames: z.array(z.string()).optional().nullable(),
         filedDate: z.string().optional().nullable(),
         status: z.enum(["draft", "filed", "published", "granted", "converted", "abandoned", "expired"]).optional().nullable(),

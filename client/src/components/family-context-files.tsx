@@ -19,6 +19,7 @@ interface ContextFile {
   id: string;
   familyId: string;
   originalFilename: string;
+  title?: string | null;
   mimeType: string;
   byteSize: number;
   extractionStatus: "pending" | "ok" | "failed" | string;
@@ -193,12 +194,13 @@ export function FamilyContextFiles({ familyId }: Props) {
       <PatentDetailsDialog
         open={!!editingFile}
         onOpenChange={(o) => { if (!o && !updateMutation.isPending) setEditingFile(null); }}
-        showTitle={false}
+        showTitle={true}
         mode="reference"
-        title={editingFile ? `Edit details — ${editingFile.originalFilename}` : "Edit details"}
+        title={editingFile ? `Edit details — ${editingFile.title || editingFile.originalFilename}` : "Edit details"}
         description="Fill in what you know about this reference file. Every field is optional."
         saving={updateMutation.isPending}
         initial={editingFile ? {
+          title: editingFile.title ?? null,
           inventorNames: editingFile.inventorNames ?? null,
           filedDate: editingFile.filedDate ?? null,
           status: (editingFile.status as PatentDetailsValues["status"]) ?? null,
@@ -212,9 +214,8 @@ export function FamilyContextFiles({ familyId }: Props) {
         } : {}}
         onSave={(values) => {
           if (!editingFile) return;
-          // Title doesn't apply to context files.
-          const { title: _t, ...rest } = values as any;
-          updateMutation.mutate({ fileId: editingFile.id, patch: rest });
+          // Title is an optional human-readable name; persist it with the rest.
+          updateMutation.mutate({ fileId: editingFile.id, patch: values });
         }}
       />
 
@@ -225,7 +226,10 @@ export function FamilyContextFiles({ familyId }: Props) {
               <FileText className="h-3.5 w-3.5 mt-0.5 text-muted-foreground flex-none" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-sm font-medium truncate">{f.originalFilename}</span>
+                  <span className="text-sm font-medium truncate">{f.title || f.originalFilename}</span>
+                  {f.title && (
+                    <span className="text-[11px] text-muted-foreground truncate">{f.originalFilename}</span>
+                  )}
                   <Badge variant="outline" className="text-[10px]">{fmtBytes(f.byteSize)}</Badge>
                   {f.extractionStatus === "pending" && <Badge variant="outline" className="text-[10px]">extracting…</Badge>}
                   {f.extractionStatus === "failed" && (

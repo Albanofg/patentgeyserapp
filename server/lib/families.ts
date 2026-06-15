@@ -59,6 +59,7 @@ export interface CreateFamilyInput {
   ownerId: string;
   title: string;
   description?: string | null;
+  context?: string | null;
 }
 
 export async function createFamily(input: CreateFamilyInput): Promise<ProjectFamily> {
@@ -67,6 +68,7 @@ export async function createFamily(input: CreateFamilyInput): Promise<ProjectFam
     .values({
       title: input.title,
       description: input.description ?? null,
+      context: input.context ?? null,
       ownerUserId: input.ownerKind === "legacy" ? input.ownerId : null,
       inventorsUserId: input.ownerKind === "paid" ? input.ownerId : null,
     })
@@ -99,11 +101,12 @@ export async function listFamiliesByOwner(
 
 export async function updateFamily(
   id: string,
-  patch: { title?: string; description?: string | null },
+  patch: { title?: string; description?: string | null; context?: string | null },
 ): Promise<ProjectFamily | undefined> {
   const set: Record<string, any> = { updatedAt: new Date() };
   if (typeof patch.title === "string") set.title = patch.title;
   if (patch.description !== undefined) set.description = patch.description;
+  if (patch.context !== undefined) set.context = patch.context;
   const [row] = await db
     .update(projectFamilies)
     .set(set)
