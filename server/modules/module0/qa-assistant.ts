@@ -36,6 +36,7 @@ import { getSiblingsReference, getRelevantFamilyArtifacts, type SiblingReference
 import { listFamilyContextFilesForPrompt } from "../../lib/family-context-files";
 import { requireEnv } from "../../lib/env";
 import { classifyDraftEdit } from "@shared/draft-match";
+import { scanForUPL } from "@shared/upl-lint";
 
 // ─── Module-owned table declarations ────────────────────────────────────────
 // These point at physical tables already created in the inventor_geyser schema
@@ -2142,12 +2143,33 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
   // ─── 5. Persist final assistant content + tool-call log ────────────────────
   // Cancel any pending debounced flush — we're about to write the final state.
   if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  const finalAssistantText = allTokens.join("").trim();
+
+  // UPL output lint — FLAG MODE (log only, never blocks). Runs after the reply
+  // has already streamed to the inventor, so it adds zero latency to the turn.
+  // Switch the `block` tier to actually withhold only once the false-positive
+  // rate is known. See qa-assistant.UPL-compliance-draft.md. Wrapped so a lint
+  // failure can never break a turn.
+  try {
+    const uplFindings = scanForUPL(finalAssistantText);
+    if (uplFindings.length > 0) {
+      const blocking = uplFindings.filter((f) => f.severity === "block").length;
+      console.warn(
+        `[QA-Assistant][UPL-LINT] project=${projectId ?? "?"} stage=${(pc as any).currentStage ?? "?"} ` +
+        `msg=${assistantMessageId ?? "?"} findings=${uplFindings.length} blocking=${blocking} ` +
+        `terms=${JSON.stringify(uplFindings.map((f) => `${f.severity}:${f.term}`))}`,
+      );
+    }
+  } catch (e: any) {
+    console.warn("[QA-Assistant][UPL-LINT] scan failed:", e?.message);
+  }
+
   if (persistent && assistantMessageId) {
     try {
       await db
         .update(coachMessages)
         .set({
-          content: allTokens.join("").trim(),
+          content: finalAssistantText,
           toolCalls: allToolCalls.length ? (allToolCalls as any) : null,
         })
         .where(eq(coachMessages.id, assistantMessageId));

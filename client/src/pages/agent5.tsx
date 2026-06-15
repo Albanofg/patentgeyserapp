@@ -37,6 +37,18 @@ const SPEC_TABS = [
   { key: 'claims', label: '7. Key Concepts' },
 ] as const;
 
+// Maps a Key Concept Appender `concept_aspect` to the exact label shown on its
+// Gate 2 card. Shared by the page snapshot (so the AI Helper refers to the card
+// by the same name the inventor sees on screen — not its internal id) and by the
+// Gate 2 render. Keep these two uses pointed at this single source of truth.
+const GS_ASPECT_LABEL: Record<string, string> = {
+  genus_mechanism: 'Core Mechanism',
+  species_spectrum: 'Architectural Spectrum',
+  hardware_optimization: 'Hardware Optimization',
+};
+const gsNewKeyConceptLabel = (aspect: string | undefined): string =>
+  `New Key Concept — ${GS_ASPECT_LABEL[aspect ?? ''] ?? (aspect || '').replace(/_/g, ' ')}`;
+
 // Renders text with case-insensitive highlights for every occurrence of `query`.
 // Powers the Showcase draft search: an inventor pastes a phrase the Helper
 // flagged and sees exactly where it sits in the section text.
@@ -142,7 +154,7 @@ export default function Agent5() {
   const [editContent, setEditContent] = useState('');
 
   // Genus & Species workflow inline state
-  const [gsGate1Decisions, setGsGate1Decisions] = useState<Record<string, { decision: "approved" | "rejected"; editedText?: string }>>({});
+  const [gsGate1Decisions, setGsGate1Decisions] = useState<Record<string, { decision: "approved" | "edited" | "rejected"; editedText?: string }>>({});
   const [gsGate2Decisions, setGsGate2Decisions] = useState<Record<string, { decision: "approved" | "edited" | "rejected"; editedText?: string }>>({});
   // Local pending text per artifact while the user is typing in the edit
   // textarea. Only commits to gsGate2Decisions.editedText when the user
@@ -844,7 +856,10 @@ export default function Agent5() {
       });
       (gs?.appendings || []).forEach((a: any, i: number) => {
         items.push({
-          id: `Key Concept Appendix ${i + 1}`,
+          // Use the exact on-screen card label as the id so the AI Helper names
+          // this artifact the way the inventor sees it ("New Key Concept — Core
+          // Mechanism"), not its internal "Key Concept Appendix N" / concept_aspect.
+          id: gsNewKeyConceptLabel(a?.concept_aspect),
           type: "gs_artifact",
           editable: false,
           content: {
@@ -1499,11 +1514,54 @@ export default function Agent5() {
                                   {s.failed ? <span className="text-xs text-muted-foreground">Failed to generate</span> : (
                                     <div className="flex gap-1">
                                       <Button size="sm" variant={decision?.decision === "approved" ? "default" : "outline"} className="text-xs h-7 px-2" onClick={() => setGsGate1Decisions(p => ({ ...p, [s.species_type]: { decision: "approved" } }))}>Approve</Button>
+                                      <Button size="sm" variant={decision?.decision === "edited" ? "default" : "outline"} className="text-xs h-7 px-2" onClick={() => {
+                                        const startingText = decision?.editedText ?? s.architectural_description;
+                                        setGsGate1Decisions(p => ({ ...p, [s.species_type]: { decision: "edited", editedText: startingText } }));
+                                        setGsPendingEdits(p => ({ ...p, [s.species_type]: startingText }));
+                                      }}>Edit</Button>
                                       <Button size="sm" variant={decision?.decision === "rejected" ? "destructive" : "outline"} className="text-xs h-7 px-2" onClick={() => setGsGate1Decisions(p => ({ ...p, [s.species_type]: { decision: "rejected" } }))}>Reject</Button>
                                     </div>
                                   )}
                                 </div>
-                                {!s.failed && <p className="text-xs text-muted-foreground leading-relaxed">{s.architectural_description}</p>}
+                                {!s.failed && (decision?.decision === "edited" ? (
+                                  (() => {
+                                    const pending = gsPendingEdits[s.species_type] ?? decision.editedText ?? s.architectural_description;
+                                    const saved = decision.editedText ?? s.architectural_description;
+                                    const isDirty = pending !== saved;
+                                    return (
+                                      <div className="space-y-2">
+                                        <textarea
+                                          className="w-full text-xs rounded border p-2 min-h-24 bg-background resize-y leading-relaxed"
+                                          value={pending}
+                                          onChange={e => setGsPendingEdits(p => ({ ...p, [s.species_type]: e.target.value }))}
+                                        />
+                                        <div className="flex items-center gap-2 justify-end">
+                                          {isDirty && <span className="text-xs text-amber-600">Unsaved changes</span>}
+                                          {!isDirty && <span className="text-xs text-muted-foreground">Saved ✓</span>}
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            className="text-xs h-6 px-2"
+                                            disabled={!isDirty}
+                                            onClick={() => setGsPendingEdits(p => ({ ...p, [s.species_type]: saved }))}
+                                          >
+                                            Cancel
+                                          </Button>
+                                          <Button
+                                            size="sm"
+                                            className="text-xs h-6 px-2"
+                                            disabled={!isDirty}
+                                            onClick={() => setGsGate1Decisions(p => ({ ...p, [s.species_type]: { ...p[s.species_type], decision: "edited", editedText: pending } }))}
+                                          >
+                                            Save
+                                          </Button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })()
+                                ) : (
+                                  <p className="text-xs text-muted-foreground leading-relaxed">{s.architectural_description}</p>
+                                ))}
                               </div>
                             );
                           })}
@@ -1570,12 +1628,6 @@ export default function Agent5() {
                               return "";
                             };
 
-                            const aspectLabel: Record<string, string> = {
-                              genus_mechanism: "Core Mechanism",
-                              species_spectrum: "Architectural Spectrum",
-                              hardware_optimization: "Hardware Optimization",
-                            };
-
                             return [
                               ...((gsStatus.broadenings || []).map((b: any, i: number) => ({
                                 id: `broadening_${i}`,
@@ -1585,7 +1637,7 @@ export default function Agent5() {
                               }))),
                               ...((gsStatus.appendings || []).map((a: any, i: number) => ({
                                 id: `appending_${i}`,
-                                label: `New Key Concept — ${aspectLabel[a?.concept_aspect] ?? (a?.concept_aspect || "").replace(/_/g, " ")}`,
+                                label: gsNewKeyConceptLabel(a?.concept_aspect),
                                 sublabel: undefined as string | undefined,
                                 text: extractConceptText(a, "key_concept_text"),
                               }))),
