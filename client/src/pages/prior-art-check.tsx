@@ -376,7 +376,7 @@ export default function PriorArtCheck() {
                       <FileText className="h-10 w-10 mx-auto text-muted-foreground mb-3" />
                       <h4 className="font-semibold text-sm">No Prior Art Found</h4>
                       <p className="text-xs text-muted-foreground mt-1">
-                        Great news! This is a good sign for patentability.
+                        Great news! We didn't find any closely related prior art for your idea.
                       </p>
                     </CardContent>
                   </Card>

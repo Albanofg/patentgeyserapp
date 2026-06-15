@@ -398,7 +398,7 @@ async function executeTool(call: ToolCall, ctx: ToolContext): Promise<ToolResult
         // apply-able diff cards straight from this result.
         const validated = a.edits.map((e) => {
           const sectionText = ctx.polishSections![e.section] ?? "";
-          const { status, matchCount } = classifyDraftEdit(sectionText, e.find);
+          const { status, matchCount } = classifyDraftEdit(sectionText, e.find, e.replace);
           return { ...e, status, matchCount };
         });
         const notReady = validated.filter((e) => e.status === "not_found" || e.status === "ambiguous");

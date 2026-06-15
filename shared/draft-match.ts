@@ -47,17 +47,25 @@ export function findDraftMatches(text: string, query: string): Array<{ start: nu
   return matches;
 }
 
-export type DraftEditStatus = "ready" | "whole_section" | "not_found" | "ambiguous";
+export type DraftEditStatus = "ready" | "whole_section" | "not_found" | "ambiguous" | "already_applied";
 
 /**
  * Classify a proposed edit against the current section text. `find` empty (or
  * whitespace-only) means "replace the entire section". Otherwise the anchor
  * must occur exactly once for the edit to be applied unambiguously.
  */
-export function classifyDraftEdit(sectionText: string, find: string): { status: DraftEditStatus; matchCount: number } {
+export function classifyDraftEdit(sectionText: string, find: string, replace?: string): { status: DraftEditStatus; matchCount: number } {
   if (!find || !find.trim()) return { status: "whole_section", matchCount: 0 };
   const matches = findDraftMatches(sectionText, find);
-  if (matches.length === 0) return { status: "not_found", matchCount: 0 };
+  if (matches.length === 0) {
+    // The anchor is gone. If the replacement text is already present, the edit
+    // was already applied (a prior click, or the model re-proposed a done edit)
+    // — surface that as a calm "already applied", not a scary "not found".
+    if (replace && findDraftMatches(sectionText, replace).length > 0) {
+      return { status: "already_applied", matchCount: 0 };
+    }
+    return { status: "not_found", matchCount: 0 };
+  }
   if (matches.length > 1) return { status: "ambiguous", matchCount: matches.length };
   return { status: "ready", matchCount: 1 };
 }
