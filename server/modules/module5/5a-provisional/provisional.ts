@@ -90,10 +90,48 @@ function parsePayload(payload: ProvisionalPayload): ParsedInput {
   };
 }
 
+// ── Item 6 of the generative-lock rollout: gap-awareness for the 5a "sibling"
+// agents (architecture, data-structures) — the ones whose quotas can force
+// invention of an inventive structure/coupling the inventor never supplied.
+//
+// Gated behind GAP_LOCK_5A, OFF by default. When off, the system prompt is
+// byte-identical to today: zero behavior change, safe to deploy. It must stay
+// off until Gate 3 (the resolution path) exists, because the marker it emits
+// needs somewhere to be resolved — otherwise the marker would land in the
+// downloadable blueprint with no way to clear it. The base LEAP prompts are
+// deliberately NOT edited; the directive is appended at call time so the
+// prompts stay pristine and the behavior is fully reversible by the flag.
+//
+// Conservative by construction: it relaxes the field-quota / coupling mandates
+// ONLY for the rare "unsupplied AND itself the inventive step" case, and tells
+// the model to flow everything else (routine enablement) through unchanged —
+// directly addressing the tuning risk (over-marking would block inventors on
+// boilerplate). Marker token [[GAP: ...]] is shared with the future Gate 3 UI.
+const GAP_LOCK_5A_AGENTS = new Set(["architecture", "data-structures"]);
+
+const GAP_AWARENESS_ADDENDUM = `
+
+---
+GAP-AWARENESS DIRECTIVE (active)
+
+Default behavior is UNCHANGED. Generate every obvious enablement detail in full — routine field names (e.g. Timestamp, User_ID), standard couplings, hardware grounding, and any field or coupling the source supplies or that is an obvious consequence of the architecture. Flow all of that through exactly as the laws above require. Bias strongly toward flowing content through.
+
+ONE narrow exception. When a Data Object's fields, or a component's coupling, are BOTH (a) absent from the source/inputs AND (b) themselves the inventive step — such that naming them would mean inventing the core contribution rather than supplying routine enablement — do NOT manufacture them to satisfy a quota or mandate. Instead emit, in place, the marker:
+
+[[GAP: inventor must specify <the missing inventive structure or coupling, named from the problem side, never the solution>]]
+
+This marker is a VALID TERMINAL STATE. The at-least-three-named-fields quota (LAW_1 / PHASE_3 / consistency audit) and the coupling mandate (LAW_4 / PHASE_5 / consistency audit) are SATISFIED by such a marker in this narrow case — do not treat it as a failed execution, and never invent content merely to clear your own self-check. When uncertain whether something is routine enablement or the inventive step itself, treat it as routine and generate it. This marker should be rare.`;
+
 // --- Agent wrapper: loads config/prompt from disk and calls the model ---
 async function runAgent(agentName: string, userMessage: string): Promise<string> {
   const config = loadAgentConfig(`module5/5a-provisional/${agentName}.config.json`);
-  const systemPrompt = loadPrompt(`module5/5a-provisional/${agentName}.md`);
+  let systemPrompt = loadPrompt(`module5/5a-provisional/${agentName}.md`);
+  if (
+    (process.env.GAP_LOCK_5A === "1" || process.env.GAP_LOCK_5A === "true") &&
+    GAP_LOCK_5A_AGENTS.has(agentName)
+  ) {
+    systemPrompt += GAP_AWARENESS_ADDENDUM;
+  }
   const result = await callAgent({
     systemPrompt,
     userMessage,

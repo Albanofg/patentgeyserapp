@@ -1,5 +1,5 @@
 // Storage layer implementation using DatabaseStorage as per javascript_database blueprint
-import { users, inventorsUsers, projects, agentData, pannuRecords, ideaSnapshots, priorArtSearches, emailWhitelist, type User, type InsertUser, type InventorUser, type InsertInventorUser, type Project, type InsertProject, type AgentData, type InsertAgentData, type PannuRecord, type InsertPannuRecord, type IdeaSnapshot, type InsertIdeaSnapshot, type PriorArtSearch, type InsertPriorArtSearch, type EmailWhitelistEntry } from "@shared/schema";
+import { users, inventorsUsers, projects, agentData, pannuRecords, ideaSnapshots, priorArtSearches, emailWhitelist, type User, type InsertUser, type InventorUser, type InsertInventorUser, type Project, type InsertProject, type AgentData, type InsertAgentData, type PannuRecord, type InsertPannuRecord, type IdeaSnapshot, type InsertIdeaSnapshot, type PriorArtSearch, type InsertPriorArtSearch, type EmailWhitelistEntry, conceptGaps, type ConceptGap, type InsertConceptGap } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, and, desc, sql, isNull, or, gte } from "drizzle-orm";
 import { recordEventBackground } from "./lib/provenance/hash-chain";
@@ -63,7 +63,12 @@ export interface IStorage {
   getPannuRecord(projectId: string, conceptId: string): Promise<PannuRecord | undefined>;
   createPannuRecord(record: InsertPannuRecord): Promise<PannuRecord>;
   updatePannuRecord(id: string, data: Partial<InsertPannuRecord>): Promise<PannuRecord | undefined>;
-  
+
+  // Concept-gap ledger operations (generative lock — see gap-ledger rebuild contract)
+  getGapsByProject(projectId: string): Promise<ConceptGap[]>;
+  createGap(gap: InsertConceptGap): Promise<ConceptGap>;
+  supersedeOpenGapsForProject(projectId: string): Promise<number>;
+
   // Idea snapshot operations
   getIdeaSnapshots(projectId: string): Promise<IdeaSnapshot[]>;
   getLatestIdeaSnapshot(projectId: string): Promise<IdeaSnapshot | undefined>;
@@ -468,6 +473,35 @@ export class DatabaseStorage implements IStorage {
       });
     }
     return record || undefined;
+  }
+
+  // ── Concept-gap ledger operations ────────────────────────────────────────
+  // The persistence spine of the generative lock. `createGap` deliberately
+  // emits NO provenance event — per the gap-ledger contract we stamp only the
+  // inventor's resolution act (a later gate), never AI-side gap creation.
+  async getGapsByProject(projectId: string): Promise<ConceptGap[]> {
+    return await db
+      .select()
+      .from(conceptGaps)
+      .where(eq(conceptGaps.projectId, projectId))
+      .orderBy(desc(conceptGaps.createdAt));
+  }
+
+  async createGap(gap: InsertConceptGap): Promise<ConceptGap> {
+    const [row] = await db.insert(conceptGaps).values(gap).returning();
+    return row;
+  }
+
+  // Re-extraction supersedes the whole prior open set rather than fuzzy-merging
+  // (contract policy #3). Marks every `open` gap for the project `superseded`
+  // so a fresh 2a run doesn't pile duplicate open rows. Returns the count.
+  async supersedeOpenGapsForProject(projectId: string): Promise<number> {
+    const rows = await db
+      .update(conceptGaps)
+      .set({ status: "superseded", resolutionSource: "auto", resolvedAt: new Date() })
+      .where(and(eq(conceptGaps.projectId, projectId), eq(conceptGaps.status, "open")))
+      .returning({ id: conceptGaps.id });
+    return rows.length;
   }
 
   // Idea snapshot operations

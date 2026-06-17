@@ -31,6 +31,7 @@ import { runR3Fixes } from "./modules/module1/1c-mechanical-fixes/r3-fixes";
 import { runListCreator } from "./modules/module1/1d-list-creator/list-creator";
 import { runAiModifier } from "./modules/module1/1e-ai-modifier/ai-modifier";
 import { runDraft } from "./modules/module2/2a-draft/draft";
+import { parseSection3Gaps } from "./modules/module2/2a-draft/gaps";
 import { runExtractConcepts } from "./modules/module2/2b-extract-concepts/extract-concepts";
 import { runWhitespace } from "./modules/module4/4a-whitespace/whitespace";
 import { runClaims } from "./modules/module4/4b-key-concepts/claims";
@@ -4227,6 +4228,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
           isRefinement,
         },
       });
+
+      // ── Gap ledger (shadow mode — Gate 2 of the generative-lock rollout) ──
+      // Behind GAP_LEDGER_SHADOW, capture the 2a draft's SECTION 3 gaps into the
+      // concept_gaps ledger. Pure shadow: no UI, no reads, no enforcement yet.
+      // Fire-and-forget and fully isolated — it must NEVER alter or delay the
+      // draft the inventor just received. Re-runs supersede the prior open set.
+      if (process.env.GAP_LEDGER_SHADOW === "1" || process.env.GAP_LEDGER_SHADOW === "true") {
+        const projectId = req.params.id;
+        const rawDraft = draftResponse.provisionalDraft;
+        void (async () => {
+          try {
+            const gaps = parseSection3Gaps(rawDraft);
+            if (gaps.length === 0) {
+              console.log(`>>> [GAP-LEDGER shadow] <<< no parseable SECTION 3 gaps for project ${projectId}`);
+              return;
+            }
+            await storage.supersedeOpenGapsForProject(projectId);
+            for (const g of gaps) {
+              await storage.createGap({
+                projectId,
+                class: g.gapClass,
+                description: g.description,
+                originModule: "module2/2a-draft",
+                blockedModules: g.blockedModules,
+              });
+            }
+            console.log(`>>> [GAP-LEDGER shadow] <<< wrote ${gaps.length} gaps for project ${projectId}`);
+          } catch (gapErr: any) {
+            console.warn(">>> [GAP-LEDGER shadow] <<< capture failed (non-fatal):", gapErr?.message || gapErr);
+          }
+        })();
+      }
 
       res.json({
         success: true,

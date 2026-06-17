@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgSchema, text, varchar, timestamp, integer, jsonb, boolean, date, vector } from "drizzle-orm/pg-core";
+import { pgSchema, text, varchar, timestamp, integer, jsonb, boolean, date, vector, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 // All PatentGeyser (inventor/consumer) tables live under the `inventor_geyser`
 // Postgres schema. The same Neon DB also hosts the twin (lawyer) app under the
@@ -238,6 +238,46 @@ export const humanInputs = pgTable("human_inputs", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// Concept-gap ledger — the spine of the "generative lock" (see
+// memory/project-gap-ledger-rebuild-contract.md). Captures every place the
+// inventive content is under-specified, unconceived, or only AI-inferred, so
+// downstream generators stop silently fabricating it. Produced today by the
+// 2a draft prompt's SECTION 3 (Granularity Gap Coaching Prompts + Inferred
+// Subsystem Candidates + Novelty Claim Candidates), which is otherwise
+// discarded. Created by migration 0007_concept_gaps.sql; this declaration
+// mirrors that table for type-safe queries. ONLY `missing_mechanism` rows
+// hard-block downstream modules — the other two classes are AI proposals
+// awaiting inventor confirmation and never trigger enforcement.
+export type GapClass = "missing_mechanism" | "inferred_subsystem" | "novelty_candidate";
+export type GapStatus = "open" | "resolved" | "dismissed" | "superseded";
+
+export const conceptGaps = pgTable("concept_gaps", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  projectId: varchar("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  class: text("class").$type<GapClass>().notNull(),
+  // Verbatim coaching/candidate text from the prompt — no server-side
+  // rephrasing (preserves the AI's elicitation language for the inventor).
+  description: text("description").notNull(),
+  // Free-text spec anchor (e.g. "Section 4 paragraph 2", "Concept 7"); null
+  // when the gap isn't tied to a specific locus.
+  contextRef: text("context_ref"),
+  originModule: text("origin_module").notNull(),
+  originRunId: varchar("origin_run_id"),
+  // Downstream modules blocked while this gap is `open`. Read by the
+  // enforcement layer (later gates); empty array = surfaces but blocks nothing.
+  blockedModules: text("blocked_modules").array().notNull().default(sql`'{}'::text[]`),
+  status: text("status").$type<GapStatus>().notNull().default("open"),
+  resolutionText: text("resolution_text"),
+  resolutionSource: text("resolution_source"),
+  supersededBy: varchar("superseded_by").references((): AnyPgColumn => conceptGaps.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  resolvedAt: timestamp("resolved_at"),
+  // Stamped on resolution only (the inventor authoring act), never on
+  // creation (AI implementation detail). Null until status leaves `open`.
+  provenanceEventId: varchar("provenance_event_id").references(() => provenanceEvents.id),
+});
+
 // AI usage log — one row per server-side AI call across the app.
 // Lives in the `inventor_geyser_admin` schema so observability data stays
 // out of the product schema. Written fire-and-forget so a failed log never
@@ -399,6 +439,8 @@ export type InsertPriorArtSearch = z.infer<typeof insertPriorArtSearchSchema>;
 export type PriorArtSearch = typeof priorArtSearches.$inferSelect;
 export type InsertHumanInput = z.infer<typeof insertHumanInputSchema>;
 export type HumanInput = typeof humanInputs.$inferSelect;
+export type InsertConceptGap = typeof conceptGaps.$inferInsert;
+export type ConceptGap = typeof conceptGaps.$inferSelect;
 
 // Email whitelist table — only listed emails may register or log in
 export const emailWhitelist = pgTable("email_whitelist", {
