@@ -8,7 +8,7 @@
 //     inventor_geyser schema.
 //   - Loads the system prompt from qa-assistant.md (untouched, owned by user).
 //   - Loads config from qa-assistant.config.json.
-//   - Calls Gemini Pro with function-calling tools.
+//   - Calls the AI with function-calling tools.
 //   - Executes tool calls server-side, writing to the local tables.
 //   - Returns a string response to the route handler in routes.ts.
 //
@@ -30,11 +30,12 @@ import {
 } from "drizzle-orm/pg-core";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../../db";
-import { recordUsage, extractGeminiUsage, extractOpenAIUsage } from "../../ai/usage-log";
+import { recordUsage, extractOpenAIUsage } from "../../ai/usage-log";
 import { computeRouting, renderRouting, tagsSatisfyScopeId, type RoutingFields } from "./routing";
 import { getSiblingsReference, getRelevantFamilyArtifacts, type SiblingReference, type RetrievedArtifact } from "../../lib/families";
 import { listFamilyContextFilesForPrompt } from "../../lib/family-context-files";
 import { requireEnv } from "../../lib/env";
+import Anthropic from "@anthropic-ai/sdk";
 import { classifyDraftEdit } from "@shared/draft-match";
 import { scanForUPL } from "@shared/upl-lint";
 
@@ -115,6 +116,10 @@ const geminiSecondary = process.env.GEMINI_API_SECOND_KEY
   ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_SECOND_KEY })
   : null;
 const openai = new OpenAI({ apiKey: requireEnv("OPENAI_API_KEY") });
+// Primary Helper model is set in qa-assistant.config.json. The API key is read
+// from CLAUDE_API_KEY and passed to the client explicitly (the SDK's default
+// env var name differs from ours).
+const anthropic = new Anthropic({ apiKey: requireEnv("CLAUDE_API_KEY") });
 
 const GEMINI_SAFETY_OFF = [
   { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
@@ -124,7 +129,7 @@ const GEMINI_SAFETY_OFF = [
   { category: HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold: HarmBlockThreshold.BLOCK_NONE },
 ];
 
-// ─── Tool argument schemas + Gemini tool declarations ───────────────────────
+// ─── Tool argument schemas + AI tool declarations ───────────────────────
 
 // entryType is intentionally NOT enum-restricted — the prompt drives the
 // vocabulary (`conception`, `contribution`, `concept_decision`, `pohc_answer`,
@@ -468,7 +473,7 @@ interface QAPayload {
   sessionId?: string;
   /**
    * Identity of the authenticated caller. Used for usage logging only —
-   * persisted alongside each Gemini/OpenAI invocation so the admin /admin/usage
+   * persisted alongside each AI invocation so the admin /admin/usage
    * page can attribute the call. Optional so non-route callers (e.g. tests)
    * keep working.
    */
@@ -1086,7 +1091,7 @@ export async function patchOpenQuestion(
  *      coach_messages history) from the inventor_geyser tables.
  *   2. Builds a context block summarising that state plus the route-supplied
  *      projectContext.
- *   3. Calls Gemini Pro with the system prompt (qa-assistant.md) and the
+ *   3. Calls the AI with the system prompt (qa-assistant.md) and the
  *      tool declarations. Streams internally; collects the full response.
  *   4. Executes any tool calls server-side (writes to the local tables).
  *   5. Persists user + assistant messages to coach_messages.
@@ -1751,6 +1756,16 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     ? [...TOOL_DECLARATIONS, PROPOSE_DRAFT_EDITS_DECLARATION]
     : TOOL_DECLARATIONS;
 
+  // Tool schema conversion: the tool `parameters` JSON-Schema maps directly to
+  // the AI's `input_schema`. cache_control on the last tool keeps the tool
+  // block cached alongside the system prompt (~10× cheaper on cache hits).
+  const anthropicTools: any[] = toolDeclarations.map((d: any, i: number) => ({
+    name: d.name,
+    description: d.description,
+    input_schema: d.parameters,
+    ...(i === toolDeclarations.length - 1 ? { cache_control: { type: "ephemeral" } } : {}),
+  }));
+
   // ─── 4. Streaming + tool-calling loop ──────────────────────────────────────
   // Polish-mode history: keep the last 8 turns of BOTH roles. The refreshed
   // CURRENT FINAL DRAFT block remains the only audit target (the prompt
@@ -1761,16 +1776,22 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
   // modes: settled terms were re-flagged every pass (the audit never
   // converged) and stale questions were re-answered turn after turn.
   const chronoForHistory = isPolishMode ? recentChrono.slice(-8) : recentChrono;
-  const geminiHistory = chronoForHistory.map((m) => ({
-    role: m.role === "assistant" ? "model" : "user",
-    parts: [{ text: m.content }],
+  const priorMessages = chronoForHistory.map((m) => ({
+    role: (m.role === "assistant" ? "assistant" : "user") as "assistant" | "user",
+    content: m.content as any,
   }));
 
-  // Mutable conversation we feed back into Gemini each iteration.
-  const originalUserMsgIndex = geminiHistory.length;
-  const contents: any[] = [
-    ...geminiHistory,
-    { role: "user", parts: [{ text: fullUserMessage }] },
+  // Mutable conversation we feed back into the AI each iteration.
+  const originalUserMsgIndex = priorMessages.length;
+  const messages: any[] = [
+    ...priorMessages,
+    { role: "user", content: fullUserMessage },
+  ];
+
+  // Cached system block — the LEAP prompt is large and static across turns, so
+  // cache_control makes every turn after the first read it from cache.
+  const systemBlocks: any[] = [
+    { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
   ];
 
   const allTokens: string[] = [];
@@ -1809,99 +1830,78 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
   for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
     const turnText: string[] = [];
     const turnToolCalls: ToolCall[] = [];
-    // Capture raw functionCall parts (including Gemini Pro's `thoughtSignature`)
-    // so we can echo them back faithfully on the follow-up turn. Reconstructing
-    // from { name, args } alone strips the signature and the API will reject
-    // the next request with INVALID_ARGUMENT.
-    const turnFunctionCallParts: any[] = [];
+    // The assistant's fully-assembled turn content (text + tool_use blocks).
+    // Echoed back verbatim on the follow-up turn so the AI's tool_use/tool_result
+    // pairing stays valid.
+    let assistantContentBlocks: any[] = [];
 
-    // On the final allowed turn, drop the tool declarations so Gemini is
+    // On the final allowed turn, drop the tool declarations so the AI is
     // forced to emit a prose response instead of calling more tools. Without
     // this guard, models that keep proposing tool calls every turn exhaust
     // MAX_TOOL_TURNS with no text and the user sees only tool chips.
     const isLastTurn = turn === MAX_TOOL_TURNS - 1;
-    const streamConfig = {
-      model: CONFIG.model,
-      contents,
-      config: {
-        systemInstruction: SYSTEM_PROMPT,
-        temperature: CONFIG.temperature,
-        topP: CONFIG.topP,
-        maxOutputTokens: CONFIG.maxTokens,
-        safetySettings: GEMINI_SAFETY_OFF,
-        ...(CONFIG.toolsEnabled && !isLastTurn
-          ? { tools: [{ functionDeclarations: toolDeclarations as any }] }
-          : {}),
-      },
-    };
-
     const turnStarted = Date.now();
     let usedSecondaryKey = false;
-    let lastChunk: any = null;
     try {
-      let stream;
-      try {
-        stream = await gemini.models.generateContentStream(streamConfig);
-      } catch (primaryErr: any) {
-        // Try the secondary key (separate quota bucket) before giving up on
-        // Gemini entirely. Only swap on stream-open errors — once tokens are
-        // flowing, a mid-stream failure goes straight to the gpt-4o fallback.
-        if (geminiSecondary) {
-          console.warn(`[QA-Assistant] Primary Gemini key failed, trying secondary key:`, primaryErr?.message);
-          stream = await geminiSecondary.models.generateContentStream(streamConfig);
-          usedSecondaryKey = true;
-        } else {
-          throw primaryErr;
-        }
-      }
+      const stream = anthropic.messages.stream({
+        model: CONFIG.model,
+        max_tokens: CONFIG.maxTokens,
+        temperature: CONFIG.temperature,
+        // NOTE: this model rejects temperature + top_p together — use only temperature.
+        system: systemBlocks,
+        messages,
+        // Drop tools on the last allowed turn so the AI is forced to emit prose
+        // instead of proposing more tool calls and exhausting MAX_TOOL_TURNS.
+        ...(CONFIG.toolsEnabled && !isLastTurn ? { tools: anthropicTools } : {}),
+      });
 
-      for await (const chunk of stream) {
-        lastChunk = chunk;
-        const t = (chunk as any).text;
-        if (t) {
-          turnText.push(t);
-          allTokens.push(t);
-          scheduleFlush();
-          yield { type: "token", data: { delta: t } };
-        }
-        // Walk the candidate parts to preserve functionCall metadata
-        // (thoughtSignature, etc.) — chunk.functionCalls is a lossy convenience.
-        const parts = (chunk as any).candidates?.[0]?.content?.parts;
-        if (Array.isArray(parts)) {
-          for (const p of parts) {
-            if (p?.functionCall) {
-              turnFunctionCallParts.push(p);
-              turnToolCalls.push({
-                name: p.functionCall.name,
-                args: p.functionCall.args ?? {},
-              });
-            }
+      for await (const event of stream) {
+        if (event.type === "content_block_delta" && (event.delta as any).type === "text_delta") {
+          const t = (event.delta as any).text as string;
+          if (t) {
+            turnText.push(t);
+            allTokens.push(t);
+            scheduleFlush();
+            yield { type: "token", data: { delta: t } };
           }
         }
       }
 
-      // Log one usage row per turn. Gemini's usageMetadata lands on the
-      // terminal chunk; we read it off lastChunk (or fall back to null
-      // counts if the SDK omitted it for this snapshot).
-      const usage = extractGeminiUsage(lastChunk);
+      // The fully assembled assistant turn — text + any tool_use blocks. Echoed
+      // back verbatim next iteration to keep tool_use/tool_result pairing valid.
+      const finalMsg = await stream.finalMessage();
+      assistantContentBlocks = finalMsg.content as any[];
+      for (const block of assistantContentBlocks) {
+        if ((block as any).type === "tool_use") {
+          turnToolCalls.push({ name: (block as any).name, args: (block as any).input ?? {} });
+        }
+      }
+
+      const u = finalMsg.usage as any;
       void recordUsage({
         userId: payload.userId ?? null,
         userEmail: payload.userEmail ?? null,
         projectId: projectId ?? null,
         agentCode: "module0/qa-assistant",
         model: CONFIG.model,
-        ...usage,
+        inputTokens: u?.input_tokens ?? null,
+        outputTokens: u?.output_tokens ?? null,
+        cachedTokens: u?.cache_read_input_tokens ?? null,
         durationMs: Date.now() - turnStarted,
-        status: usedSecondaryKey ? "retry" : "ok",
+        status: "ok",
         usedSecondaryKey,
         requestId: payload.requestId ?? null,
-        metadata: { turn, toolCalls: turnToolCalls.map((c) => c.name) },
+        metadata: {
+          turn,
+          toolCalls: turnToolCalls.map((c) => c.name),
+          cacheWrite: u?.cache_creation_input_tokens ?? 0,
+        },
       });
     } catch (geminiErr: any) {
-      console.warn(`[QA-Assistant] Gemini failed on turn ${turn}, falling back to ${CONFIG.fallback}:`, geminiErr?.message);
+      console.warn(`[QA-Assistant] The AI failed on turn ${turn}, falling back to ${CONFIG.fallback}:`, geminiErr?.message);
       if (turn === 0) geminiFailedOnFirstTurn = true;
       usedFallback = true;
-      // Record the failed Gemini turn so it shows up in the admin usage page.
+      // Record the failed AI turn so it shows up in the admin usage page.
       void recordUsage({
         userId: payload.userId ?? null,
         userEmail: payload.userEmail ?? null,
@@ -1964,7 +1964,7 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         yield {
           type: "error",
           data: {
-            message: `Both Gemini and fallback failed: ${fallbackErr?.message ?? String(fallbackErr)}`,
+            message: `The AI is temporarily unavailable: ${fallbackErr?.message ?? String(fallbackErr)}`,
             recoverable: false,
           },
         };
@@ -1977,14 +1977,6 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
     // If the model produced no tool calls this turn, we're done.
     if (turnToolCalls.length === 0) break;
 
-    // Build the model turn for the next iteration's contents. Preserve raw
-    // functionCall parts (with thoughtSignature intact) — Gemini Pro will 400
-    // the next request if the signature is missing.
-    const joinedText = turnText.join("");
-    const modelParts: any[] = [];
-    if (joinedText) modelParts.push({ text: joinedText });
-    for (const p of turnFunctionCallParts) modelParts.push(p);
-
     // Execute tool calls and stream their results to the client.
     const turnResults: ToolResult[] = [];
     for (const call of turnToolCalls) {
@@ -1996,16 +1988,20 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
       yield { type: "tool-result", data: r };
     }
 
-    // Append model turn + tool responses for the follow-up Gemini call so it
-    // can produce the prose response that closes out the turn.
-    contents.push({ role: "model", parts: modelParts });
-    contents.push({
+    // Echo the assistant's full turn (text + tool_use blocks), then the matching
+    // tool_result blocks, so the AI can produce the prose that closes the turn.
+    // tool_use blocks and turnResults are in the same order (both derived from
+    // assistantContentBlocks in sequence), so index i aligns.
+    messages.push({ role: "assistant", content: assistantContentBlocks });
+    const toolUseBlocks = assistantContentBlocks.filter((b: any) => b.type === "tool_use");
+    messages.push({
       role: "user",
-      parts: turnResults.map((r, i) => ({
-        functionResponse: {
-          name: turnToolCalls[i].name,
-          response: r.ok ? (r.result ?? {}) : { error: r.error ?? "tool failed" },
-        },
+      content: toolUseBlocks.map((b: any, i: number) => ({
+        type: "tool_result",
+        tool_use_id: b.id,
+        content: turnResults[i]?.ok
+          ? JSON.stringify(turnResults[i].result ?? {})
+          : JSON.stringify({ error: turnResults[i]?.error ?? "tool failed" }),
       })),
     });
 
@@ -2072,74 +2068,51 @@ export async function* runQAAssistant(payload: QAPayload): AsyncGenerator<QAEven
         filteredRefreshedOpenQs,
         updatedRouting,
       );
-      contents[originalUserMsgIndex] = {
+      messages[originalUserMsgIndex] = {
         role: "user",
-        parts: [{ text: rebuiltMessage }],
+        content: rebuiltMessage,
       };
     }
   }
 
   // Last-resort prose pass. If the tool dance consumed every allowed turn
-  // and Gemini emitted zero text, the user sees only chips. Force one final
+  // and the AI emitted zero text, the user sees only chips. Force one final
   // call with no tool declarations and a direct instruction to reply.
   if (!usedFallback && allTokens.join("").trim().length === 0) {
     const proseStarted = Date.now();
     try {
-      contents.push({
+      messages.push({
         role: "user",
-        parts: [
-          {
-            text: "Tools have finished executing. Compose your prose reply now based on the current TURN ROUTER STATE — do not call any more tools.",
-          },
-        ],
+        content: "Tools have finished executing. Compose your prose reply now based on the current TURN ROUTER STATE — do not call any more tools.",
       });
-      let stream;
-      try {
-        stream = await gemini.models.generateContentStream({
-          model: CONFIG.model,
-          contents,
-          config: {
-            systemInstruction: SYSTEM_PROMPT,
-            temperature: CONFIG.temperature,
-            topP: CONFIG.topP,
-            maxOutputTokens: CONFIG.maxTokens,
-            safetySettings: GEMINI_SAFETY_OFF,
-          },
-        });
-      } catch (primaryErr: any) {
-        if (geminiSecondary) {
-          stream = await geminiSecondary.models.generateContentStream({
-            model: CONFIG.model,
-            contents,
-            config: {
-              systemInstruction: SYSTEM_PROMPT,
-              temperature: CONFIG.temperature,
-              topP: CONFIG.topP,
-              maxOutputTokens: CONFIG.maxTokens,
-              safetySettings: GEMINI_SAFETY_OFF,
-            },
-          });
-        } else {
-          throw primaryErr;
+      const proseStream = anthropic.messages.stream({
+        model: CONFIG.model,
+        max_tokens: CONFIG.maxTokens,
+        temperature: CONFIG.temperature,
+        system: systemBlocks,
+        messages,
+      });
+      for await (const event of proseStream) {
+        if (event.type === "content_block_delta" && (event.delta as any).type === "text_delta") {
+          const t = (event.delta as any).text as string;
+          if (t) {
+            allTokens.push(t);
+            scheduleFlush();
+            yield { type: "token", data: { delta: t } };
+          }
         }
       }
-      let lastProseChunk: any = null;
-      for await (const chunk of stream) {
-        lastProseChunk = chunk;
-        const t = (chunk as any).text;
-        if (t) {
-          allTokens.push(t);
-          scheduleFlush();
-          yield { type: "token", data: { delta: t } };
-        }
-      }
+      const proseMsg = await proseStream.finalMessage();
+      const pu = proseMsg.usage as any;
       void recordUsage({
         userId: payload.userId ?? null,
         userEmail: payload.userEmail ?? null,
         projectId: projectId ?? null,
         agentCode: "module0/qa-assistant",
         model: CONFIG.model,
-        ...extractGeminiUsage(lastProseChunk),
+        inputTokens: pu?.input_tokens ?? null,
+        outputTokens: pu?.output_tokens ?? null,
+        cachedTokens: pu?.cache_read_input_tokens ?? null,
         durationMs: Date.now() - proseStarted,
         status: "ok",
         requestId: payload.requestId ?? null,

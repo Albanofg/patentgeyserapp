@@ -1,5 +1,5 @@
 {
-  "model": "gemini-pro-latest",
+  "model": "claude-opus-4-6",
   "fallback": "gpt-4o",
   "temperature": 0.3,
   "topP": 0.9,
