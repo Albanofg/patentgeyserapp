@@ -12,6 +12,7 @@ import Register from "@/pages/register";
 import ForgotPassword from "@/pages/forgot-password";
 import SetPassword from "@/pages/set-password";
 import Buy from "@/pages/buy";
+import Purchase from "@/pages/purchase";
 
 // Selection helper (Copy / Ask AI) should only appear inside the patent
 // drafting modules, not on auth/buy/dashboard/admin pages.
@@ -42,6 +43,12 @@ function Router() {
   // Public checkout page — native EPD/NMI card form for new buyers (and top-ups)
   if (location === "/buy" || location.startsWith("/buy?")) {
     return <Buy />;
+  }
+
+  // Same checkout, plus a private coupon-code field — shared only with
+  // specific buyers who get a discount link.
+  if (location === "/purchase" || location.startsWith("/purchase?")) {
+    return <Purchase />;
   }
 
   // Registration — public (freemium) and legacy hidden URL kept for admin use.

@@ -1,5 +1,5 @@
 // Storage layer implementation using DatabaseStorage as per javascript_database blueprint
-import { users, inventorsUsers, projects, agentData, pannuRecords, ideaSnapshots, priorArtSearches, emailWhitelist, type User, type InsertUser, type InventorUser, type InsertInventorUser, type Project, type InsertProject, type AgentData, type InsertAgentData, type PannuRecord, type InsertPannuRecord, type IdeaSnapshot, type InsertIdeaSnapshot, type PriorArtSearch, type InsertPriorArtSearch, type EmailWhitelistEntry } from "@shared/schema";
+import { users, inventorsUsers, projects, agentData, pannuRecords, ideaSnapshots, priorArtSearches, emailWhitelist, type User, type InsertUser, type InventorUser, type InsertInventorUser, type Project, type InsertProject, type AgentData, type InsertAgentData, type PannuRecord, type InsertPannuRecord, type IdeaSnapshot, type InsertIdeaSnapshot, type PriorArtSearch, type InsertPriorArtSearch, type EmailWhitelistEntry, couponRedemptions, type CouponRedemption } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, and, desc, sql, isNull, or, gte } from "drizzle-orm";
 import { recordEventBackground } from "./lib/provenance/hash-chain";
@@ -82,6 +82,16 @@ export interface IStorage {
   addEmailToWhitelist(email: string, note?: string): Promise<EmailWhitelistEntry>;
   removeEmailFromWhitelist(email: string): Promise<void>;
   updateWhitelistStatus(email: string, status: string): Promise<EmailWhitelistEntry>;
+
+  // Coupon redemption ledger (one use per email — see /purchase checkout)
+  hasEmailRedeemedCoupon(email: string, couponCode: string): Promise<boolean>;
+  recordCouponRedemption(data: {
+    email: string;
+    couponCode: string;
+    packId: string;
+    percentOff: number;
+    transactionId?: string | null;
+  }): Promise<CouponRedemption>;
 
   // Admin user overview
   getAdminUsers(): Promise<Array<{
@@ -572,6 +582,40 @@ export class DatabaseStorage implements IStorage {
       .where(eq(emailWhitelist.email, email.toLowerCase().trim()))
       .returning();
     if (!entry) throw new Error("Email not found in whitelist");
+    return entry;
+  }
+
+  // Coupon redemption ledger
+  async hasEmailRedeemedCoupon(email: string, couponCode: string): Promise<boolean> {
+    const [entry] = await db
+      .select()
+      .from(couponRedemptions)
+      .where(
+        and(
+          eq(couponRedemptions.email, email.toLowerCase().trim()),
+          eq(couponRedemptions.couponCode, couponCode),
+        ),
+      );
+    return !!entry;
+  }
+
+  async recordCouponRedemption(data: {
+    email: string;
+    couponCode: string;
+    packId: string;
+    percentOff: number;
+    transactionId?: string | null;
+  }): Promise<CouponRedemption> {
+    const [entry] = await db
+      .insert(couponRedemptions)
+      .values({
+        email: data.email.toLowerCase().trim(),
+        couponCode: data.couponCode,
+        packId: data.packId,
+        percentOff: data.percentOff,
+        transactionId: data.transactionId || null,
+      })
+      .returning();
     return entry;
   }
 

@@ -411,6 +411,24 @@ export const emailWhitelist = pgTable("email_whitelist", {
 
 export type EmailWhitelistEntry = typeof emailWhitelist.$inferSelect;
 
+// One-use-per-email ledger for the /purchase page's private discount code.
+// The code + discount percent themselves live in env vars (PURCHASE_COUPON_CODE /
+// PURCHASE_COUPON_PERCENT_OFF), not in this table — there's exactly one active
+// code at a time. This table only tracks who has already redeemed it. The
+// unique index is the real enforcement (DB-level, race-safe); the app-level
+// pre-check just gives a fast, friendly error before charging the card.
+export const couponRedemptions = pgTable("coupon_redemptions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  email: text("email").notNull(),
+  couponCode: text("coupon_code").notNull(),
+  packId: text("pack_id").notNull(),
+  percentOff: integer("percent_off").notNull(),
+  transactionId: text("transaction_id"),
+  redeemedAt: timestamp("redeemed_at").defaultNow(),
+});
+
+export type CouponRedemption = typeof couponRedemptions.$inferSelect;
+
 // -----------------------------------------------------------------------------
 // Project Families — organizational grouping of sibling patents covering the
 // same product domain. A family is just a label + ownership; the membership

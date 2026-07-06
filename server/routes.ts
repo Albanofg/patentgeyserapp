@@ -913,8 +913,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return { email: payload.e };
   }
 
-  // EPD / NMI checkout — native order form on /buy.
-  // Browser tokenizes the card with Collect.js and POSTs us {email, packId, paymentToken}.
+  // EPD / NMI checkout — native order form on /buy AND /purchase (the latter
+  // adds an optional private coupon code). Browser tokenizes the card with
+  // Collect.js and POSTs us {email, packId, paymentToken[, couponCode]}.
   // We map packId → {amount, credits} server-side (never trust client price), charge via
   // NMI's transact.php, and on approval provision the account exactly like the GHL webhook.
   // POST /api/checkout/epd
@@ -922,6 +923,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
     pack_1:  { amount: "299.00",  credits: 1, label: "1 Project Credit" },
     pack_5:  { amount: "1160.00", credits: 5, label: "5 Project Credits" },
   };
+
+  // Single private discount code for /purchase. There is only ever one active
+  // code at a time, configured via env vars rather than a DB-managed table —
+  // rotate it by changing PURCHASE_COUPON_CODE. Per-email reuse is blocked by
+  // the coupon_redemptions ledger (see storage.hasEmailRedeemedCoupon).
+  function getPurchaseCouponConfig(): { code: string; percentOff: number } | null {
+    const code = process.env.PURCHASE_COUPON_CODE;
+    const percentRaw = process.env.PURCHASE_COUPON_PERCENT_OFF;
+    if (!code || !percentRaw) return null;
+    const percentOff = Number(percentRaw);
+    if (!Number.isFinite(percentOff) || percentOff <= 0 || percentOff >= 100) return null;
+    return { code: code.trim(), percentOff };
+  }
+
+  function applyPercentOff(amount: string, percentOff: number): string {
+    return ((parseFloat(amount) * (100 - percentOff)) / 100).toFixed(2);
+  }
+
+  // Lets /purchase show "20% off applied" before the buyer fills out the rest
+  // of the form. Deliberately does NOT check per-email redemption here (the
+  // email field may still be empty) — that's enforced authoritatively at
+  // charge time in /api/checkout/epd.
+  app.post("/api/public/validate-coupon", (req, res) => {
+    const code = req.body?.code;
+    if (typeof code !== "string" || !code.trim()) {
+      return res.status(400).json({ valid: false, message: "Coupon code is required." });
+    }
+    const config = getPurchaseCouponConfig();
+    if (!config || code.trim().toUpperCase() !== config.code.toUpperCase()) {
+      return res.json({ valid: false, message: "Invalid coupon code." });
+    }
+    return res.json({ valid: true, percentOff: config.percentOff });
+  });
 
   app.post("/api/checkout/epd", async (req, res) => {
     try {
@@ -966,15 +1000,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // Optional private coupon (only /purchase sends this). Re-validated
+      // server-side — never trust the discounted amount from the client.
+      let chargeAmount = pack.amount;
+      let appliedCoupon: { code: string; percentOff: number } | null = null;
+      const couponCodeRaw = typeof body.couponCode === "string" ? body.couponCode.trim() : "";
+      if (couponCodeRaw) {
+        const couponConfig = getPurchaseCouponConfig();
+        if (!couponConfig || couponCodeRaw.toUpperCase() !== couponConfig.code.toUpperCase()) {
+          return res.status(400).json({ message: "Invalid coupon code." });
+        }
+        const alreadyRedeemed = await storage.hasEmailRedeemedCoupon(normalizedEmail, couponConfig.code);
+        if (alreadyRedeemed) {
+          return res.status(409).json({ message: "This coupon code has already been used with this email." });
+        }
+        chargeAmount = applyPercentOff(pack.amount, couponConfig.percentOff);
+        appliedCoupon = couponConfig;
+      }
+
       // Charge via NMI transact.php (form-encoded). All AVS/billing fields are
       // forwarded so NMI runs full AVS + CVV checks — anti-fraud wall.
       const params = new URLSearchParams({
         type: "sale",
         security_key: securityKey,
-        amount: pack.amount,
+        amount: chargeAmount,
         payment_token: paymentToken,
         currency: "USD",
-        order_description: pack.label,
+        order_description: appliedCoupon
+          ? `${pack.label} (coupon ${appliedCoupon.code} -${appliedCoupon.percentOff}%)`
+          : pack.label,
         first_name: firstName.trim().slice(0, 50),
         last_name: lastName.trim().slice(0, 50),
         email: normalizedEmail,
@@ -1008,8 +1062,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       console.log(
-        `[epd] Approved: ${normalizedEmail} $${pack.amount} txn=${nmi.transactionid} pack=${packId}`,
+        `[epd] Approved: ${normalizedEmail} $${chargeAmount} txn=${nmi.transactionid} pack=${packId}` +
+          (appliedCoupon ? ` coupon=${appliedCoupon.code}` : ""),
       );
+
+      // Record the redemption now that the charge succeeded, so a repeat
+      // attempt with this email is blocked. Best-effort: the charge already
+      // went through, so a logging failure here shouldn't fail the response.
+      if (appliedCoupon) {
+        try {
+          await storage.recordCouponRedemption({
+            email: normalizedEmail,
+            couponCode: appliedCoupon.code,
+            packId,
+            percentOff: appliedCoupon.percentOff,
+            transactionId: nmi.transactionid || null,
+          });
+        } catch (e) {
+          console.error("[epd] Coupon redemption record failed (charge already succeeded, non-fatal):", e);
+        }
+      }
 
       // Post-purchase webhook payload — personal info and order details only.
       // Sensitive payment data (card, CVV, token, security key) is intentionally
@@ -1041,7 +1113,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 packId,
                 packLabel: pack.label,
                 credits: pack.credits,
-                amount: pack.amount,
+                amount: chargeAmount,
+                listAmount: pack.amount,
+                couponCode: appliedCoupon?.code || null,
+                discountPercent: appliedCoupon?.percentOff || null,
                 currency: "USD",
                 transactionId: nmi.transactionid || null,
                 authCode: nmi.authcode || null,
