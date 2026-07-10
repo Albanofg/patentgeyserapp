@@ -925,17 +925,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   };
 
   // Private discount codes for /purchase. Multiple codes can be active at once,
-  // each with its own percent off — configured via env vars rather than a
-  // DB-managed table. Add/rotate/remove by editing env. Per-email reuse is
-  // blocked PER CODE by the coupon_redemptions ledger (see
-  // storage.hasEmailRedeemedCoupon), so a buyer can use each code once.
+  // each with its own percent off — configured via a SINGLE env var (one source
+  // of truth) rather than a DB-managed table. Add/rotate/remove by editing
+  // PURCHASE_COUPON_CODES. Per-email reuse is blocked PER CODE by the
+  // coupon_redemptions ledger (see storage.hasEmailRedeemedCoupon), so a buyer
+  // can use each code once.
   //
-  // Two env sources are merged:
-  //   PURCHASE_COUPON_CODES        — comma-separated CODE:PERCENT pairs, e.g.
-  //                                  "LAUNCH25:25,AIA50:50" (preferred).
-  //   PURCHASE_COUPON_CODE +       — legacy single-code form, still honored so an
-  //   PURCHASE_COUPON_PERCENT_OFF    existing live code keeps working untouched.
-  // Percent must be 1–99; malformed entries are skipped (logged, never charged).
+  //   PURCHASE_COUPON_CODES — comma-separated CODE:PERCENT pairs, e.g.
+  //                           "LAUNCH25:25,AIA50:50". Percent must be 1–99;
+  //                           malformed entries are skipped (logged, never charged).
   type PurchaseCoupon = { code: string; percentOff: number };
 
   function parseCouponPercent(raw: string | undefined | null): number | null {
@@ -950,34 +948,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // what we store in the ledger and show on the NMI order description.
   function getPurchaseCoupons(): Map<string, PurchaseCoupon> {
     const byCode = new Map<string, PurchaseCoupon>();
-
-    // Legacy single code (backward compatibility).
-    const legacyCode = process.env.PURCHASE_COUPON_CODE?.trim();
-    const legacyPercent = parseCouponPercent(process.env.PURCHASE_COUPON_PERCENT_OFF);
-    if (legacyCode && legacyPercent != null) {
-      byCode.set(legacyCode.toUpperCase(), { code: legacyCode, percentOff: legacyPercent });
-    }
-
-    // New multi-code list: CODE:PERCENT, comma-separated.
     const list = process.env.PURCHASE_COUPON_CODES;
-    if (list) {
-      for (const entry of list.split(",")) {
-        const trimmed = entry.trim();
-        if (!trimmed) continue;
-        const sep = trimmed.lastIndexOf(":");
-        const code = sep > 0 ? trimmed.slice(0, sep).trim() : "";
-        const percentOff = sep > 0 ? parseCouponPercent(trimmed.slice(sep + 1)) : null;
-        if (!code || percentOff == null) {
-          console.warn(
-            `[coupon] Skipping malformed PURCHASE_COUPON_CODES entry (expected CODE:PERCENT, percent 1–99): "${trimmed}"`,
-          );
-          continue;
-        }
-        // A list entry wins over the legacy var if they collide on the code.
-        byCode.set(code.toUpperCase(), { code, percentOff });
+    if (!list) return byCode;
+    for (const entry of list.split(",")) {
+      const trimmed = entry.trim();
+      if (!trimmed) continue;
+      const sep = trimmed.lastIndexOf(":");
+      const code = sep > 0 ? trimmed.slice(0, sep).trim() : "";
+      const percentOff = sep > 0 ? parseCouponPercent(trimmed.slice(sep + 1)) : null;
+      if (!code || percentOff == null) {
+        console.warn(
+          `[coupon] Skipping malformed PURCHASE_COUPON_CODES entry (expected CODE:PERCENT, percent 1–99): "${trimmed}"`,
+        );
+        continue;
       }
+      byCode.set(code.toUpperCase(), { code, percentOff });
     }
-
     return byCode;
   }
 
