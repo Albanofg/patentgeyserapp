@@ -924,17 +924,68 @@ export async function registerRoutes(app: Express): Promise<Server> {
     pack_5:  { amount: "1160.00", credits: 5, label: "5 Project Credits" },
   };
 
-  // Single private discount code for /purchase. There is only ever one active
-  // code at a time, configured via env vars rather than a DB-managed table —
-  // rotate it by changing PURCHASE_COUPON_CODE. Per-email reuse is blocked by
-  // the coupon_redemptions ledger (see storage.hasEmailRedeemedCoupon).
-  function getPurchaseCouponConfig(): { code: string; percentOff: number } | null {
-    const code = process.env.PURCHASE_COUPON_CODE;
-    const percentRaw = process.env.PURCHASE_COUPON_PERCENT_OFF;
-    if (!code || !percentRaw) return null;
-    const percentOff = Number(percentRaw);
-    if (!Number.isFinite(percentOff) || percentOff <= 0 || percentOff >= 100) return null;
-    return { code: code.trim(), percentOff };
+  // Private discount codes for /purchase. Multiple codes can be active at once,
+  // each with its own percent off — configured via env vars rather than a
+  // DB-managed table. Add/rotate/remove by editing env. Per-email reuse is
+  // blocked PER CODE by the coupon_redemptions ledger (see
+  // storage.hasEmailRedeemedCoupon), so a buyer can use each code once.
+  //
+  // Two env sources are merged:
+  //   PURCHASE_COUPON_CODES        — comma-separated CODE:PERCENT pairs, e.g.
+  //                                  "LAUNCH25:25,AIA50:50" (preferred).
+  //   PURCHASE_COUPON_CODE +       — legacy single-code form, still honored so an
+  //   PURCHASE_COUPON_PERCENT_OFF    existing live code keeps working untouched.
+  // Percent must be 1–99; malformed entries are skipped (logged, never charged).
+  type PurchaseCoupon = { code: string; percentOff: number };
+
+  function parseCouponPercent(raw: string | undefined | null): number | null {
+    if (raw == null) return null;
+    const n = Number(String(raw).trim());
+    if (!Number.isFinite(n) || n <= 0 || n >= 100) return null;
+    return n;
+  }
+
+  // Builds the set of active coupons, keyed by UPPERCASE code for
+  // case-insensitive lookup. Values keep the env-configured casing, which is
+  // what we store in the ledger and show on the NMI order description.
+  function getPurchaseCoupons(): Map<string, PurchaseCoupon> {
+    const byCode = new Map<string, PurchaseCoupon>();
+
+    // Legacy single code (backward compatibility).
+    const legacyCode = process.env.PURCHASE_COUPON_CODE?.trim();
+    const legacyPercent = parseCouponPercent(process.env.PURCHASE_COUPON_PERCENT_OFF);
+    if (legacyCode && legacyPercent != null) {
+      byCode.set(legacyCode.toUpperCase(), { code: legacyCode, percentOff: legacyPercent });
+    }
+
+    // New multi-code list: CODE:PERCENT, comma-separated.
+    const list = process.env.PURCHASE_COUPON_CODES;
+    if (list) {
+      for (const entry of list.split(",")) {
+        const trimmed = entry.trim();
+        if (!trimmed) continue;
+        const sep = trimmed.lastIndexOf(":");
+        const code = sep > 0 ? trimmed.slice(0, sep).trim() : "";
+        const percentOff = sep > 0 ? parseCouponPercent(trimmed.slice(sep + 1)) : null;
+        if (!code || percentOff == null) {
+          console.warn(
+            `[coupon] Skipping malformed PURCHASE_COUPON_CODES entry (expected CODE:PERCENT, percent 1–99): "${trimmed}"`,
+          );
+          continue;
+        }
+        // A list entry wins over the legacy var if they collide on the code.
+        byCode.set(code.toUpperCase(), { code, percentOff });
+      }
+    }
+
+    return byCode;
+  }
+
+  // Case-insensitive lookup of a single code the buyer typed.
+  function getPurchaseCouponByCode(input: string): PurchaseCoupon | null {
+    const key = input.trim().toUpperCase();
+    if (!key) return null;
+    return getPurchaseCoupons().get(key) ?? null;
   }
 
   function applyPercentOff(amount: string, percentOff: number): string {
@@ -950,11 +1001,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (typeof code !== "string" || !code.trim()) {
       return res.status(400).json({ valid: false, message: "Coupon code is required." });
     }
-    const config = getPurchaseCouponConfig();
-    if (!config || code.trim().toUpperCase() !== config.code.toUpperCase()) {
+    const coupon = getPurchaseCouponByCode(code);
+    if (!coupon) {
       return res.json({ valid: false, message: "Invalid coupon code." });
     }
-    return res.json({ valid: true, percentOff: config.percentOff });
+    return res.json({ valid: true, percentOff: coupon.percentOff });
   });
 
   app.post("/api/checkout/epd", async (req, res) => {
@@ -1006,16 +1057,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let appliedCoupon: { code: string; percentOff: number } | null = null;
       const couponCodeRaw = typeof body.couponCode === "string" ? body.couponCode.trim() : "";
       if (couponCodeRaw) {
-        const couponConfig = getPurchaseCouponConfig();
-        if (!couponConfig || couponCodeRaw.toUpperCase() !== couponConfig.code.toUpperCase()) {
+        const coupon = getPurchaseCouponByCode(couponCodeRaw);
+        if (!coupon) {
           return res.status(400).json({ message: "Invalid coupon code." });
         }
-        const alreadyRedeemed = await storage.hasEmailRedeemedCoupon(normalizedEmail, couponConfig.code);
+        const alreadyRedeemed = await storage.hasEmailRedeemedCoupon(normalizedEmail, coupon.code);
         if (alreadyRedeemed) {
           return res.status(409).json({ message: "This coupon code has already been used with this email." });
         }
-        chargeAmount = applyPercentOff(pack.amount, couponConfig.percentOff);
-        appliedCoupon = couponConfig;
+        chargeAmount = applyPercentOff(pack.amount, coupon.percentOff);
+        appliedCoupon = coupon;
       }
 
       // Charge via NMI transact.php (form-encoded). All AVS/billing fields are
