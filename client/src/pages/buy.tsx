@@ -140,6 +140,16 @@ export default function Buy() {
     setBuyer((b) => ({ ...b, [k]: v }));
   }
 
+  // Tab title shows the GEYSER™ mark on this page only; the rest of the app
+  // keeps the title from index.html.
+  useEffect(() => {
+    const previousTitle = document.title;
+    document.title = "GEYSER™ — ICB drafting system for inventors";
+    return () => {
+      document.title = previousTitle;
+    };
+  }, []);
+
   useEffect(() => {
     fetch("/api/public/epd-config")
       .then((r) => r.json())
@@ -552,8 +562,14 @@ export default function Buy() {
       <footer className="border-t px-4 py-8 text-xs leading-relaxed text-muted-foreground">
         <div className="mx-auto max-w-2xl space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-            <span>
-              <span className="font-medium text-foreground">GEYSER™</span> © {new Date().getFullYear()}
+            <span className="flex items-center gap-2">
+              <span className="flex flex-col leading-none">
+                <span className="font-medium text-foreground">GEYSER™</span>
+                <span className="mt-1 text-[10px] uppercase tracking-[0.14em]">
+                  Software Provisional System
+                </span>
+              </span>
+              <span>© {new Date().getFullYear()}</span>
             </span>
             <div className="flex items-center gap-x-6">
               <a href="https://patentgeyser.com/terms" className="hover:text-foreground">Terms</a>
@@ -562,13 +578,13 @@ export default function Buy() {
             </div>
           </div>
           <p>
-            The Geyser™ software provisional system is not a law firm and does not provide legal
+            The GEYSER™ software provisional system is not a law firm and does not provide legal
             advice. The information and documents produced are intended to support inventors in
             preparing provisional patent applications and do not substitute for the advice of a
             licensed patent attorney or agent.
           </p>
           <p>
-            Geyser is built on patent-pending software technology, with 11 patent applications
+            GEYSER is built on patent-pending software technology, with 11 patent applications
             pending covering the systems behind our provisional patent drafting platform.
             Software patent filings are not a side feature for us — they are what we do.
           </p>
