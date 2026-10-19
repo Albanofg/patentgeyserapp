@@ -41,7 +41,7 @@ export default function SetPassword() {
       return await apiRequest("POST", "/api/auth/set-initial-password", { token, password });
     },
     onSuccess: () => {
-      toast({ title: "Password set", description: "Welcome to Patent Geyser." });
+      toast({ title: "Password set", description: "Welcome to the GEYSER™ ICB drafting system for inventors." });
       setLocation("/");
     },
     onError: (err: Error) => {

@@ -4,7 +4,7 @@ import "./index.css";
 
 // After a Vercel deploy, old tabs hold the previous index.html which points
 // at hashed JS chunks the CDN no longer serves. When the app lazy-loads one
-// of those chunks, Vite throws "Failed to fetch dynamically imported module"
+// of those chunks, the browser throws "Failed to fetch dynamically imported module"
 // and the route renders a blank page. Detect those errors and reload once
 // to pick up the new index.html — but only once per session, so a genuinely
 // broken chunk doesn't trap the user in a reload loop.

@@ -4,7 +4,6 @@ dist
 Thumbs.db
 server/public
 api/index.js.map
-vite.config.ts.*
 *.tar.gz
 
 # Secrets — keep .env.example tracked (it's the template)

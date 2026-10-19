@@ -2,7 +2,9 @@ import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import cors from "cors";
 import { registerRoutes } from "./routes";
-import { setupVite, serveStatic, log } from "./vite";
+import { setupDevClient } from "./dev-client";
+import { serveStatic } from "./static";
+import { log } from "./log";
 import { probeSchema } from "./schema-probe";
 import { backfillAllFamilyProjects } from "./lib/families";
 
@@ -91,11 +93,10 @@ app.use((req, res, next) => {
     throw err;
   });
 
-  // importantly only setup vite in development and after
-  // setting up all the other routes so the catch-all route
-  // doesn't interfere with the other routes
+  // importantly only set up the client after all the other
+  // routes so the catch-all route doesn't interfere with them
   if (app.get("env") === "development") {
-    await setupVite(app, server);
+    await setupDevClient(app);
   } else {
     serveStatic(app);
   }
