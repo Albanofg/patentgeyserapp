@@ -410,13 +410,13 @@ export default function Buy() {
           ) : (
           <>
           <div className="p-6 pb-3">
-            <h1 className="text-2xl font-semibold">Welcome to Patent Geyser</h1>
+            <h1 className="text-2xl font-semibold">Welcome to the GEYSER™ ICB drafting system for inventors</h1>
             <p className="text-sm text-muted-foreground mt-1">
               Purchase credits to create your account. Each credit gives you one invention
-              to run end-to-end through Patent Geyser, from raw idea to a provisional draft,
-              complete with key concepts, prior-art analysis, and diagrams. After checkout you'll
-              set your password and land straight in your dashboard with your credits ready
-              to use.
+              to run end-to-end through the GEYSER system, from raw idea to an ICB (Invention
+              Concept Blueprint), complete with key concepts, prior-art analysis, and diagrams.
+              After checkout you'll set your password and land straight in your dashboard with
+              your credits ready to use.
             </p>
           </div>
 
@@ -547,6 +547,34 @@ export default function Buy() {
           )}
         </Card>
       </main>
+
+      {/* Mirrors the footer on patentgeyser.com/inventors, incl. trademark attribution. */}
+      <footer className="border-t px-4 py-8 text-xs leading-relaxed text-muted-foreground">
+        <div className="mx-auto max-w-2xl space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+            <span>
+              <span className="font-medium text-foreground">GEYSER™</span> © {new Date().getFullYear()}
+            </span>
+            <div className="flex items-center gap-x-6">
+              <a href="https://patentgeyser.com/terms" className="hover:text-foreground">Terms</a>
+              <a href="https://patentgeyser.com/privacy" className="hover:text-foreground">Privacy</a>
+              <a href="mailto:hello@reply.patentgeyser.com" className="hover:text-foreground">Contact</a>
+            </div>
+          </div>
+          <p>
+            The Geyser™ software provisional system is not a law firm and does not provide legal
+            advice. The information and documents produced are intended to support inventors in
+            preparing provisional patent applications and do not substitute for the advice of a
+            licensed patent attorney or agent.
+          </p>
+          <p>
+            Geyser is built on patent-pending software technology, with 11 patent applications
+            pending covering the systems behind our provisional patent drafting platform.
+            Software patent filings are not a side feature for us — they are what we do.
+          </p>
+          <p>GEYSER is a trademark of Timothy R. Bratton, used under license by Geyser Labs Inc.</p>
+        </div>
+      </footer>
     </div>
   );
 }
