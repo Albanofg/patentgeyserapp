@@ -370,7 +370,7 @@ export default function Buy() {
   return (
     <div className="min-h-screen flex flex-col bg-background">
       <div className="flex items-center justify-between p-4">
-        <img src={logoUrl} alt="Patent Geyser" className="h-8" />
+        <img src={logoUrl} alt="GEYSER" className="h-8" />
         <ThemeToggle />
       </div>
 
